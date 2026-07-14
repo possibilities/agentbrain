@@ -32,7 +32,12 @@ export interface ErrorEnvelope {
   };
 }
 
-export interface StatsData {
+export interface RelationStats {
+  relation_count: number;
+  failed_relation_count: number;
+}
+
+export interface StatsData extends RelationStats {
   db_path: string;
   db_size_bytes: number;
   document_count: number;
@@ -78,6 +83,19 @@ export interface SearchData {
   next_offset: number | null;
 }
 
+export interface DocumentLink {
+  id: number;
+  from_document_id: number;
+  to_document_id: number | null;
+  relation_type: string;
+  discovered_url: string | null;
+  resolved_url: string | null;
+  status: string;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DocumentData {
   document_id: number;
   title: string | null;
@@ -90,6 +108,8 @@ export interface DocumentData {
   created_at: string;
   updated_at: string;
   content: string;
+  outbound_links: DocumentLink[];
+  inbound_links: DocumentLink[];
   truncation: {
     requested_char_limit: number | null;
     returned_chars: number;

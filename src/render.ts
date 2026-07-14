@@ -2,6 +2,7 @@ import { formatList } from "./format";
 import type {
   ChunkData,
   DocumentData,
+  DocumentLink,
   SearchData,
   SourcesData,
   StatsData,
@@ -14,6 +15,8 @@ export function humanStats(data: StatsData): string {
     `Documents: ${data.document_count}`,
     `Chunks: ${data.chunk_count}`,
     `Characters: ${data.total_chars}`,
+    `Relations: ${data.relation_count}`,
+    `Failed relations: ${data.failed_relation_count}`,
     `DB bytes: ${data.db_size_bytes}`,
     "",
     "By source type:",
@@ -78,8 +81,27 @@ export function searchJsonl(data: SearchData): unknown[] {
   ];
 }
 
-export function humanDocument(data: DocumentData): string {
+function humanLinks(title: string, links: DocumentLink[]): string {
   return [
+    title,
+    formatList(
+      links.map((link) => ({
+        id: link.id,
+        type: link.relation_type,
+        status: link.status,
+        from: link.from_document_id,
+        to: link.to_document_id ?? "",
+        discovered: link.discovered_url ?? "",
+        resolved: link.resolved_url ?? "",
+        error: link.error ?? "",
+      })),
+      ["id", "type", "status", "from", "to", "discovered", "resolved", "error"],
+    ).trimEnd(),
+  ].join("\n");
+}
+
+export function humanDocument(data: DocumentData): string {
+  const sections = [
     `document_id: ${data.document_id}`,
     `title: ${data.title ?? "(untitled)"}`,
     `source_uri: ${data.source_uri}`,
@@ -90,7 +112,12 @@ export function humanDocument(data: DocumentData): string {
     "",
     data.content,
     "",
-  ].join("\n");
+    humanLinks("Outbound links:", data.outbound_links),
+    "",
+    humanLinks("Inbound links:", data.inbound_links),
+    "",
+  ];
+  return sections.join("\n");
 }
 
 export function humanChunk(data: ChunkData): string {

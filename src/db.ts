@@ -27,6 +27,7 @@ interface Row {
 export class ResearchCache {
   readonly dbPath: string;
   readonly db: Database;
+  private readonly tableExistsCache = new Map<string, boolean>();
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -80,12 +81,25 @@ export class ResearchCache {
        LIMIT ?`,
       [options.recent],
     );
+    const relationStats = this.tableExists("document_links")
+      ? this.one<{ count: number; failed: number }>(
+          `SELECT
+             COUNT(*) AS count,
+             COALESCE(SUM(CASE
+               WHEN COALESCE(LOWER(status), '') = 'failed' OR COALESCE(error, '') <> '' THEN 1
+               ELSE 0
+             END), 0) AS failed
+           FROM document_links`,
+        )
+      : { count: 0, failed: 0 };
     return {
       db_path: this.dbPath,
       db_size_bytes: statSync(this.dbPath).size,
       document_count: doc.count,
       chunk_count: chunk.count,
       total_chars: doc.total,
+      relation_count: relationStats.count,
+      failed_relation_count: relationStats.failed,
       by_source_type: bySource,
       top_tags: topTags,
       recent,
@@ -219,8 +233,9 @@ export class ResearchCache {
           );
     if (row === null) throw new CliError("not_found", "document not found");
     const truncated = truncateContent(row.content, input.charLimit);
+    const documentId = row.id;
     return {
-      document_id: row.id,
+      document_id: documentId,
       title: row.title,
       source_uri: row.source_uri,
       source_type: row.source_type,
@@ -231,6 +246,8 @@ export class ResearchCache {
       created_at: row.created_at,
       updated_at: row.updated_at,
       content: truncated.content,
+      outbound_links: this.documentLinks("from_document_id", documentId),
+      inbound_links: this.documentLinks("to_document_id", documentId),
       truncation: {
         requested_char_limit: input.charLimit,
         returned_chars: truncated.content.length,
@@ -296,6 +313,64 @@ export class ResearchCache {
         .sort((a, b) => b.count - a.count || a.domain.localeCompare(b.domain))
         .slice(0, limit),
     };
+  }
+
+  private documentLinks(
+    direction: "from_document_id" | "to_document_id",
+    documentId: number,
+  ): Array<{
+    id: number;
+    from_document_id: number;
+    to_document_id: number | null;
+    relation_type: string;
+    discovered_url: string | null;
+    resolved_url: string | null;
+    status: string;
+    error: string | null;
+    created_at: string;
+    updated_at: string;
+  }> {
+    if (!this.tableExists("document_links")) return [];
+    return this.all<{
+      id: number;
+      from_document_id: number;
+      to_document_id: number | null;
+      relation_type: string;
+      discovered_url: string | null;
+      resolved_url: string | null;
+      status: string;
+      error: string | null;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `SELECT
+         id,
+         from_document_id,
+         to_document_id,
+         relation_type,
+         discovered_url,
+         resolved_url,
+         status,
+         error,
+         created_at,
+         updated_at
+       FROM document_links
+       WHERE ${direction} = ?
+       ORDER BY id ASC`,
+      [documentId],
+    );
+  }
+
+  private tableExists(name: string): boolean {
+    const cached = this.tableExistsCache.get(name);
+    if (cached !== undefined) return cached;
+    const exists =
+      this.oneOrNull<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        [name],
+      ) !== null;
+    this.tableExistsCache.set(name, exists);
+    return exists;
   }
 
   private all<T extends Row>(sql: string, params: unknown[] = []): T[] {

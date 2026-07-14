@@ -4,7 +4,7 @@ export const COMMANDS = [
   {
     name: "stats",
     summary:
-      "Summarize DB size, counts, source types, tags, and recent documents",
+      "Summarize DB size, counts, source types, tags, relations, and recent documents",
   },
   {
     name: "search",
@@ -52,9 +52,10 @@ Agent defaults:
   1. Start with: agentbrain guide --json
   2. Search before answering from saved resources: agentbrain search "query" --json
   3. Fetch selected evidence: agentbrain get --document-id <id> --json or --chunk-id <id> --json
-  4. Cite document_id, chunk_id, and source_uri when using results.
+  4. Cite document_id, chunk_id when present, title, source_uri, and relation provenance when relevant.
 
-All DB access is read-only. Use --help on any command for command-specific options.
+All DB access is read-only. Ingestion arrives through the saved-link/research pipeline outside this CLI.
+Use --help on any command for command-specific options.
 `;
 
 export const HELP: Record<string, string> = {
@@ -82,7 +83,7 @@ Options:
   --limit <n>         Results per page (default: 10, max: 50)
   --offset <n>        Page offset (default: 0)
   --tag <tag>         Require a document tag, exact match
-  --source-type <t>   Require source_type, e.g. scraped_url, source_item, tweet
+  --source-type <t>   Require source_type, e.g. tweet, tweet_article, scraped_url
   --json             Emit an envelope with data.results[]
   --jsonl            Emit one result per line; first line is a metadata record
 
@@ -108,6 +109,10 @@ Options:
   --char-limit <n>    Limit document content with head/tail truncation (default: 20000; min: 500)
   --full              Return full document content; ignored for chunk retrieval
   --json              Emit stable JSON envelope
+
+Output fields:
+  document get results include outbound_links and inbound_links relation arrays when document_links exists.
+  Each relation object carries id, from_document_id, to_document_id, relation_type, discovered_url, resolved_url, status, error, created_at, updated_at.
 
 Examples:
   agentbrain get --chunk-id 4044 --json

@@ -25,8 +25,9 @@ import type { GlobalOptions, SearchMode } from "./types";
 const COMMAND_NAMES = new Set(COMMANDS.map((c) => c.name));
 const DB_COMMANDS = new Set(["stats", "search", "get", "tags", "sources"]);
 
-async function run(argv: string[]): Promise<void> {
-  const parsed = parseTopLevel(argv);
+async function runParsed(
+  parsed: ReturnType<typeof parseTopLevel>,
+): Promise<void> {
   const command = parsed.command;
 
   if (parsed.showVersion) {
@@ -267,11 +268,25 @@ function assertInteger(value: number, name: string): number {
   return value;
 }
 
-if (import.meta.main) {
-  run(Bun.argv.slice(2)).catch((err: unknown) => {
-    const command = parseTopLevel(Bun.argv.slice(2)).command ?? "(none)";
+function requestsJson(argv: string[]): boolean {
+  return argv.some(
+    (arg, index) =>
+      arg === "--json" ||
+      arg === "--format=json" ||
+      (arg === "--format" && argv[index + 1] === "json"),
+  );
+}
+
+async function main(argv: string[]): Promise<void> {
+  let parsed: ReturnType<typeof parseTopLevel> | undefined;
+  try {
+    parsed = parseTopLevel(argv);
+    await runParsed(parsed);
+  } catch (err: unknown) {
+    const command = parsed?.command ?? "(none)";
+    const json = parsed?.globals.format === "json" || requestsJson(argv);
     if (err instanceof CliError) {
-      if (Bun.argv.includes("--json") || Bun.argv.includes("--format=json")) {
+      if (json) {
         writeJson(errorEnvelope(command, err.code, err.message, err.hint));
       } else {
         process.stderr.write(`agentbrain: ${err.message}\n`);
@@ -279,9 +294,14 @@ if (import.meta.main) {
       }
       process.exit(err.exitCode);
     }
-    process.stderr.write(
-      `agentbrain: unexpected error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    if (json) {
+      writeJson(errorEnvelope(command, "unexpected_error", message));
+    } else {
+      process.stderr.write(`agentbrain: unexpected error: ${message}\n`);
+    }
     process.exit(1);
-  });
+  }
 }
+
+if (import.meta.main) void main(Bun.argv.slice(2));
