@@ -4,12 +4,13 @@ import {
   DEFAULT_EXTENSIONS,
   DEFAULT_MAX_BYTES,
   extractFile,
-  extractUrl,
+  inferTitleFromSource,
   looksSensitiveComponent,
 } from "./extract";
+import { type ScrapeProvider, scrapeWithScrapectl } from "./scrapectl";
 import type { ResearchStore, UpsertDocumentResult } from "./store";
 import { normalizeTags, sha256Text } from "./text";
-import type { DnsResolver, PublicFetchOptions } from "./url-safety";
+import { normalizedWebUrl, sourceTypeForUrl } from "./url";
 
 export type IngestSourceType = "auto" | "url" | "file" | "directory" | "text";
 
@@ -27,8 +28,8 @@ export interface IngestOptions {
   maxBytes?: number;
   force?: boolean;
   skipSecrets?: boolean;
-  resolver?: DnsResolver;
-  transport?: PublicFetchOptions["transport"];
+  scrape?: ScrapeProvider;
+  scrapectlTimeoutMs?: number;
   /** Test seam; callers cannot raise the production hard limit. */
   directoryTraversalLimit?: number;
   /** Test seam; callers cannot raise the production hard limit. */
@@ -86,6 +87,19 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function titleFromMarkdown(source: string, markdown: string): string {
+  for (const line of markdown.split("\n")) {
+    const stripped = line.trim();
+    if (stripped.startsWith("#")) {
+      return Array.from(stripped.replace(/^#+/, "").trim() || source)
+        .slice(0, 500)
+        .join("");
+    }
+    if (stripped) return Array.from(stripped).slice(0, 120).join("");
+  }
+  return inferTitleFromSource(source);
+}
+
 function detectedSourceType(source: string): Exclude<IngestSourceType, "auto"> {
   try {
     const url = new URL(source);
@@ -133,16 +147,19 @@ export async function ingestSource(
     });
   }
   if (sourceType === "url") {
-    const extracted = await extractUrl(source, {
-      maxBytes,
-      resolver: options.resolver,
-      transport: options.transport,
+    const requestedUrl = normalizedWebUrl(source);
+    const scrape = options.scrape ?? scrapeWithScrapectl;
+    const scraped = await scrape(requestedUrl, {
+      maxMarkdownBytes: maxBytes,
+      maxMarkdownCodePoints: maxBytes,
+      timeoutMs: options.scrapectlTimeoutMs,
     });
+    const sourceUri = requestedUrl;
     return store.upsertDocument({
-      sourceType: extracted.source_type,
-      sourceUri: extracted.source_uri,
-      title: options.title || extracted.title,
-      content: extracted.content,
+      sourceType: sourceTypeForUrl(sourceUri),
+      sourceUri,
+      title: options.title || titleFromMarkdown(sourceUri, scraped.markdown),
+      content: scraped.markdown,
       tags: options.tags,
       notes: options.notes,
       force: options.force,

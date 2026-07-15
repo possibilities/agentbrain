@@ -1,0 +1,445 @@
+import { afterEach, expect, test } from "bun:test";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { scrapeWithScrapectl } from "../src/scrapectl";
+
+const dirs: string[] = [];
+const originalPath = process.env.PATH;
+const originalInitialDelay = process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS;
+const originalMaxDelay = process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS;
+
+afterEach(() => {
+  process.env.PATH = originalPath;
+  if (originalInitialDelay === undefined) {
+    delete process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS;
+  } else {
+    process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS = originalInitialDelay;
+  }
+  if (originalMaxDelay === undefined) {
+    delete process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS;
+  } else {
+    process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS = originalMaxDelay;
+  }
+  delete process.env.LOG;
+  delete process.env.COUNT_FILE;
+  delete process.env.CHILD_PID_FILE;
+  for (const dir of dirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-scrapectl-"));
+  dirs.push(dir);
+  return dir;
+}
+
+function executablePath(dir: string): string {
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  process.env.PATH = `${bin}:${originalPath}`;
+  return join(bin, "scrapectl");
+}
+
+function writeExecutable(path: string, script: string): void {
+  writeFileSync(path, script);
+  chmodSync(path, 0o755);
+}
+
+function installScrapectl(script: string): { dir: string; executable: string } {
+  const dir = tempDir();
+  const executable = executablePath(dir);
+  writeExecutable(executable, script);
+  return { dir, executable };
+}
+
+test("Scrapectl adapter resolves PATH and requests final Markdown with explicit argv", async () => {
+  const { dir } = installScrapectl(`#!/bin/sh
+printf '%s\n' "$@" > "$LOG"
+printf '%s\n' '# Provider markdown'
+`);
+  const log = join(dir, "argv.txt");
+  process.env.LOG = log;
+
+  const result = await scrapeWithScrapectl(
+    "https://twitter.com/person/status/123?from=request#section",
+    { maxMarkdownBytes: 1000, maxMarkdownCodePoints: 1000 },
+  );
+
+  expect(readFileSync(log, "utf8")).toBe(
+    "fetch-markdown\n--markdown\nhttps://twitter.com/person/status/123?from=request\n",
+  );
+  expect(result).toMatchObject({
+    url: "https://twitter.com/person/status/123?from=request",
+    requested_url: "https://twitter.com/person/status/123?from=request",
+    markdown: "# Provider markdown\n",
+  });
+});
+
+test("Scrapectl Markdown stdout is accepted without provider-schema parsing", async () => {
+  installScrapectl(`#!/bin/sh
+printf '%s\n' '# Article title' '' 'Final **Markdown** from Scrapectl.'
+`);
+
+  const result = await scrapeWithScrapectl("https://example.com/article");
+  expect(result.markdown).toBe(
+    "# Article title\n\nFinal **Markdown** from Scrapectl.\n",
+  );
+  expect(result.content).toBe(result.markdown);
+});
+
+test("transient provider failures retry with bounded exponential delays and resume", async () => {
+  const { dir } = installScrapectl(`#!/bin/sh
+count=0
+if [ -f "$COUNT_FILE" ]; then count=$(cat "$COUNT_FILE"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$COUNT_FILE"
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' 'failed to acquire browser from browserctl' >&2
+  exit 7
+fi
+if [ "$count" -eq 2 ]; then
+  printf '%s\n' 'browser backend unavailable token=retry-secret' >&2
+  exit 7
+fi
+printf '%s\n' 'resumed markdown'
+`);
+  const countFile = join(dir, "count");
+  process.env.COUNT_FILE = countFile;
+  const delays: number[] = [];
+  const diagnostics: string[] = [];
+
+  const result = await scrapeWithScrapectl("https://example.com/resumed", {
+    retry: {
+      maxAttempts: 4,
+      initialDelayMs: 5,
+      maxDelayMs: 8,
+      sleep: (delay) => {
+        delays.push(delay);
+      },
+      writeDiagnostic: (message) => diagnostics.push(message),
+    },
+  });
+
+  expect(result.markdown).toBe("resumed markdown\n");
+  expect(readFileSync(countFile, "utf8")).toBe("3");
+  expect(delays).toEqual([5, 8]);
+  expect(diagnostics).toHaveLength(2);
+  expect(diagnostics.join(" ")).not.toContain("retry-secret");
+  expect(diagnostics.join(" ")).not.toContain("token=");
+  expect(diagnostics.join(" ")).not.toContain("backend unavailable");
+});
+
+test("retry delay environment overrides are bounded away from hot loops and overflow", async () => {
+  const dir = tempDir();
+  process.env.PATH = join(dir, "missing-bin");
+  process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS = "0";
+  process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS = "999999999999999999999";
+  const fallbackDelays: number[] = [];
+
+  await expect(
+    scrapeWithScrapectl("https://example.com/down", {
+      retry: {
+        maxAttempts: 2,
+        sleep: (delay) => {
+          fallbackDelays.push(delay);
+        },
+        writeDiagnostic: () => {},
+      },
+    }),
+  ).rejects.toThrow("not installed on PATH");
+  expect(fallbackDelays).toEqual([1000]);
+
+  process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS = "100";
+  process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS = "3600000";
+  const configuredDelays: number[] = [];
+  await expect(
+    scrapeWithScrapectl("https://example.com/down", {
+      retry: {
+        maxAttempts: 2,
+        sleep: (delay) => {
+          configuredDelays.push(delay);
+        },
+        writeDiagnostic: () => {},
+      },
+    }),
+  ).rejects.toThrow("not installed on PATH");
+  expect(configuredDelays).toEqual([100]);
+});
+
+test("a real Scrapectl agent-browser timeout is retried", async () => {
+  const { dir } = installScrapectl(`#!/bin/sh
+count=0
+if [ -f "$COUNT_FILE" ]; then count=$(cat "$COUNT_FILE"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$COUNT_FILE"
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' 'Browser error: agent-browser timed out after 30s' >&2
+  exit 1
+fi
+printf '%s\n' 'recovered after browser timeout'
+`);
+  const countFile = join(dir, "count");
+  process.env.COUNT_FILE = countFile;
+  const delays: number[] = [];
+
+  const result = await scrapeWithScrapectl("https://example.com/timeout", {
+    retry: {
+      maxAttempts: 2,
+      initialDelayMs: 7,
+      maxDelayMs: 7,
+      sleep: (delay) => {
+        delays.push(delay);
+      },
+      writeDiagnostic: () => {},
+    },
+  });
+  expect(result.markdown).toBe("recovered after browser timeout\n");
+  expect(readFileSync(countFile, "utf8")).toBe("2");
+  expect(delays).toEqual([7]);
+});
+
+test("an executable initially absent is found on a later retry", async () => {
+  const dir = tempDir();
+  const executable = executablePath(dir);
+  process.env.PATH = join(dir, "bin");
+  const delays: number[] = [];
+
+  const result = await scrapeWithScrapectl("https://example.com/appeared", {
+    retry: {
+      maxAttempts: 2,
+      initialDelayMs: 0,
+      maxDelayMs: 0,
+      sleep: async (delay) => {
+        delays.push(delay);
+        writeExecutable(
+          executable,
+          "#!/bin/sh\nprintf '%s\\n' 'provider appeared'\n",
+        );
+        await Bun.sleep(1);
+      },
+      writeDiagnostic: () => {},
+    },
+  });
+
+  expect(result.markdown).toBe("provider appeared\n");
+  expect(delays).toEqual([0]);
+});
+
+test("permanent auth and input failures do not retry", async () => {
+  const { dir } = installScrapectl(`#!/bin/sh
+printf x >> "$COUNT_FILE"
+printf '%s\n' 'authentication required: Authorization: Bearer top.secret' >&2
+exit 7
+`);
+  const countFile = join(dir, "count");
+  process.env.COUNT_FILE = countFile;
+  const delays: number[] = [];
+
+  await expect(
+    scrapeWithScrapectl("https://example.com/failure", {
+      retry: {
+        maxAttempts: 5,
+        sleep: (delay) => {
+          delays.push(delay);
+        },
+        writeDiagnostic: () => {},
+      },
+    }),
+  ).rejects.toThrow("scrapectl provider failed");
+  expect(readFileSync(countFile, "utf8")).toBe("x");
+  expect(delays).toEqual([]);
+
+  writeExecutable(
+    join(dir, "bin", "scrapectl"),
+    `#!/bin/sh\nprintf x >> "$COUNT_FILE"\nprintf '%s\\n' 'invalid input URL' >&2\nexit 2\n`,
+  );
+  await expect(
+    scrapeWithScrapectl("https://example.com/failure", {
+      retry: { maxAttempts: 5, sleep: () => {}, writeDiagnostic: () => {} },
+    }),
+  ).rejects.toThrow("invalid input");
+  expect(readFileSync(countFile, "utf8")).toBe("xx");
+});
+
+test("per-attempt timeout is transient and obeys the injected attempt cap", async () => {
+  const { dir } = installScrapectl(`#!/bin/sh
+printf x >> "$COUNT_FILE"
+exec sleep 1
+`);
+  const countFile = join(dir, "count");
+  process.env.COUNT_FILE = countFile;
+  const delays: number[] = [];
+
+  await expect(
+    scrapeWithScrapectl("https://example.com/slow", {
+      timeoutMs: 1_000,
+      retry: {
+        maxAttempts: 2,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+        sleep: (delay) => {
+          delays.push(delay);
+        },
+        writeDiagnostic: () => {},
+      },
+    }),
+  ).rejects.toThrow("timed out");
+  expect(readFileSync(countFile, "utf8")).toBe("xx");
+  expect(delays).toEqual([1]);
+});
+
+test("provider timeout terminates the Scrapectl process group", async () => {
+  const { dir } = installScrapectl(`#!/bin/sh
+sh -c 'trap "" TERM; exec sleep 30' &
+printf '%s' "$!" > "$CHILD_PID_FILE"
+wait
+`);
+  const pidFile = join(dir, "child.pid");
+  process.env.CHILD_PID_FILE = pidFile;
+
+  await expect(
+    scrapeWithScrapectl("https://example.com/process-tree", {
+      timeoutMs: 500,
+      retry: { maxAttempts: 1, writeDiagnostic: () => {} },
+    }),
+  ).rejects.toThrow("timed out");
+
+  const descendantPid = Number(readFileSync(pidFile, "utf8"));
+  expect(Number.isInteger(descendantPid)).toBe(true);
+  let alive = true;
+  for (let attempt = 0; attempt < 20 && alive; attempt += 1) {
+    try {
+      process.kill(descendantPid, 0);
+      await Bun.sleep(10);
+    } catch {
+      alive = false;
+    }
+  }
+  if (alive) {
+    try {
+      process.kill(descendantPid, "SIGKILL");
+    } catch {
+      // It exited between the final probe and cleanup.
+    }
+  }
+  expect(alive).toBe(false);
+});
+
+test("parent cancellation kills detached Scrapectl descendants and preserves signal exits", async () => {
+  if (process.platform === "win32") return;
+  const { dir } = installScrapectl(`#!/bin/sh
+sh -c 'trap "" HUP INT TERM; exec sleep 30' &
+printf '%s' "$!" > "$CHILD_PID_FILE"
+wait
+`);
+
+  const parentScript = join(dir, "provider-parent.ts");
+  writeFileSync(
+    parentScript,
+    `import { scrapeWithScrapectl } from ${JSON.stringify(join(import.meta.dir, "..", "src", "scrapectl.ts"))};\nawait scrapeWithScrapectl("https://example.com/cancel");\n`,
+  );
+
+  for (const [signal, expectedExitCode] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ] as const) {
+    const pidFile = join(dir, `${signal}.pid`);
+    process.env.CHILD_PID_FILE = pidFile;
+    const parent = Bun.spawn({
+      cmd: ["bun", parentScript],
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, PATH: process.env.PATH },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+
+    for (
+      let attempt = 0;
+      attempt < 1_000 && !existsSync(pidFile);
+      attempt += 1
+    ) {
+      await Bun.sleep(10);
+    }
+    if (!existsSync(pidFile)) {
+      parent.kill("SIGKILL");
+      await parent.exited;
+      throw new Error(`provider fixture did not start for ${signal}`);
+    }
+    const descendantPid = Number(readFileSync(pidFile, "utf8"));
+    parent.kill(signal);
+    const exitCode = await parent.exited;
+
+    let alive = true;
+    for (let attempt = 0; attempt < 20 && alive; attempt += 1) {
+      try {
+        process.kill(descendantPid, 0);
+        await Bun.sleep(10);
+      } catch {
+        alive = false;
+      }
+    }
+    if (alive) {
+      try {
+        process.kill(descendantPid, "SIGKILL");
+      } catch {
+        // It exited between the final probe and cleanup.
+      }
+    }
+    expect(exitCode).toBe(expectedExitCode);
+    expect(alive).toBe(false);
+  }
+}, 20_000);
+
+test("empty and oversized Markdown plus oversized command output fail without retry", async () => {
+  const { dir, executable } = installScrapectl(`#!/bin/sh
+printf x >> "$COUNT_FILE"
+printf '   '
+`);
+  const countFile = join(dir, "count");
+  process.env.COUNT_FILE = countFile;
+  const retry = {
+    maxAttempts: 4,
+    sleep: () => {},
+    writeDiagnostic: () => {},
+  };
+
+  await expect(
+    scrapeWithScrapectl("https://example.com/empty", { retry }),
+  ).rejects.toThrow("empty markdown");
+  expect(readFileSync(countFile, "utf8")).toBe("x");
+
+  writeExecutable(
+    executable,
+    `#!/bin/sh\nprintf x >> "$COUNT_FILE"\nprintf '0123456789'\n`,
+  );
+  await expect(
+    scrapeWithScrapectl("https://example.com/large", {
+      maxMarkdownBytes: 5,
+      maxMarkdownCodePoints: 5,
+      retry,
+    }),
+  ).rejects.toThrow("exceeds max_bytes");
+  expect(readFileSync(countFile, "utf8")).toBe("xx");
+
+  writeExecutable(
+    executable,
+    `#!/bin/sh\nprintf x >> "$COUNT_FILE"\nprintf '%0200d' 0\n`,
+  );
+  await expect(
+    scrapeWithScrapectl("https://example.com/output", {
+      maxOutputBytes: 32,
+      retry,
+    }),
+  ).rejects.toThrow("max_output_bytes");
+  expect(readFileSync(countFile, "utf8")).toBe("xxx");
+});

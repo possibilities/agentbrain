@@ -16,15 +16,9 @@ import {
   extractDocxBytes,
   extractEpubBytes,
   extractFile,
-  extractUrl,
 } from "../src/extract";
 import { ingestSource } from "../src/ingest";
 import { ResearchStore } from "../src/store";
-import {
-  fetchPublicUrl,
-  isPublicAddress,
-  type PinnedTransport,
-} from "../src/url-safety";
 
 const dirs: string[] = [];
 const originalPath = process.env.PATH;
@@ -173,110 +167,92 @@ test("pdftotext failures redact secrets and collapse the resolved input path", (
   }
 });
 
-test("public URL transport pins the resolver-approved endpoint and revalidates redirects", async () => {
-  const resolved: string[] = [];
-  const resolver = async (host: string): Promise<string[]> => {
-    resolved.push(host);
-    return [host === "first.example" ? "93.184.216.34" : "1.1.1.1"];
-  };
-  const fetched: Array<{
-    url: string;
-    address: string;
-    headers: Record<string, string>;
-  }> = [];
-  const transport: PinnedTransport = async (request) => {
-    fetched.push({
-      url: request.url.toString(),
-      address: request.address,
-      headers: request.headers,
-    });
-    if (request.url.hostname === "first.example") {
+test("generic URL ingestion uses the Scrapectl scrape seam and preserves markdown caps", async () => {
+  const dir = tempDir();
+  const store = new ResearchStore(join(dir, "research.db"));
+  const calls: Array<{ url: string; maxBytes?: number; maxPoints?: number }> =
+    [];
+  const result = await ingestSource(store, {
+    source: "https://Example.com/report.pdf#fragment",
+    sourceType: "url",
+    title: "Override title",
+    maxBytes: 64,
+    tags: "web",
+    notes: "provider-backed",
+    scrape: async (url, options) => {
+      calls.push({
+        url,
+        maxBytes: options?.maxMarkdownBytes,
+        maxPoints: options?.maxMarkdownCodePoints,
+      });
       return {
-        status: 302,
-        headers: {
-          location: "https://second.example/final",
-        } as Record<string, string>,
-        data: new Uint8Array(),
-        remoteAddress: request.address,
+        success: true,
+        url: "https://cdn.example/final.pdf",
+        requested_url: url,
+        markdown: "Extracted markdown from Scrapectl",
+        content: "Extracted markdown from Scrapectl",
+        size_chars: 33,
       };
-    }
-    return {
-      status: 200,
-      headers: {
-        "content-type": "text/html",
-      } as Record<string, string>,
-      data: new TextEncoder().encode(
-        "<title>Final</title><p>redirect body</p>",
-      ),
-      remoteAddress: request.address,
-    };
-  };
+    },
+  });
 
-  const result = await extractUrl("https://first.example/start", {
-    resolver,
-    transport,
-  });
-  expect(resolved).toEqual(["first.example", "second.example"]);
-  expect(fetched.map(({ url, address }) => ({ url, address }))).toEqual([
-    { url: "https://first.example/start", address: "93.184.216.34" },
-    { url: "https://second.example/final", address: "1.1.1.1" },
+  expect(calls).toEqual([
+    { url: "https://example.com/report.pdf", maxBytes: 64, maxPoints: 64 },
   ]);
-  expect(fetched[0].headers).toMatchObject({
-    host: "first.example",
-    "accept-encoding": "identity",
-  });
   expect(result).toMatchObject({
-    source_uri: "https://second.example/final",
-    title: "Final",
-    content: "Final \nredirect body",
+    source_type: "url_pdf",
+    source_uri: "https://example.com/report.pdf",
+    title: "Override title",
   });
+  expect(
+    store.db.query("SELECT content, tags, notes FROM documents").get(),
+  ).toEqual({
+    content: "Extracted markdown from Scrapectl",
+    tags: JSON.stringify(["web"]),
+    notes: "provider-backed",
+  });
+  store.close();
 });
 
-test("DNS safety rejects one private answer before transport and remote mismatch after it", async () => {
-  let transported = false;
-  const transport: PinnedTransport = async (request) => {
-    transported = true;
-    return {
-      status: 200,
-      headers: {},
-      data: new Uint8Array(),
-      remoteAddress: request.address,
-    };
-  };
-  const mixed = fetchPublicUrl("https://mixed.example", {
-    maxBytes: 1000,
-    resolver: async () => ["1.1.1.1", "127.0.0.1"],
-    transport,
-  });
-  await expect(mixed).rejects.toThrow("private/internal address blocked");
-  expect(transported).toBe(false);
-
-  const rebound = fetchPublicUrl("https://rebind.example", {
-    maxBytes: 1000,
-    resolver: async () => ["1.1.1.1"],
-    transport: async () => ({
-      status: 200,
-      headers: {},
-      data: new Uint8Array(),
-      remoteAddress: "127.0.0.1",
+test("URL ingestion keeps requested identity and infers title from final Markdown", async () => {
+  const dir = tempDir();
+  const store = new ResearchStore(join(dir, "research.db"));
+  const result = await ingestSource(store, {
+    source: "https://Example.com/original#fragment",
+    sourceType: "url",
+    scrape: async (url) => ({
+      success: true,
+      url: "https://provider.example/internal-result",
+      requested_url: url,
+      markdown: "# Final provider title\n\nBody",
+      content: "# Final provider title\n\nBody",
+      size_chars: 28,
     }),
   });
-  await expect(rebound).rejects.toThrow("did not match the vetted endpoint");
+  expect(result).toMatchObject({
+    source_type: "url",
+    source_uri: "https://example.com/original",
+    title: "Final provider title",
+  });
+  store.close();
 });
 
-test("address policy blocks transition, NAT64, mapped, and private IPv6 ranges", () => {
-  for (const address of [
-    "2001::1",
-    "2002:0808:0808::1",
-    "64:ff9b::808:808",
-    "64:ff9b:1::808:808",
-    "::ffff:10.0.0.1",
-    "fc00::1",
-    "fe80::1",
-  ]) {
-    expect(isPublicAddress(address)).toBe(false);
-  }
-  expect(isPublicAddress("2606:4700:4700::1111")).toBe(true);
+test("URL scrape failure does not write a document", async () => {
+  const dir = tempDir();
+  const store = new ResearchStore(join(dir, "research.db"));
+  await expect(
+    ingestSource(store, {
+      source: "https://example.com/down",
+      sourceType: "url",
+      scrape: async () => {
+        throw new Error("scrapectl provider unavailable");
+      },
+    }),
+  ).rejects.toThrow("scrapectl provider unavailable");
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM documents").get(),
+  ).toEqual({ count: 0 });
+  store.close();
 });
 
 test("numeric HTML entities are bounds checked", () => {

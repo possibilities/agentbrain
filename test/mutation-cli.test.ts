@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runScrapectl } from "../src/link-ingest";
+import { scrapeWithScrapectl } from "../src/scrapectl";
 
 const REPO = join(import.meta.dir, "..");
 const dirs: string[] = [];
@@ -25,6 +25,18 @@ function temp(): { dir: string; db: string } {
   const dir = mkdtempSync(join(tmpdir(), "agentbrain-cli-write-"));
   dirs.push(dir);
   return { dir, db: join(dir, "research.db") };
+}
+
+function permanentFailurePath(dir: string): string {
+  const bin = join(dir, "fake-scrapectl");
+  mkdirSync(bin);
+  const executable = join(bin, "scrapectl");
+  writeFileSync(
+    executable,
+    "#!/bin/sh\nprintf '%s\\n' 'invalid input URL fixture' >&2\nexit 2\n",
+  );
+  chmodSync(executable, 0o755);
+  return `${bin}:${originalPath}`;
 }
 
 function decode(value: Uint8Array | string): string {
@@ -289,6 +301,7 @@ test("native ingest-link exits 2 for a root-success child partial", () => {
   const state = temp();
   const partial = run("agentbrain", ["ingest-link", "--json"], {
     db: state.db,
+    env: { PATH: permanentFailurePath(state.dir) },
     input: {
       url: "https://x.com/example/status/998",
       markdown: "post",
@@ -324,6 +337,7 @@ test("legacy adapter exits 1 on invalid input and 2 after root-first child failu
   const partialState = temp();
   const partial = run("legacy", [], {
     db: partialState.db,
+    env: { PATH: permanentFailurePath(partialState.dir) },
     input: {
       url: "https://x.com/example/status/999",
       markdown: "post",
@@ -368,7 +382,7 @@ test("legacy artifact failure exits 2 with root committed and optional metadata"
   expect(existsSync(db)).toBe(true);
 });
 
-test("PATH Scrapectl uses explicit X argv and sanitizes nonzero errors", () => {
+test("PATH Scrapectl uses explicit X argv and sanitizes nonzero errors", async () => {
   const { dir } = temp();
   const bin = join(dir, "bin");
   mkdirSync(bin);
@@ -376,18 +390,17 @@ test("PATH Scrapectl uses explicit X argv and sanitizes nonzero errors", () => {
   const executable = join(bin, "scrapectl");
   writeFileSync(
     executable,
-    `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\nprintf '%s\\n' '{"markdown":"# X child","url":"https://x.com/i/status/2000"}'\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\nprintf '%s\\n' '# X child'\n`,
   );
   chmodSync(executable, 0o755);
   process.env.PATH = `${bin}:${originalPath}`;
-  const result = runScrapectl(
+  const result = await scrapeWithScrapectl(
     "https://twitter.com/child/status/2000",
-    null,
-    1000,
+    { timeoutMs: 1000 },
   );
-  expect(result.url).toBe("https://x.com/i/status/2000");
+  expect(result.url).toBe("https://twitter.com/child/status/2000");
   expect(readFileSync(log, "utf8")).toBe(
-    "fetch-markdown\n--json\n--preset\nx-tweet\nhttps://twitter.com/child/status/2000\n",
+    "fetch-markdown\n--markdown\nhttps://twitter.com/child/status/2000\n",
   );
 
   writeFileSync(
@@ -396,7 +409,10 @@ test("PATH Scrapectl uses explicit X argv and sanitizes nonzero errors", () => {
   );
   let message = "";
   try {
-    runScrapectl("https://x.com/child/status/2000", null, 1000);
+    await scrapeWithScrapectl("https://x.com/child/status/2000", {
+      timeoutMs: 1000,
+      retry: { maxAttempts: 1 },
+    });
   } catch (error) {
     message = error instanceof Error ? error.message : String(error);
   }

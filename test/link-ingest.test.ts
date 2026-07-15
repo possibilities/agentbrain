@@ -34,13 +34,8 @@ function scraped(url: string): ScrapedLink {
     success: true,
     url,
     requested_url: url,
-    preset: null,
     markdown: `# Child\n\nContent from ${url}`,
     content: `# Child\n\nContent from ${url}`,
-    structured: {
-      links: [{ label: "grandchild", url: "https://grandchild.example/nope" }],
-    },
-    links: null,
     size_chars: 20,
   };
 }
@@ -62,12 +57,16 @@ test("generic completed root commits directly without root or child scraping", a
     store,
     {
       url: "https://Example.COM/reference#section",
-      markdown: "# Generic reference\n\nA useful body.",
-      structured: { kind: "page" },
+      markdown:
+        "# Generic reference\n\nA useful body with https://fallback.example/ignored.",
+      structured: {
+        kind: "page",
+        links: [{ url: "https://child.example/ignored" }],
+      },
       source: "botctl",
     },
     {
-      scrapeX: async () => {
+      scrape: async () => {
         calls += 1;
         throw new Error("must not scrape generic roots");
       },
@@ -94,9 +93,7 @@ test("generic completed root commits directly without root or child scraping", a
 test("article fixture preserves structured metadata and source origin", async () => {
   const { store, path } = setup();
   const payload = await fixture("prescraped_x_article.json");
-  const result = await ingestPrescrapedLink(store, payload as never, {
-    ensurePublicUrl: async () => undefined,
-  });
+  const result = await ingestPrescrapedLink(store, payload as never);
   expect(result.root).toMatchObject({
     source_type: "tweet_article",
     source_uri: "https://x.com/i/article/987",
@@ -125,42 +122,30 @@ test("article fixture preserves structured metadata and source origin", async ()
 
 test("nested structured links override Markdown, deduplicate, and stop after one hop", async () => {
   const { store, path } = setup();
-  const browserCalls: string[] = [];
-  const safeFetchCalls: string[] = [];
+  const scrapeCalls: string[] = [];
   const payload = await fixture("prescraped_x_tweet.json");
   const result = await ingestPrescrapedLink(store, payload as never, {
-    ensurePublicUrl: async () => undefined,
-    extractExternal: async (url) => {
-      safeFetchCalls.push(url);
-      return {
-        source_type: "url",
-        source_uri: url,
-        title: "Safely fetched child",
-        content: `Safe content from ${url}`,
-      };
-    },
-    scrapeX: async (url) => {
-      browserCalls.push(url);
+    scrape: async (url) => {
+      scrapeCalls.push(url);
       return scraped(url);
     },
   });
-  expect(safeFetchCalls).toEqual(["https://example.com/story"]);
-  expect(browserCalls).toEqual([
+  expect(scrapeCalls).toEqual([
+    "https://example.com/story",
+    "https://x.com/original_handle",
     "https://twitter.com/writer/articles/987",
     "https://twitter.com/peer/status/456",
   ]);
-  expect([...safeFetchCalls, ...browserCalls]).not.toContain(
-    "https://fallback.example/ignored",
-  );
-  expect(result).toMatchObject({ success: true, linked_count: 3 });
+  expect(scrapeCalls).not.toContain("https://fallback.example/ignored");
+  expect(result).toMatchObject({ success: true, linked_count: 4 });
   store.close();
 
   const db = new Database(path, { readonly: true });
   expect(
     db.query("SELECT COUNT(*) AS count FROM document_links").get(),
-  ).toEqual({ count: 3 });
+  ).toEqual({ count: 4 });
   expect(db.query("SELECT COUNT(*) AS count FROM documents").get()).toEqual({
-    count: 4,
+    count: 5,
   });
   db.close();
 });
@@ -191,16 +176,10 @@ test("root-first partial failure persists provenance and retries relation in pla
   };
   let fail = true;
   const dependencies = {
-    ensurePublicUrl: async () => undefined,
-    extractExternal: async (url: string) => {
+    scrape: async (url: string) => {
       if (fail && url.includes("fail.example"))
         throw new Error("fixture destination failed");
-      return {
-        source_type: "url" as const,
-        source_uri: url,
-        title: "Stored child",
-        content: "# Stored child",
-      };
+      return scraped(url);
     },
   };
   const first = await ingestPrescrapedLink(store, payload, dependencies);
@@ -254,14 +233,9 @@ test("one-hop fan-out attempts only the first 25 discoveries without omitted rel
       structured: { links: discovered.map((url) => ({ url })) },
     },
     {
-      extractExternal: async (url) => {
+      scrape: async (url) => {
         calls.push(url);
-        return {
-          source_type: "url",
-          source_uri: url,
-          title: "Child",
-          content: `child ${url}`,
-        };
+        return scraped(url);
       },
     },
   );
@@ -292,11 +266,9 @@ test("one-hop fan-out attempts only the first 25 discoveries without omitted rel
 test("two parents reuse one shared child document while retaining both relations", async () => {
   const { store } = setup();
   const deps = {
-    ensurePublicUrl: async () => undefined,
-    extractExternal: async (url: string) => ({
-      source_type: "url" as const,
-      source_uri: url,
-      title: "Shared child",
+    scrape: async (url: string) => ({
+      ...scraped(url),
+      markdown: "shared child",
       content: "shared child",
     }),
   };

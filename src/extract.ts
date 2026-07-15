@@ -1,23 +1,10 @@
 import { spawnSync } from "node:child_process";
-import {
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, extname, join } from "node:path";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, extname } from "node:path";
 import { unzipSync } from "fflate";
 import { findExecutable } from "./executable";
 import { sanitizeExternalError } from "./sanitize";
 import { cleanText } from "./text";
-import {
-  type DnsResolver,
-  fetchPublicUrl,
-  type PublicFetchOptions,
-} from "./url-safety";
 
 export const DEFAULT_MAX_BYTES = 5_000_000;
 
@@ -385,67 +372,5 @@ export function extractFile(
     title,
     content,
     size_bytes: stat.size,
-  };
-}
-
-export async function extractUrl(
-  input: string,
-  options: {
-    maxBytes?: number;
-    timeoutMs?: number;
-    resolver?: DnsResolver;
-    transport?: PublicFetchOptions["transport"];
-  } = {},
-): Promise<ExtractedSource> {
-  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-  const fetched = await fetchPublicUrl(input, {
-    maxBytes,
-    timeoutMs: options.timeoutMs,
-    resolver: options.resolver,
-    transport: options.transport,
-  });
-  let title = inferTitleFromSource(fetched.finalUrl);
-  const isPdf =
-    fetched.contentType === "application/pdf" ||
-    new URL(fetched.finalUrl).pathname.toLowerCase().endsWith(".pdf");
-  if (isPdf) {
-    const dir = mkdtempSync(join(tmpdir(), "agentbrain-pdf-"));
-    const path = join(dir, "document.pdf");
-    try {
-      writeFileSync(path, fetched.data);
-      return {
-        source_type: "url_pdf",
-        source_uri: fetched.finalUrl,
-        title,
-        content: extractPdf(path, maxBytes),
-        content_type: fetched.contentType,
-      };
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-
-  const decoded = decodeBytes(fetched.data);
-  const isHtml =
-    fetched.contentType.includes("html") ||
-    fetched.contentType.includes("xml") ||
-    /<html|<!doctype/i.test(decoded.slice(0, 1000));
-  let content: string;
-  let sourceType: "url" | "url_text";
-  if (isHtml) {
-    const extracted = extractHtmlText(decoded);
-    content = extracted.content;
-    title = extracted.title || title;
-    sourceType = "url";
-  } else {
-    content = cleanText(decoded);
-    sourceType = "url_text";
-  }
-  return {
-    source_type: sourceType,
-    source_uri: fetched.finalUrl,
-    title,
-    content,
-    content_type: fetched.contentType,
   };
 }

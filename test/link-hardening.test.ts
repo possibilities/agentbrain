@@ -23,16 +23,13 @@ function xScrape(requested: string, reported = requested): ScrapedLink {
     success: true,
     url: reported,
     requested_url: requested,
-    preset: "x-tweet",
     markdown: "X child",
     content: "X child",
-    structured: {},
-    links: null,
     size_chars: 7,
   };
 }
 
-test("external children use safe extraction while only canonical X children use browser scraping", async () => {
+test("external and X children use the same Scrapectl scrape provider", async () => {
   const research = store();
   const routes: string[] = [];
   const result = await ingestPrescrapedLink(
@@ -48,32 +45,48 @@ test("external children use safe extraction while only canonical X children use 
       },
     },
     {
-      ensurePublicUrl: async (url) => routes.push(`preflight:${url}`),
-      extractExternal: async (url) => {
-        routes.push(`safe:${url}`);
-        return {
-          source_type: "url",
-          source_uri: url,
-          title: "External",
-          content: "externally fetched text",
-        };
-      },
-      scrapeX: async (url) => {
-        routes.push(`browser:${url}`);
+      scrape: async (url) => {
+        routes.push(url);
         return xScrape(url);
       },
     },
   );
   expect(result.success).toBe(true);
   expect(routes).toEqual([
-    "safe:https://example.com/story",
-    "preflight:https://twitter.com/child/status/2",
-    "browser:https://twitter.com/child/status/2",
+    "https://example.com/story",
+    "https://twitter.com/child/status/2",
   ]);
   research.close();
 });
 
-test("X browser result must canonicalize to the same requested item", async () => {
+test("generic completed roots never trigger child scraping", async () => {
+  const research = store();
+  const calls: string[] = [];
+  const result = await ingestPrescrapedLink(
+    research,
+    {
+      url: "https://example.com/root",
+      markdown: "already scraped root with https://fallback.example/ignored",
+      structured: {
+        links: [
+          { url: "https://child.example/ignored" },
+          { url: "https://x.com/child/status/8" },
+        ],
+      },
+    },
+    {
+      scrape: async (url) => {
+        calls.push(url);
+        return xScrape(url);
+      },
+    },
+  );
+  expect(result).toMatchObject({ success: true, linked_count: 0 });
+  expect(calls).toEqual([]);
+  research.close();
+});
+
+test("child identity remains the requested canonical URL instead of provider-reported metadata", async () => {
   const research = store();
   const result = await ingestPrescrapedLink(
     research,
@@ -83,19 +96,18 @@ test("X browser result must canonicalize to the same requested item", async () =
       structured: { links: [{ url: "https://x.com/child/status/2" }] },
     },
     {
-      ensurePublicUrl: async () => undefined,
-      scrapeX: async (url) => xScrape(url, "https://x.com/attacker/status/3"),
+      scrape: async (url) => xScrape(url, "https://x.com/attacker/status/3"),
     },
   );
   expect(result).toMatchObject({
-    success: false,
+    success: true,
     root_success: true,
-    linked_failed_count: 1,
+    linked_failed_count: 0,
   });
-  expect(result.linked_results[0].error).toContain(
-    "did not match the requested canonical X item",
-  );
-  expect(result.linked_results[0].relation).toMatchObject({ status: "failed" });
+  expect(result.linked_results[0].relation).toMatchObject({
+    status: "success",
+    resolved_url: "https://x.com/i/status/2",
+  });
   research.close();
 });
 
@@ -159,7 +171,7 @@ test("child failures persist and emit only sanitized bounded errors", async () =
       structured: { links: [{ url: "https://example.com/failure" }] },
     },
     {
-      extractExternal: async () => {
+      scrape: async () => {
         throw new Error(
           `Authorization: Bearer persist.secret token=db-secret ${"z".repeat(1000)} secret=tail-secret`,
         );

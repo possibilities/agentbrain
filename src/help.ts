@@ -20,7 +20,7 @@ export const COMMANDS = [
   },
   {
     name: "ingest",
-    summary: "Index text, a file/directory, or a safe public URL",
+    summary: "Index text, a file/directory, or a URL via Scrapectl",
   },
   {
     name: "ingest-link",
@@ -72,7 +72,8 @@ Agent defaults:
 
 Search/get/stats/tags/sources/context use structurally read-only SQLite connections.
 Mutations use a separate writable schema-v2 store. Linkctl owns link admission and duplicate policy;
-Scrapectl owns its queue and extraction; Agentbrain owns indexing completed payloads.
+Scrapectl owns URL fetching, browser/session behavior, backend hardening/retries, and extraction;
+Agentbrain retries only transient provider-command availability, indexes completed markdown, and never falls back to direct HTTP.
 Use --help on any command for command-specific options.
 `;
 
@@ -163,16 +164,23 @@ Options:
   --notes <text>      Store notes
   --recursive=<bool>  Recurse through directories (default: true)
   --max-files <n>     Directory success cap (default: 300; max: 5000)
-  --max-bytes <n>     Per-file/response byte limit (default: 5000000)
+  --max-bytes <n>     Per-file or extracted-URL markdown cap (default: 5000000)
   --force             Rewrite chunks even if content and metadata are unchanged
   --skip-secrets=<b>  Skip sensitive files/path components (default: true)
   --json              Emit the normal Agentbrain envelope with read_only=false
 
 Directory traversal streams entries and caps traversal at 20000 entries / 10000
-supported candidates in addition to --max-files. URL ingestion permits only public
-HTTP(S): every DNS answer is checked,
-a vetted address is pinned to the socket, and every bounded redirect is freshly resolved.
-PDF extraction requires pdftotext on PATH.
+supported candidates in addition to --max-files. URL ingestion validates HTTP(S) syntax,
+then invokes PATH-resolved \`scrapectl fetch-markdown --markdown URL\` without a shell.
+Scrapectl selects extraction presets and emits final Markdown; Agentbrain does not render
+provider schemas. \`--max-bytes\` caps accepted Markdown. The normalized requested URL is
+the stable identity, and title comes from --title or Markdown. Scrapectl owns all URL
+fetching, browser/session behavior, DNS/redirect/backend security/retries, and extraction.
+Agentbrain retries only transient CLI/backend availability with bounded exponential
+backoff (default 1s..30s; env AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS and
+AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS accept 100..3600000ms, otherwise defaults). Auth,
+invalid input, empty output, and oversized
+content stop without retry. Local PDF extraction requires pdftotext on PATH.
 `,
   "ingest-link": `agentbrain ingest-link — index a completed scraped link
 
@@ -184,10 +192,12 @@ source, title, category, tags, summary, notes, preset, and save_markdown_copy. R
 is capped at 10000000 bytes; markdown is capped at 5000000 UTF-8 bytes and 5000000
 Unicode code points. Invalid/oversize input is rejected before the database is opened.
 
-Generic roots are indexed without re-scraping. For one-hop children, external HTTP(S)
-is fetched by Agentbrain's DNS-pinned safe transport; only canonical X status/article
-items may use browser Scrapectl, with public preflight and same-item postvalidation.
-There is never a second child hop. The X browser route retains residual DNS/browser risk.
+Every completed root is indexed without re-scraping it. Generic roots do not fan out.
+Every discovered one-hop child from an X root (external and X alike) is extracted through
+the same Scrapectl provider adapter.
+Agentbrain performs no DNS/network checks, direct HTTP fallback, or X-specific extraction
+route. Transient provider-command availability retries automatically; permanent failure is
+recorded as a child failure. There is never a second child hop.
 
 Optional artifacts are written below XDG_DATA_HOME/agentbrain/scraped (default
 ~/.local/share/agentbrain/scraped). Artifact failure leaves the root committed and is a
@@ -195,8 +205,8 @@ partial result. Exit 0 means complete; exit 1 means invalid/root failure; exit 2
 a root-success child/artifact partial. The separate research-ingest-link adapter uses
 the same limits/exits but emits temporary legacy bare JSON.
 
-Linkctl owns admission/duplicates. Scrapectl owns queueing/extraction. Agentbrain
-owns the research index.
+Linkctl owns admission/duplicates. Scrapectl owns queueing and URL extraction.
+Agentbrain owns the research index.
 `,
   delete: `agentbrain delete — delete one indexed document
 

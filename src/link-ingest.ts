@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -6,45 +5,23 @@ import {
   type CompletedLinkPayload,
   validateCompletedLinkPayload,
 } from "./completed-link-input";
-import { findExecutable } from "./executable";
-import { DEFAULT_MAX_BYTES, type ExtractedSource, extractUrl } from "./extract";
+import { DEFAULT_MAX_BYTES } from "./extract";
 import { sanitizeExternalError } from "./sanitize";
+import { type ScrapeProvider, scrapeWithScrapectl } from "./scrapectl";
 import type {
   DocumentLinkResult,
   ResearchStore,
   UpsertDocumentResult,
 } from "./store";
-import { codePointLength } from "./text";
-import {
-  assertSafePublicUrl,
-  normalizedWebUrl,
-  validateHttpUrl,
-} from "./url-safety";
+import { canonicalizeSource, validateHttpUrl } from "./url";
 
 const URL_RE = /https?:\/\/[^\s<>'"\])}]+/gi;
-const X_STATUS_PATH_RE = /^\/(?:i|[A-Za-z0-9_]{1,20})\/status\/(\d+)(?:\/|$)/i;
-const X_ARTICLE_PATH_RE =
-  /^\/(?:i\/article|[A-Za-z0-9_]{1,20}\/articles?)\/(\d+)(?:\/|$)/i;
-const PRIVATE_PATH_RE =
-  /\/(account|accounts|billing|dashboard|settings|admin|messages|dm|inbox|private)(\/|$)/i;
 
 export const LINKED_FAN_OUT_LIMIT = 25;
 
-export type CanonicalSourceType = "tweet" | "tweet_article" | "scraped_url";
-
 export type { CompletedLinkPayload } from "./completed-link-input";
-
-export interface ScrapedLink {
-  success: true;
-  url: string;
-  requested_url: string;
-  preset: string | null;
-  markdown: string;
-  content: string;
-  structured: unknown;
-  links: unknown;
-  size_chars: number;
-}
+export type { ScrapedLink } from "./scrapectl";
+export { type CanonicalSourceType, canonicalizeSource } from "./url";
 
 export interface LinkedResult {
   success: boolean;
@@ -75,9 +52,7 @@ export interface LinkIngestResult {
 }
 
 export interface LinkIngestDependencies {
-  ensurePublicUrl?: (url: string) => Promise<unknown>;
-  scrapeX?: (url: string, preset?: string | null) => Promise<ScrapedLink>;
-  extractExternal?: (url: string) => Promise<ExtractedSource>;
+  scrape?: ScrapeProvider;
   writeArtifact?: (path: string, markdown: string) => void;
   scrapeLinked?: boolean;
   scrapectlTimeoutMs?: number;
@@ -85,39 +60,6 @@ export interface LinkIngestDependencies {
 
 function validateUrl(input: string): string {
   return validateHttpUrl(input).toString();
-}
-
-function isXHost(input: string): boolean {
-  try {
-    const host = new URL(input).hostname.toLowerCase();
-    return ["x.com", "www.x.com", "twitter.com", "www.twitter.com"].includes(
-      host,
-    );
-  } catch {
-    return false;
-  }
-}
-
-function xStatusId(input: string): string | null {
-  if (!isXHost(input)) return null;
-  return validateHttpUrl(input).pathname.match(X_STATUS_PATH_RE)?.[1] ?? null;
-}
-
-function xArticleId(input: string): string | null {
-  if (!isXHost(input)) return null;
-  return validateHttpUrl(input).pathname.match(X_ARTICLE_PATH_RE)?.[1] ?? null;
-}
-
-export function canonicalizeSource(
-  input: string,
-): [CanonicalSourceType, string] {
-  const normalized = normalizedWebUrl(input);
-  const statusId = xStatusId(normalized);
-  if (statusId) return ["tweet", `https://x.com/i/status/${statusId}`];
-  const articleId = xArticleId(normalized);
-  if (articleId)
-    return ["tweet_article", `https://x.com/i/article/${articleId}`];
-  return ["scraped_url", normalized];
 }
 
 function extractUrlCandidates(text: string): string[] {
@@ -198,15 +140,13 @@ export function extractOutboundLinks(
   const output: string[] = [];
   const seen = new Set<string>();
   for (const candidate of candidates) {
-    let type: CanonicalSourceType = "scraped_url";
     let key = candidate;
     try {
-      [type, key] = canonicalizeSource(candidate);
+      [, key] = canonicalizeSource(candidate);
     } catch {
       // Preserve unsafe but syntactically discovered URLs for failed provenance.
     }
     if (key === sourceKey || seen.has(key)) continue;
-    if (isXHost(candidate) && type === "scraped_url") continue;
     seen.add(key);
     output.push(candidate);
   }
@@ -339,166 +279,7 @@ function artifactPath(url: string, title: string): string {
   );
 }
 
-function structuredMarkdown(raw: Record<string, unknown>): string {
-  if (Array.isArray(raw.tweets)) {
-    const parts: string[] = [];
-    const authorName = String(raw.author_name ?? "").trim();
-    const authorHandle = String(raw.author_handle ?? "")
-      .trim()
-      .replace(/^@/, "");
-    const authorUrl = String(raw.author_url ?? "").trim();
-    const display =
-      authorName && authorHandle
-        ? `${authorName} (@${authorHandle})`
-        : authorName || (authorHandle ? `@${authorHandle}` : "");
-    if (display)
-      parts.push(
-        authorUrl
-          ? `**Author**: [${display}](${authorUrl})`
-          : `**Author**: ${display}`,
-      );
-    const blocks: string[] = [];
-    for (const item of raw.tweets) {
-      if (item === null || typeof item !== "object" || Array.isArray(item))
-        continue;
-      const tweet = item as Record<string, unknown>;
-      const block = [String(tweet.text ?? "").trim()];
-      const timestamp = String(tweet.timestamp ?? "").trim();
-      const permalink = String(tweet.permalink ?? "").trim();
-      if (timestamp && permalink) block.push(`[${timestamp}](${permalink})`);
-      else if (timestamp) block.push(timestamp);
-      else if (permalink) block.push(permalink);
-      const rendered = block.filter(Boolean).join("\n\n");
-      if (rendered) blocks.push(rendered);
-    }
-    if (blocks.length > 0) parts.push(blocks.join("\n\n---\n\n"));
-    const quoted = raw.quoted_tweet;
-    if (
-      quoted !== null &&
-      typeof quoted === "object" &&
-      !Array.isArray(quoted)
-    ) {
-      const text = String(
-        (quoted as Record<string, unknown>).text ?? "",
-      ).trim();
-      if (text)
-        parts.push(
-          `**Quoted Tweet:**\n${text
-            .split("\n")
-            .map((line) => (line ? `> ${line}` : ">"))
-            .join("\n")}`,
-        );
-    }
-    return parts.join("\n\n").trim();
-  }
-  if (Array.isArray(raw.turns)) {
-    return raw.turns
-      .filter(
-        (turn) =>
-          turn !== null && typeof turn === "object" && !Array.isArray(turn),
-      )
-      .map((turn) => {
-        const record = turn as Record<string, unknown>;
-        const roleText = String(record.role ?? "Unknown")
-          .trim()
-          .toLowerCase();
-        const role =
-          roleText.length > 0
-            ? `${roleText[0].toUpperCase()}${roleText.slice(1)}`
-            : "Unknown";
-        const content = String(record.content ?? "").trim();
-        return content ? `## ${role}\n\n${content}` : `## ${role}`;
-      })
-      .join("\n\n---\n\n")
-      .trim();
-  }
-  return "";
-}
-
-function privateish(input: string, preset?: string | null): boolean {
-  return (
-    PRIVATE_PATH_RE.test(validateHttpUrl(input).pathname) ||
-    /billing|usage|account|dashboard/i.test(preset ?? "")
-  );
-}
-
-export function runScrapectl(
-  url: string,
-  preset: string | null,
-  timeoutMs: number,
-): ScrapedLink {
-  const executable = findExecutable("scrapectl");
-  if (!executable) throw new Error("scrapectl is not installed on PATH");
-  const inferredPreset =
-    preset ||
-    (xStatusId(url) ? "x-tweet" : xArticleId(url) ? "x-article" : null);
-  if (privateish(url, inferredPreset)) {
-    throw new Error(
-      "refusing to scrape likely private/account/billing/dashboard/DM URL",
-    );
-  }
-  const args = ["fetch-markdown", "--json"];
-  if (inferredPreset) args.push("--preset", inferredPreset);
-  args.push(url);
-  const result = spawnSync(executable, args, {
-    encoding: "utf8",
-    timeout: timeoutMs,
-    maxBuffer: 20_000_000,
-  });
-  if (result.error) throw new Error(sanitizeExternalError(result.error));
-  if (result.status !== 0) {
-    const detail = result.stderr.trim();
-    throw new Error(
-      sanitizeExternalError(
-        detail || `scrapectl exited ${result.status ?? "without status"}`,
-      ),
-    );
-  }
-  const stdout = result.stdout.trim();
-  let raw: Record<string, unknown>;
-  if (!stdout) raw = { success: true };
-  else {
-    try {
-      const parsed: unknown = JSON.parse(stdout);
-      raw =
-        parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : { content: stdout };
-    } catch {
-      raw = { content: stdout };
-    }
-  }
-  const markdownValue = raw.markdown ?? raw.content ?? raw.text;
-  const markdown =
-    typeof markdownValue === "string" && markdownValue.trim()
-      ? markdownValue
-      : structuredMarkdown(raw);
-  if (!markdown.trim()) throw new Error("scrape returned no markdown/content");
-  let resolvedUrl = url;
-  for (const key of ["resolved_url", "final_url", "url"]) {
-    const candidate = raw[key];
-    if (typeof candidate !== "string") continue;
-    try {
-      resolvedUrl = validateUrl(candidate);
-      break;
-    } catch {
-      // Ignore malformed scraper metadata.
-    }
-  }
-  return {
-    success: true,
-    url: resolvedUrl,
-    requested_url: url,
-    preset: inferredPreset,
-    markdown,
-    content: markdown,
-    structured: raw.structured ?? raw,
-    links: raw.links,
-    size_chars: codePointLength(markdown),
-  };
-}
-
-/** Commit an already-scraped root, then attempt exactly one child hop for X roots. */
+/** Commit an already-scraped root, then attempt exactly one provider-backed child hop. */
 export async function ingestPrescrapedLink(
   store: ResearchStore,
   unvalidatedPayload: CompletedLinkPayload,
@@ -549,8 +330,7 @@ export async function ingestPrescrapedLink(
     summary: payload.summary || "",
     source: jsonSafe(source),
     origin,
-    scraper:
-      origin === "arthack-scrapectl" ? "arthack scrapectl/browserctl" : origin,
+    scraper: origin === "arthack-scrapectl" ? "arthack scrapectl" : origin,
     preset,
     structured_metadata: metadata,
     original_url: url,
@@ -592,19 +372,7 @@ export async function ingestPrescrapedLink(
     shouldScrape &&
     (sourceType === "tweet" || sourceType === "tweet_article")
   ) {
-    const ensurePublic = dependencies.ensurePublicUrl ?? assertSafePublicUrl;
-    const scrapeX =
-      dependencies.scrapeX ??
-      (async (childUrl, childPreset) =>
-        runScrapectl(
-          childUrl,
-          childPreset ?? null,
-          dependencies.scrapectlTimeoutMs ?? 120_000,
-        ));
-    const extractExternal =
-      dependencies.extractExternal ??
-      (async (childUrl: string) =>
-        extractUrl(childUrl, { maxBytes: DEFAULT_MAX_BYTES }));
+    const scrape = dependencies.scrape ?? scrapeWithScrapectl;
     const discoveredLinks = extractOutboundLinks(
       canonicalUrl,
       payload.markdown,
@@ -614,37 +382,16 @@ export async function ingestPrescrapedLink(
     linkedTruncated = linkedDiscoveredCount > LINKED_FAN_OUT_LIMIT;
     for (const linkedUrl of discoveredLinks.slice(0, LINKED_FAN_OUT_LIMIT)) {
       try {
-        const [linkedType, linkedCanonicalUrl] = canonicalizeSource(linkedUrl);
-        let childPayload: CompletedLinkPayload;
-        if (linkedType === "tweet" || linkedType === "tweet_article") {
-          await ensurePublic(linkedUrl);
-          const scraped = await scrapeX(linkedUrl, null);
-          const [reportedType, reportedCanonicalUrl] = canonicalizeSource(
-            scraped.url,
-          );
-          if (
-            reportedType !== linkedType ||
-            reportedCanonicalUrl !== linkedCanonicalUrl
-          ) {
-            throw new Error(
-              "Scrapectl resolved URL did not match the requested canonical X item",
-            );
-          }
-          childPayload = {
-            url: scraped.url,
-            markdown: scraped.markdown,
-            structured: scraped.structured,
-            preset: scraped.preset ?? undefined,
-          };
-        } else {
-          const extracted = await extractExternal(linkedUrl);
-          childPayload = {
-            url: extracted.source_uri,
-            markdown: extracted.content,
-            title: extracted.title,
-            structured: {},
-          };
-        }
+        canonicalizeSource(linkedUrl);
+        const scraped = await scrape(linkedUrl, {
+          maxMarkdownBytes: DEFAULT_MAX_BYTES,
+          maxMarkdownCodePoints: DEFAULT_MAX_BYTES,
+          timeoutMs: dependencies.scrapectlTimeoutMs,
+        });
+        const childPayload: CompletedLinkPayload = {
+          url: linkedUrl,
+          markdown: scraped.markdown,
+        };
         const child = await ingestPrescrapedLink(
           store,
           {

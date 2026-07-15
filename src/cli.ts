@@ -33,7 +33,7 @@ import {
 import { ResearchStore } from "./store";
 import { normalizeTags } from "./text";
 import type { GlobalOptions, SearchMode } from "./types";
-import { validateHttpUrl } from "./url-safety";
+import { validateHttpUrl } from "./url";
 
 const COMMAND_NAMES = new Set(COMMANDS.map((c) => c.name));
 const READ_COMMANDS = new Set([

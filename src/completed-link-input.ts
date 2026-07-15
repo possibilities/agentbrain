@@ -1,6 +1,6 @@
 import { DEFAULT_MAX_BYTES } from "./extract";
 import { codePointLength } from "./text";
-import { validateHttpUrl } from "./url-safety";
+import { validateHttpUrl } from "./url";
 
 export const COMPLETED_LINK_MARKDOWN_MAX_BYTES = DEFAULT_MAX_BYTES;
 export const COMPLETED_LINK_MARKDOWN_MAX_CODE_POINTS = DEFAULT_MAX_BYTES;

@@ -7,17 +7,19 @@ export function buildGuide(): unknown {
     architecture: {
       botctl: "Human-facing saved-link ingress.",
       linkctl: "Link admission and duplicate policy.",
-      scrapectl: "Queue ownership and browser-backed extraction.",
+      scrapectl:
+        "Queue ownership plus all URL fetching, browser/session behavior, backend hardening/retries, and extraction.",
       agentbrain:
-        "Index schema, migrations, generic ingestion, completed-link writes, search, retrieval, context, and deletion.",
+        "Index schema, migrations, local ingestion, Scrapectl-provider URL ingestion, completed-link writes, search, retrieval, context, and deletion.",
       boundary:
-        "Agentbrain has no link queue or browser implementation. External one-hop children use Agentbrain's pinned safe fetch; only canonical X status/article children may use Scrapectl, with preflight and same-item postvalidation.",
-      decision_record: "docs/adr/0001-agentbrain-owns-research-index.md",
+        "Agentbrain has no link queue, browser implementation, direct HTTP fallback, DNS/redirect policy, or network scraper. URL ingestion and every one-hop child discovered from a completed X root call Scrapectl as the sole URL extractor/backend; Agentbrain retries only transient provider-command availability and indexes completed markdown.",
+      decision_record:
+        "docs/adr/0001-agentbrain-owns-research-index.md and docs/adr/0002-scrapectl-owns-url-extraction.md",
       glossary: "CONTEXT.md",
     },
     source_types: {
-      x: ["tweet", "tweet_article", "scraped_url"],
-      generic: ["text", "file", "url", "url_text", "url_pdf"],
+      x: ["tweet", "tweet_article"],
+      generic: ["scraped_url", "text", "file", "url", "url_text", "url_pdf"],
       note: "X identities canonicalize to x.com/i/status/ID and x.com/i/article/ID.",
     },
     global_flags: [
@@ -103,9 +105,9 @@ export function buildGuide(): unknown {
       get: "Evidence retrieval by document id, chunk id, or source URI.",
       context: "Bounded compact citation-ready hits for shell-enabled agents.",
       ingest:
-        "Index text, files/directories, public URLs, HTML/text, PDF, DOCX, and EPUB.",
+        "Index text, files/directories, local PDF/DOCX/EPUB, and URL markdown extracted by Scrapectl.",
       "ingest-link":
-        "Read one bounded already-scraped root from stdin; external children use pinned safe fetch, canonical X children may use validated browser Scrapectl, and traversal stops after one hop.",
+        "Read one bounded already-scraped root from stdin; generic roots do not fan out, while every child discovered from an X root uses the same Scrapectl provider adapter and traversal stops after one hop.",
       delete: "Delete exactly one selected document with --confirm delete.",
       tags: "Tag discovery.",
       sources: "Source-type and domain discovery.",
@@ -116,9 +118,9 @@ export function buildGuide(): unknown {
         "Read commands open SQLite with mode=ro/readonly and never initialize or migrate.",
       writes:
         "Only the separate ResearchStore creates/migrates schema-v2 or mutates documents, chunks, FTS, and relations.",
-      urls: "Generic URL fetches resolve/check every DNS address, pin one vetted IP to the socket while preserving Host/TLS verification, verify remoteAddress, and freshly resolve each manual bounded redirect.",
-      x_browser_residual:
-        "Canonical X child extraction requires Scrapectl's browser. Agentbrain preflights the X URL and rejects a reported URL that is not the same canonical X item, but cannot pin or inspect the browser's own network socket.",
+      urls: "Agentbrain validates only HTTP(S) URL syntax and invokes `scrapectl fetch-markdown --markdown URL` without a shell. Scrapectl selects presets, owns URL fetching/browser/session/DNS/redirect/backend security and retries, and emits final Markdown; Agentbrain does not render provider schemas. The requested URL is the stable identity. Agentbrain retries only classified transient provider-command unavailability with bounded exponential backoff; permanent provider/input/content failures stop, and there is no direct HTTP fallback.",
+      local_documents:
+        "Text/file/directory/PDF/DOCX/EPUB parsing remains local Agentbrain ingestion, with pdftotext required for local PDFs.",
       directories:
         "Traversal streams entries, caps at 20000 entries/10000 supported candidates, and skips sensitive path components by default.",
       deletion: "Requires exactly one selector and literal --confirm delete.",
@@ -151,7 +153,7 @@ Document:
 2. Exact --json examples and the citation fields.
 3. Zero-result recovery through alternate terms, tags, and sources.
 4. Generic explicit ingestion and guarded deletion.
-5. The ownership boundary: Botctl is human ingress, Linkctl admits/deduplicates, Scrapectl owns queue/extraction, and Agentbrain solely owns index reads/writes; Agentbrain has no queue/browser.
+5. The ownership boundary: Botctl is human ingress, Linkctl admits/deduplicates, Scrapectl owns queue and all URL extraction/network/backend behavior, and Agentbrain solely owns index reads/writes; Agentbrain has no queue/browser/network scraper.
 6. Completed-link stdin ingestion and the temporary research-ingest-link compatibility adapter.
 7. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.hermes/research-cache/research.db.
 
