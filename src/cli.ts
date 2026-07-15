@@ -1,29 +1,88 @@
 #!/usr/bin/env bun
+import { existsSync } from "node:fs";
 import {
   optBoolean,
   optNumber,
   optString,
+  optStrings,
   parseOptions,
   parseTopLevel,
 } from "./args";
+import {
+  type CompletedLinkPayload,
+  readCompletedLinkPayload,
+} from "./completed-link-input";
 import { ResearchCache } from "./db";
 import { CliError } from "./errors";
 import { errorEnvelope, writeByFormat, writeJson } from "./format";
 import { buildGuide, HARNESS_DOCS_PROMPT } from "./guide";
 import { COMMANDS, helpFor, TOP_HELP, VERSION } from "./help";
+import { type IngestSourceType, ingestSource } from "./ingest";
+import { ingestPrescrapedLink } from "./link-ingest";
 import {
   humanChunk,
+  humanContext,
   humanDocument,
+  humanMutation,
   humanSearch,
   humanSources,
   humanStats,
   humanTags,
   searchJsonl,
 } from "./render";
+import { ResearchStore } from "./store";
+import { normalizeTags } from "./text";
 import type { GlobalOptions, SearchMode } from "./types";
+import { validateHttpUrl } from "./url-safety";
 
 const COMMAND_NAMES = new Set(COMMANDS.map((c) => c.name));
-const DB_COMMANDS = new Set(["stats", "search", "get", "tags", "sources"]);
+const READ_COMMANDS = new Set([
+  "stats",
+  "search",
+  "get",
+  "tags",
+  "sources",
+  "context",
+]);
+const MUTATION_COMMANDS = new Set(["ingest", "ingest-link", "delete"]);
+
+interface IngestRequest {
+  source: string;
+  sourceType: IngestSourceType;
+  title?: string;
+  tags: string[];
+  notes?: string;
+  recursive: boolean;
+  maxFiles: number;
+  maxBytes: number;
+  force: boolean;
+  skipSecrets: boolean;
+}
+
+interface DeleteRequest {
+  documentId?: number;
+  sourceUri?: string;
+  confirm: "delete";
+}
+
+const INGEST_OPTION_SPECS = {
+  "source-type": { type: "string", default: "auto" },
+  title: { type: "string" },
+  tag: { type: "string", multiple: true },
+  tags: { type: "string", multiple: true },
+  notes: { type: "string" },
+  recursive: { type: "boolean", default: true },
+  "max-files": { type: "number", default: 300 },
+  "max-bytes": { type: "number", default: 5000000 },
+  force: { type: "boolean", default: false },
+  "skip-secrets": { type: "boolean", default: true },
+} as const;
+
+const DELETE_OPTION_SPECS = {
+  "document-id": { type: "number" },
+  "source-uri": { type: "string" },
+  confirm: { type: "string" },
+} as const;
 
 async function runParsed(
   parsed: ReturnType<typeof parseTopLevel>,
@@ -77,40 +136,79 @@ async function runParsed(
     return;
   }
 
-  if (!DB_COMMANDS.has(command)) {
-    throw new CliError(
-      "unimplemented_command",
-      `command '${command}' is not implemented`,
-    );
+  if (READ_COMMANDS.has(command)) {
+    const cache = new ResearchCache(parsed.globals.dbPath);
+    try {
+      switch (command) {
+        case "stats":
+          runStats(cache, parsed.commandArgv, parsed.globals);
+          break;
+        case "search":
+          runSearch(cache, parsed.commandArgv, parsed.globals);
+          break;
+        case "get":
+          runGet(cache, parsed.commandArgv, parsed.globals);
+          break;
+        case "tags":
+          runTags(cache, parsed.commandArgv, parsed.globals);
+          break;
+        case "sources":
+          runSources(cache, parsed.commandArgv, parsed.globals);
+          break;
+        case "context":
+          runContext(cache, parsed.commandArgv, parsed.globals);
+          break;
+      }
+    } finally {
+      cache.close();
+    }
+    return;
   }
 
-  const cache = new ResearchCache(parsed.globals.dbPath);
-  try {
-    switch (command) {
-      case "stats":
-        runStats(cache, parsed.commandArgv, parsed.globals);
-        break;
-      case "search":
-        runSearch(cache, parsed.commandArgv, parsed.globals);
-        break;
-      case "get":
-        runGet(cache, parsed.commandArgv, parsed.globals);
-        break;
-      case "tags":
-        runTags(cache, parsed.commandArgv, parsed.globals);
-        break;
-      case "sources":
-        runSources(cache, parsed.commandArgv, parsed.globals);
-        break;
-      default:
-        throw new CliError(
-          "unimplemented_command",
-          `command '${command}' is not implemented`,
-        );
-    }
-  } finally {
-    cache.close();
+  if (command === "ingest-link") {
+    await runIngestLink(
+      parsed.globals.dbPath,
+      parsed.commandArgv,
+      parsed.globals,
+    );
+    return;
   }
+
+  if (MUTATION_COMMANDS.has(command)) {
+    if (command === "ingest") {
+      const request = parseIngestRequest(parsed.commandArgv);
+      const store = new ResearchStore(parsed.globals.dbPath);
+      try {
+        await executeIngest(store, request, parsed.globals);
+      } finally {
+        store.close();
+      }
+      return;
+    }
+
+    if (command === "delete") {
+      const request = parseDeleteRequest(parsed.commandArgv);
+      if (!existsSync(parsed.globals.dbPath)) {
+        throw new CliError(
+          "db_not_found",
+          `research cache DB not found: ${parsed.globals.dbPath}`,
+          { hint: "Pass --db PATH or set AGENTBRAIN_DB." },
+        );
+      }
+      const store = new ResearchStore(parsed.globals.dbPath);
+      try {
+        executeDelete(store, request, parsed.globals);
+      } finally {
+        store.close();
+      }
+      return;
+    }
+  }
+
+  throw new CliError(
+    "unimplemented_command",
+    `command '${command}' is not implemented`,
+  );
 }
 
 function runStats(
@@ -252,6 +350,170 @@ function runSources(
   );
 }
 
+function runContext(
+  cache: ResearchCache,
+  argv: string[],
+  globals: GlobalOptions,
+): void {
+  const opts = parseOptions(argv, {
+    query: { type: "string" },
+    limit: { type: "number", default: 6 },
+    "max-chars": { type: "number", default: 12000 },
+  });
+  const query = optString(opts, "query") ?? opts._.join(" ");
+  const data = cache.context({
+    query,
+    limit: optNumber(opts, "limit"),
+    maxChars: optNumber(opts, "max-chars"),
+  });
+  writeByFormat("context", data, globals, humanContext);
+}
+
+function parseIngestRequest(argv: string[]): IngestRequest {
+  const opts = parseOptions(argv, INGEST_OPTION_SPECS);
+  if (opts._.length !== 1) {
+    throw new CliError(
+      "bad_source",
+      "ingest requires exactly one <source> positional argument",
+      { exitCode: 2 },
+    );
+  }
+  const sourceType = optString(opts, "source-type") ?? "auto";
+  if (!["auto", "url", "file", "directory", "text"].includes(sourceType)) {
+    throw new CliError(
+      "bad_source_type",
+      `unknown source type '${sourceType}'`,
+      { exitCode: 2, hint: "Use auto, url, file, directory, or text." },
+    );
+  }
+  const source = opts._[0].trim();
+  if (!source) {
+    throw new CliError("bad_source", "ingest source must not be empty", {
+      exitCode: 2,
+    });
+  }
+  if (sourceType === "url") {
+    try {
+      validateHttpUrl(source);
+    } catch (error) {
+      throw new CliError(
+        "bad_source",
+        error instanceof Error ? error.message : String(error),
+        { exitCode: 2 },
+      );
+    }
+  }
+  return {
+    source,
+    sourceType: sourceType as IngestSourceType,
+    title: optString(opts, "title"),
+    tags: [...optStrings(opts, "tag"), ...optStrings(opts, "tags")].flatMap(
+      (tag) => normalizeTags(tag),
+    ),
+    notes: optString(opts, "notes"),
+    recursive: optBoolean(opts, "recursive"),
+    maxFiles: assertPositiveInteger(
+      optNumber(opts, "max-files") ?? 300,
+      "max-files",
+    ),
+    maxBytes: assertPositiveInteger(
+      optNumber(opts, "max-bytes") ?? 5000000,
+      "max-bytes",
+    ),
+    force: optBoolean(opts, "force"),
+    skipSecrets: optBoolean(opts, "skip-secrets"),
+  };
+}
+
+async function executeIngest(
+  store: ResearchStore,
+  request: IngestRequest,
+  globals: GlobalOptions,
+): Promise<void> {
+  const result = await ingestSource(store, request);
+  writeByFormat("ingest", result, globals, humanMutation, { readOnly: false });
+}
+
+async function runIngestLink(
+  dbPath: string,
+  argv: string[],
+  globals: GlobalOptions,
+): Promise<void> {
+  const opts = parseOptions(argv, {});
+  if (opts._.length > 0) {
+    throw new CliError(
+      "unexpected_args",
+      "ingest-link reads its payload from stdin",
+      {
+        exitCode: 2,
+      },
+    );
+  }
+  let payload: CompletedLinkPayload;
+  try {
+    payload = await readCompletedLinkPayload();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliError("invalid_payload", message);
+  }
+  const store = new ResearchStore(dbPath);
+  try {
+    const result = await ingestPrescrapedLink(store, payload);
+    writeByFormat("ingest-link", result, globals, humanMutation, {
+      readOnly: false,
+    });
+    if (!result.success) process.exitCode = result.root_success ? 2 : 1;
+  } finally {
+    store.close();
+  }
+}
+
+function parseDeleteRequest(argv: string[]): DeleteRequest {
+  const opts = parseOptions(argv, DELETE_OPTION_SPECS);
+  if (opts._.length > 0) {
+    throw new CliError(
+      "unexpected_args",
+      `delete does not accept positional args: ${opts._.join(" ")}`,
+      { exitCode: 2 },
+    );
+  }
+  const selectors =
+    Number(opts["document-id"] !== undefined) +
+    Number(opts["source-uri"] !== undefined);
+  if (selectors !== 1) {
+    throw new CliError(
+      "bad_selector",
+      "delete requires exactly one of --document-id or --source-uri",
+      { exitCode: 2 },
+    );
+  }
+  if (optString(opts, "confirm") !== "delete") {
+    throw new CliError(
+      "confirmation_required",
+      "delete requires the explicit token --confirm delete",
+      { exitCode: 2 },
+    );
+  }
+  const documentId = optNumber(opts, "document-id");
+  return {
+    documentId:
+      documentId === undefined
+        ? undefined
+        : assertInteger(documentId, "document-id"),
+    sourceUri: optString(opts, "source-uri"),
+    confirm: "delete",
+  };
+}
+
+function executeDelete(
+  store: ResearchStore,
+  request: DeleteRequest,
+  globals: GlobalOptions,
+): void {
+  const result = store.deleteDocument(request);
+  writeByFormat("delete", result, globals, humanMutation, { readOnly: false });
+}
+
 function parseSearchMode(value: string): SearchMode {
   if (value === "any" || value === "all" || value === "raw") return value;
   throw new CliError("bad_mode", `unknown search mode '${value}'`, {
@@ -266,6 +528,16 @@ function assertInteger(value: number, name: string): number {
       exitCode: 2,
     });
   return value;
+}
+
+function assertPositiveInteger(value: number, name: string): number {
+  const integer = assertInteger(value, name);
+  if (integer < 1) {
+    throw new CliError("bad_integer", `--${name} must be positive`, {
+      exitCode: 2,
+    });
+  }
+  return integer;
 }
 
 function requestsJson(argv: string[]): boolean {

@@ -1,0 +1,34 @@
+{
+  "url": "https://twitter.com/original_handle/status/123?ref=timeline",
+  "markdown": "A post with a fallback-only URL https://fallback.example/ignored and profile https://x.com/original_handle.",
+  "structured": {
+    "author_name": "Example Author",
+    "author_handle": "original_handle",
+    "tweets": [
+      {
+        "text": "A post with structured destinations.",
+        "links": [
+          {
+            "label": "opaque-7f3a",
+            "expanded_url": "https://example.com/story"
+          },
+          { "label": "duplicate", "href": "https://example.com/story" },
+          {
+            "label": "source permalink",
+            "url": "https://x.com/renamed/status/123"
+          },
+          { "label": "profile chrome", "url": "https://x.com/original_handle" },
+          {
+            "label": "longform",
+            "url": "https://twitter.com/writer/articles/987"
+          },
+          {
+            "label": "another post",
+            "url": "https://twitter.com/peer/status/456"
+          }
+        ]
+      }
+    ]
+  },
+  "source": "linkctl"
+}

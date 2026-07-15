@@ -11,6 +11,7 @@ import {
 } from "./query";
 import type {
   ChunkData,
+  ContextData,
   DocumentData,
   SearchData,
   SearchMode,
@@ -44,6 +45,12 @@ export class ResearchCache {
       readonly: true,
       strict: true,
     });
+    try {
+      this.rejectUnsupportedSchema();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -185,6 +192,71 @@ export class ResearchCache {
       },
       results,
       next_offset: rows.length > limit ? offset + limit : null,
+    };
+  }
+
+  context(input: {
+    query: string;
+    limit?: number;
+    maxChars?: number;
+  }): ContextData {
+    const limit = clampLimit(input.limit, 6, 20);
+    const maxChars = input.maxChars ?? 12_000;
+    if (!Number.isInteger(maxChars) || maxChars < 500 || maxChars > 50_000) {
+      throw new CliError(
+        "bad_max_chars",
+        "max-chars must be an integer between 500 and 50000",
+        { exitCode: 2 },
+      );
+    }
+    const search = this.search({
+      query: input.query,
+      mode: "any",
+      limit,
+      offset: 0,
+    });
+    let remaining = maxChars;
+    let returnedChars = 0;
+    let truncated = false;
+    const hits = [];
+    for (const result of search.results) {
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      const row = this.one<{
+        content: string;
+      }>("SELECT content FROM chunks WHERE id=?", [result.chunk_id]);
+      const points = Array.from(row.content);
+      const selected = points.slice(0, remaining).join("");
+      const wasTruncated = points.length > remaining;
+      returnedChars += Math.min(points.length, remaining);
+      remaining -= Math.min(points.length, remaining);
+      truncated ||= wasTruncated;
+      hits.push({
+        document_id: result.document_id,
+        chunk_id: result.chunk_id,
+        chunk_index: result.chunk_index,
+        title: result.title,
+        source_uri: result.source_uri,
+        source_type: result.source_type,
+        tags: result.tags,
+        start_char: result.start_char,
+        end_char: result.end_char,
+        score: result.score,
+        citation: `[document_id:${result.document_id} chunk_id:${result.chunk_id}] ${result.title ?? "Untitled"} — ${result.source_uri}`,
+        content: selected,
+        truncated: wasTruncated,
+      });
+    }
+    if (hits.length < search.results.length) truncated = true;
+    return {
+      query: input.query,
+      limit,
+      max_chars: maxChars,
+      returned_chars: returnedChars,
+      truncated,
+      hits,
     };
   }
 
@@ -359,6 +431,27 @@ export class ResearchCache {
        ORDER BY id ASC`,
       [documentId],
     );
+  }
+
+  private rejectUnsupportedSchema(): void {
+    if (!this.tableExists("meta")) return;
+    const row = this.oneOrNull<{ value: string }>(
+      "SELECT value FROM meta WHERE key='schema_version'",
+    );
+    if (row === null) return;
+    const version = Number(row.value);
+    if (!Number.isInteger(version)) {
+      throw new CliError(
+        "bad_schema_version",
+        "research cache schema_version is not an integer",
+      );
+    }
+    if (version > 2) {
+      throw new CliError(
+        "unsupported_schema_version",
+        `research cache schema version ${version} is newer than supported version 2`,
+      );
+    }
   }
 
   private tableExists(name: string): boolean {

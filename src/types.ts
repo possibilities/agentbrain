@@ -16,7 +16,7 @@ export interface Envelope<T> {
   data: T;
   meta: {
     db_path: string;
-    read_only: true;
+    read_only: boolean;
     generated_at: string;
   };
 }
@@ -81,6 +81,31 @@ export interface SearchData {
   };
   results: SearchResult[];
   next_offset: number | null;
+}
+
+export interface ContextHit {
+  document_id: number;
+  chunk_id: number;
+  chunk_index: number;
+  title: string | null;
+  source_uri: string;
+  source_type: string;
+  tags: string[];
+  start_char: number;
+  end_char: number;
+  score: number;
+  citation: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface ContextData {
+  query: string;
+  limit: number;
+  max_chars: number;
+  returned_chars: number;
+  truncated: boolean;
+  hits: ContextHit[];
 }
 
 export interface DocumentLink {

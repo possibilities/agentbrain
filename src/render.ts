@@ -1,6 +1,7 @@
 import { formatList } from "./format";
 import type {
   ChunkData,
+  ContextData,
   DocumentData,
   DocumentLink,
   SearchData,
@@ -134,6 +135,25 @@ export function humanChunk(data: ChunkData): string {
     data.content,
     "",
   ].join("\n");
+}
+
+export function humanContext(data: ContextData): string {
+  const lines = [
+    `Query: ${data.query}`,
+    `Hits: ${data.hits.length}`,
+    `Characters: ${data.returned_chars}/${data.max_chars}`,
+    "",
+  ];
+  for (const [index, hit] of data.hits.entries()) {
+    lines.push(`${index + 1}. ${hit.citation}`);
+    lines.push(hit.content);
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+export function humanMutation(data: unknown): string {
+  return `${JSON.stringify(data, null, 2)}\n`;
 }
 
 export function humanTags(data: TagsData): string {

@@ -1,4 +1,4 @@
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 export const COMMANDS = [
   {
@@ -13,6 +13,22 @@ export const COMMANDS = [
   {
     name: "get",
     summary: "Retrieve a full document by id/source URI or a chunk by id",
+  },
+  {
+    name: "context",
+    summary: "Return bounded citation-ready context for a query",
+  },
+  {
+    name: "ingest",
+    summary: "Index text, a file/directory, or a safe public URL",
+  },
+  {
+    name: "ingest-link",
+    summary: "Index one completed Scrapectl payload from stdin",
+  },
+  {
+    name: "delete",
+    summary: "Delete one selected document with explicit confirmation",
   },
   { name: "tags", summary: "List indexed tags with document counts" },
   { name: "sources", summary: "List source types and source domains" },
@@ -54,7 +70,9 @@ Agent defaults:
   3. Fetch selected evidence: agentbrain get --document-id <id> --json or --chunk-id <id> --json
   4. Cite document_id, chunk_id when present, title, source_uri, and relation provenance when relevant.
 
-All DB access is read-only. Ingestion arrives through the saved-link/research pipeline outside this CLI.
+Search/get/stats/tags/sources/context use structurally read-only SQLite connections.
+Mutations use a separate writable schema-v2 store. Linkctl owns link admission and duplicate policy;
+Scrapectl owns its queue and extraction; Agentbrain owns indexing completed payloads.
 Use --help on any command for command-specific options.
 `;
 
@@ -118,6 +136,75 @@ Examples:
   agentbrain get --chunk-id 4044 --json
   agentbrain get --document-id 347 --char-limit 12000 --json
   agentbrain get --source-uri https://example.com/article --full
+`,
+  context: `agentbrain context — bounded citation-ready evidence
+
+Usage:
+  agentbrain context <query> [--limit N] [--max-chars N] [--json]
+
+Options:
+  --query <text>      Query text instead of positional words
+  --limit <n>         Maximum hits (default: 6, max: 20)
+  --max-chars <n>     Total chunk-content budget (default: 12000; 500..50000)
+
+The JSON data.hits objects include document_id, chunk_id, title, source_uri,
+citation, content, offsets, tags, score, and per-hit truncation.
+`,
+  ingest: `agentbrain ingest — index a generic source
+
+Usage:
+  agentbrain ingest <source> [options]
+
+Options:
+  --source-type <t>   auto | url | file | directory | text (default: auto)
+  --title <text>      Override title
+  --tag <tag>         Add a tag; repeatable
+  --tags <tags>       Add comma/hash-separated tags; repeatable
+  --notes <text>      Store notes
+  --recursive=<bool>  Recurse through directories (default: true)
+  --max-files <n>     Directory success cap (default: 300; max: 5000)
+  --max-bytes <n>     Per-file/response byte limit (default: 5000000)
+  --force             Rewrite chunks even if content and metadata are unchanged
+  --skip-secrets=<b>  Skip sensitive files/path components (default: true)
+  --json              Emit the normal Agentbrain envelope with read_only=false
+
+Directory traversal streams entries and caps traversal at 20000 entries / 10000
+supported candidates in addition to --max-files. URL ingestion permits only public
+HTTP(S): every DNS answer is checked,
+a vetted address is pinned to the socket, and every bounded redirect is freshly resolved.
+PDF extraction requires pdftotext on PATH.
+`,
+  "ingest-link": `agentbrain ingest-link — index a completed scraped link
+
+Usage:
+  printf '%s' '{"url":"https://example.com","markdown":"# Saved"}' | agentbrain ingest-link --json
+
+Reads exactly one JSON object from stdin. Fields: url, markdown, optional structured,
+source, title, category, tags, summary, notes, preset, and save_markdown_copy. Raw stdin
+is capped at 10000000 bytes; markdown is capped at 5000000 UTF-8 bytes and 5000000
+Unicode code points. Invalid/oversize input is rejected before the database is opened.
+
+Generic roots are indexed without re-scraping. For one-hop children, external HTTP(S)
+is fetched by Agentbrain's DNS-pinned safe transport; only canonical X status/article
+items may use browser Scrapectl, with public preflight and same-item postvalidation.
+There is never a second child hop. The X browser route retains residual DNS/browser risk.
+
+Optional artifacts are written below XDG_DATA_HOME/agentbrain/scraped (default
+~/.local/share/agentbrain/scraped). Artifact failure leaves the root committed and is a
+partial result. Exit 0 means complete; exit 1 means invalid/root failure; exit 2 means
+a root-success child/artifact partial. The separate research-ingest-link adapter uses
+the same limits/exits but emits temporary legacy bare JSON.
+
+Linkctl owns admission/duplicates. Scrapectl owns queueing/extraction. Agentbrain
+owns the research index.
+`,
+  delete: `agentbrain delete — delete one indexed document
+
+Usage:
+  agentbrain delete (--document-id ID | --source-uri URI) --confirm delete [--json]
+
+Exactly one selector and the literal confirmation token are required. The document,
+chunks, and FTS rows are removed transactionally; inbound relation targets become null.
 `,
   tags: `agentbrain tags — list tags
 

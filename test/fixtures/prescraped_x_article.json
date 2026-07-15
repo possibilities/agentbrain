@@ -1,0 +1,11 @@
+{
+  "url": "https://twitter.com/writer/article/987?utm_source=timeline",
+  "markdown": "# Markdown fallback title\n\nLongform article body.",
+  "structured": {
+    "title": "A Structured X Article",
+    "author": { "name": "Writer Name", "handle": "writer" },
+    "published_at": "2026-07-14T12:30:00Z",
+    "links": []
+  },
+  "source": { "origin": "linkctl", "feed": "saved-posts" }
+}

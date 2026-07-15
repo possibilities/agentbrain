@@ -192,3 +192,9 @@ export function optNumber(
 export function optBoolean(options: ParsedOptions, name: string): boolean {
   return options[name] === true;
 }
+
+export function optStrings(options: ParsedOptions, name: string): string[] {
+  const value = options[name];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
