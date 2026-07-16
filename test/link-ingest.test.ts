@@ -63,7 +63,7 @@ test("generic completed root commits directly without root or child scraping", a
         kind: "page",
         links: [{ url: "https://child.example/ignored" }],
       },
-      source: "botctl",
+      source: "agentbot",
     },
     {
       scrape: async () => {
@@ -85,8 +85,8 @@ test("generic completed root commits directly without root or child scraping", a
     tags: string;
     notes: string;
   };
-  expect(JSON.parse(row.tags)).toContain("source-botctl");
-  expect(JSON.parse(row.notes).source).toBe("botctl");
+  expect(JSON.parse(row.tags)).toContain("source-agentbot");
+  expect(JSON.parse(row.notes).source).toBe("agentbot");
   db.close();
 });
 

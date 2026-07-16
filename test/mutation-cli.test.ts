@@ -150,7 +150,7 @@ test("agentbrain ingest-link uses the normal envelope", () => {
     input: {
       url: "https://example.com/root",
       markdown: "# Completed root",
-      source: "botctl",
+      source: "agentbot",
     },
   });
   expect(proc.exitCode).toBe(0);
@@ -173,7 +173,7 @@ test("legacy adapter emits exact bare success fields and exit 0", () => {
     input: {
       url: "https://example.com/root",
       markdown: "# Root",
-      source: "botctl",
+      source: "agentbot",
     },
   });
   expect(proc.exitCode).toBe(0);
@@ -306,7 +306,7 @@ test("native ingest-link exits 2 for a root-success child partial", () => {
       url: "https://x.com/example/status/998",
       markdown: "post",
       structured: { links: [{ url: "http://127.0.0.1/private" }] },
-      source: "botctl",
+      source: "agentbot",
     },
   });
   expect(partial.exitCode).toBe(2);
@@ -342,7 +342,7 @@ test("legacy adapter exits 1 on invalid input and 2 after root-first child failu
       url: "https://x.com/example/status/999",
       markdown: "post",
       structured: { links: [{ url: "http://127.0.0.1/private" }] },
-      source: "botctl",
+      source: "agentbot",
     },
   });
   expect(partial.exitCode).toBe(2);

@@ -11,7 +11,7 @@ The saved-research path previously split schema and write behavior across Hermes
 
 The accepted boundary is:
 
-- **Botctl is human ingress.** It is where a person initiates a saved-link flow.
+- **Agentbot is human ingress.** It is where a person initiates a saved-link flow.
 - **Linkctl owns admission and duplicate policy.** It decides which links enter the pipeline and how duplicate submissions are handled.
 - **Scrapectl owns its queue and extraction.** It performs browser-backed scraping and emits completed-link payloads.
 - **Agentbrain is the sole index owner.** It owns schema-v2 creation and migration, generic and completed-link writes, FTS/relation maintenance, deletion, and every public index read.

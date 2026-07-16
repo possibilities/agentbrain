@@ -116,7 +116,7 @@ test("identical completed-link replay is unchanged and does not churn chunks", a
   const payload = {
     url: "https://example.com/idempotent",
     markdown: "# Stable root\n\nStable body",
-    source: "botctl",
+    source: "agentbot",
   };
   const first = await ingestPrescrapedLink(research, payload);
   const chunksBefore = research.db

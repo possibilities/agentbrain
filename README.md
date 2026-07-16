@@ -10,7 +10,7 @@ Architecture and vocabulary:
 - [ADR 0002: Scrapectl owns URL extraction](docs/adr/0002-scrapectl-owns-url-extraction.md)
 - [Research consolidation glossary](CONTEXT.md)
 
-Botctl is human ingress, Linkctl owns admission and duplicate policy, Scrapectl owns queueing plus all URL fetching/browser/session/backend extraction behavior, and Agentbrain owns indexing. Agentbrain does **not** add another queue, browser, or direct HTTP scraper.
+Agentbot is human ingress, Linkctl owns admission and duplicate policy, Scrapectl owns queueing plus all URL fetching/browser/session/backend extraction behavior, and Agentbrain owns indexing. Agentbrain does **not** add another queue, browser, or direct HTTP scraper.
 
 ## Quick start
 

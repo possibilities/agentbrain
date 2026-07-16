@@ -1,6 +1,6 @@
 # Research-index consolidation glossary
 
-- **Ingress** — The human-facing entry into the saved-link flow. Botctl is the ingress in this architecture.
+- **Ingress** — The human-facing entry into the saved-link flow. Agentbot is the ingress in this architecture.
 - **Producer** — A component that emits work or a completed artifact for the next component. Scrapectl is the producer of completed-link payloads consumed by Agentbrain.
 - **Queue owner** — The component responsible for queued job lifecycle, retries, and queue state. Scrapectl owns the scrape queue; Agentbrain has no queue.
 - **URL extractor/backend** — The component that turns a URL into clean markdown and structured metadata, including all fetching, browser/session behavior, DNS/redirect/backend security, backend retries, and extraction hardening. Scrapectl is the only URL extractor/backend.

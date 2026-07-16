@@ -5,7 +5,7 @@ export function buildGuide(): unknown {
       "Sole schema-v2 reader/writer for Mike's local research index, exposed as an agent-friendly CLI.",
     default_db: "~/.hermes/research-cache/research.db",
     architecture: {
-      botctl: "Human-facing saved-link ingress.",
+      agentbot: "Human-facing saved-link ingress.",
       linkctl: "Link admission and duplicate policy.",
       scrapectl:
         "Queue ownership plus all URL fetching, browser/session behavior, backend hardening/retries, and extraction.",
@@ -153,7 +153,7 @@ Document:
 2. Exact --json examples and the citation fields.
 3. Zero-result recovery through alternate terms, tags, and sources.
 4. Generic explicit ingestion and guarded deletion.
-5. The ownership boundary: Botctl is human ingress, Linkctl admits/deduplicates, Scrapectl owns queue and all URL extraction/network/backend behavior, and Agentbrain solely owns index reads/writes; Agentbrain has no queue/browser/network scraper.
+5. The ownership boundary: Agentbot is human ingress, Linkctl admits/deduplicates, Scrapectl owns queue and all URL extraction/network/backend behavior, and Agentbrain solely owns index reads/writes; Agentbrain has no queue/browser/network scraper.
 6. Completed-link stdin ingestion and the temporary research-ingest-link compatibility adapter.
 7. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.hermes/research-cache/research.db.
 

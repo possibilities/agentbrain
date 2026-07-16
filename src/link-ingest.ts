@@ -299,7 +299,7 @@ export async function ingestPrescrapedLink(
     : payload.tags
       ? [payload.tags]
       : [];
-  const source = payload.source ?? "botctl";
+  const source = payload.source ?? "agentbot";
   const origin = sourceLabel(source);
   const preset = payload.preset || null;
   const tags = [
