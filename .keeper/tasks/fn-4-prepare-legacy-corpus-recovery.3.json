@@ -1,5 +1,5 @@
 {
-  "audit_required": false,
+  "audit_required": true,
   "bundles": [],
   "created_at": "2026-07-18T21:25:05.187000Z",
   "depends_on": [
@@ -11,7 +11,7 @@
   "priority": null,
   "snippets": [],
   "target_repo": "/Users/mike/code/agentbrain",
-  "tier": "xhigh",
+  "tier": "max",
   "title": "Implement manifest recovery importer",
-  "updated_at": "2026-07-18T23:21:55.105000Z"
+  "updated_at": "2026-07-18T23:47:15.249000Z"
 }

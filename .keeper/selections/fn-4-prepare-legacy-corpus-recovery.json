@@ -1,49 +1,51 @@
 {
   "audit_policy": {
     "flagged_task_ids": [
-      "fn-4-prepare-legacy-corpus-recovery.5"
+      "fn-4-prepare-legacy-corpus-recovery.3",
+      "fn-4-prepare-legacy-corpus-recovery.5",
+      "fn-4-prepare-legacy-corpus-recovery.6"
     ],
     "reason": null,
     "status": "applied"
   },
   "cells": [
     {
-      "confidence": 0.97,
+      "confidence": 0.96,
       "label_source": "heuristic-guided",
       "model": "opus",
-      "rationale": "Live WAL snapshot consistency, atomic publication, and read-only restore verification create subtle data-safety invariants requiring top-tier reasoning.",
+      "rationale": "WAL-consistent snapshots, atomic publication, and read-only restore verification impose subtle cross-file correctness invariants.",
       "task_id": "fn-4-prepare-legacy-corpus-recovery.1",
       "tier": "xhigh"
     },
     {
-      "confidence": 0.96,
+      "confidence": 0.95,
       "label_source": "heuristic-guided",
       "model": "opus",
-      "rationale": "Fail-closed encrypted backups with nested credential exclusions are security-critical and must preserve existing operational semantics across repositories.",
+      "rationale": "Fail-closed backup coordination and credential exclusions create a security-critical cross-repository invariant.",
       "task_id": "fn-4-prepare-legacy-corpus-recovery.2",
       "tier": "xhigh"
     },
     {
-      "confidence": 0.99,
+      "confidence": 0.98,
       "label_source": "heuristic-guided",
       "model": "opus",
-      "rationale": "The importer combines path security, privacy, exact identity, idempotence, and offline execution invariants across a contract-shaped multi-file change.",
+      "rationale": "The importer combines hostile-path defense, immutable hash contracts, exact idempotent accounting, and strict offline execution across many state transitions.",
       "task_id": "fn-4-prepare-legacy-corpus-recovery.3",
-      "tier": "xhigh"
+      "tier": "max"
     },
     {
-      "confidence": 0.9,
+      "confidence": 0.94,
       "label_source": "heuristic-guided",
-      "model": "sonnet",
-      "rationale": "Deterministic structural chunking and stable provenance require design judgment across parsing, persistence, and retrieval without a concrete opus-only reason.",
+      "model": "opus",
+      "rationale": "Designing deterministic structure-aware chunking and stable identities is novel algorithmic work that also changes persisted retrieval contracts.",
       "task_id": "fn-4-prepare-legacy-corpus-recovery.4",
       "tier": "xhigh"
     },
     {
-      "confidence": 0.99,
+      "confidence": 0.98,
       "label_source": "heuristic-guided",
       "model": "opus",
-      "rationale": "This security-shaped end-to-end rehearsal is effectively an evaluation spanning isolation, rollback, exact accounting, replay, retrieval, and leak prevention.",
+      "rationale": "This security-shaped integration rehearsal must prove exact cohort accounting, network denial, rollback, replay, and failure isolation across the full pipeline.",
       "task_id": "fn-4-prepare-legacy-corpus-recovery.5",
       "tier": "max"
     },
@@ -51,21 +53,21 @@
       "confidence": 0.99,
       "label_source": "heuristic-guided",
       "model": "opus",
-      "rationale": "Freezing immutable private evidence requires subtle correctness and security reasoning around exact identity, balanced accounting, permissions, and atomic publication.",
+      "rationale": "Privacy-safe reconciliation and atomic generation publication depend on numerous subtle security and exact-identity invariants over immutable evidence.",
       "task_id": "fn-4-prepare-legacy-corpus-recovery.6",
-      "tier": "xhigh"
+      "tier": "max"
     }
   ],
   "config_hash": "3537a88634e79a3ab85b1440da7d1b1be09c92bd75b69d3a0a1354c88e0b97ef",
-  "created_at": "2026-07-18T23:21:55.105000Z",
+  "created_at": "2026-07-18T23:47:15.249000Z",
   "epic_id": "fn-4-prepare-legacy-corpus-recovery",
-  "input_hash": "6a831d8bb74a0ca984b96e680e45b8a387bed1cb0b41a2e1d0ab6a988403d606",
+  "input_hash": "1f87f47d8405b69fd26afd7f0a98d124c2030ca4076504fa7cec77efce67c940",
   "outcome": "completed",
   "schema_version": 1,
   "selector": {
     "harness": "subagent",
     "model": "plan:model-selector"
   },
-  "shuffle_seed": 1786977675,
-  "verdict_raw": "{\"cells\":[{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.1\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Live WAL snapshot consistency, atomic publication, and read-only restore verification create subtle data-safety invariants requiring top-tier reasoning.\",\"confidence\":0.97},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.2\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Fail-closed encrypted backups with nested credential exclusions are security-critical and must preserve existing operational semantics across repositories.\",\"confidence\":0.96},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.3\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"The importer combines path security, privacy, exact identity, idempotence, and offline execution invariants across a contract-shaped multi-file change.\",\"confidence\":0.99},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.4\",\"tier\":\"xhigh\",\"model\":\"sonnet\",\"rationale\":\"Deterministic structural chunking and stable provenance require design judgment across parsing, persistence, and retrieval without a concrete opus-only reason.\",\"confidence\":0.9},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.5\",\"tier\":\"max\",\"model\":\"opus\",\"rationale\":\"This security-shaped end-to-end rehearsal is effectively an evaluation spanning isolation, rollback, exact accounting, replay, retrieval, and leak prevention.\",\"confidence\":0.99},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.6\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Freezing immutable private evidence requires subtle correctness and security reasoning around exact identity, balanced accounting, permissions, and atomic publication.\",\"confidence\":0.99}]}"
+  "shuffle_seed": 529003645,
+  "verdict_raw": "{\"cells\":[{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.1\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"WAL-consistent snapshots, atomic publication, and read-only restore verification impose subtle cross-file correctness invariants.\",\"confidence\":0.96},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.2\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Fail-closed backup coordination and credential exclusions create a security-critical cross-repository invariant.\",\"confidence\":0.95},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.3\",\"tier\":\"max\",\"model\":\"opus\",\"rationale\":\"The importer combines hostile-path defense, immutable hash contracts, exact idempotent accounting, and strict offline execution across many state transitions.\",\"confidence\":0.98},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.4\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Designing deterministic structure-aware chunking and stable identities is novel algorithmic work that also changes persisted retrieval contracts.\",\"confidence\":0.94},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.5\",\"tier\":\"max\",\"model\":\"opus\",\"rationale\":\"This security-shaped integration rehearsal must prove exact cohort accounting, network denial, rollback, replay, and failure isolation across the full pipeline.\",\"confidence\":0.98},{\"task_id\":\"fn-4-prepare-legacy-corpus-recovery.6\",\"tier\":\"max\",\"model\":\"opus\",\"rationale\":\"Privacy-safe reconciliation and atomic generation publication depend on numerous subtle security and exact-identity invariants over immutable evidence.\",\"confidence\":0.99}]}"
 }
