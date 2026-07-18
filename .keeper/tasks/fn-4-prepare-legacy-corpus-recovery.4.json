@@ -5,11 +5,11 @@
   "depends_on": [],
   "epic": "fn-4-prepare-legacy-corpus-recovery",
   "id": "fn-4-prepare-legacy-corpus-recovery.4",
-  "model": "opus",
+  "model": "sonnet",
   "priority": null,
   "snippets": [],
   "target_repo": "/Users/mike/code/agentbrain",
   "tier": "xhigh",
   "title": "Add Markdown-aware chunking",
-  "updated_at": "2026-07-18T21:30:20.733000Z"
+  "updated_at": "2026-07-18T23:21:55.105000Z"
 }
