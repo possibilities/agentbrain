@@ -1,0 +1,21 @@
+{
+  "branch_name": "main",
+  "bundles": [],
+  "created_at": "2026-07-18T21:22:54.210000Z",
+  "depends_on_epics": [
+    "fn-2-integrate-queued-url-extraction"
+  ],
+  "id": "fn-3-cut-over-agentbot-ingestion",
+  "last_validated_at": null,
+  "primary_repo": "/Users/mike/code/agentbrain",
+  "snippets": [],
+  "status": "open",
+  "title": "Cut over Agentbot ingestion",
+  "touched_repos": [
+    "/Users/mike/code/agentbot",
+    "/Users/mike/code/agentbrain",
+    "/Users/mike/code/arthack",
+    "/Users/mike/code/hermes-greybird"
+  ],
+  "updated_at": "2026-07-18T21:22:54.210000Z"
+}
