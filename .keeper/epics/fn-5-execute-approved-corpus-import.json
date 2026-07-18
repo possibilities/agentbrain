@@ -6,7 +6,7 @@
     "fn-4-prepare-legacy-corpus-recovery"
   ],
   "id": "fn-5-execute-approved-corpus-import",
-  "last_validated_at": "2026-07-18T21:32:12.294000Z",
+  "last_validated_at": null,
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -14,5 +14,5 @@
   "touched_repos": [
     "/Users/mike/code/agentbrain"
   ],
-  "updated_at": "2026-07-18T21:32:12.294000Z"
+  "updated_at": "2026-07-18T23:22:01.462000Z"
 }
