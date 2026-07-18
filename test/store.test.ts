@@ -50,6 +50,49 @@ function createV1(path: string): void {
   db.close();
 }
 
+function createV2(path: string): void {
+  const db = new Database(path);
+  db.exec(`
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO meta VALUES ('schema_version', '2');
+    CREATE TABLE documents (
+      id INTEGER PRIMARY KEY, source_type TEXT NOT NULL, source_uri TEXT NOT NULL,
+      title TEXT, tags TEXT NOT NULL DEFAULT '[]', notes TEXT, content TEXT NOT NULL,
+      content_hash TEXT NOT NULL, size_chars INTEGER NOT NULL, created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL, UNIQUE(source_type, source_uri)
+    );
+    CREATE TABLE chunks (
+      id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      chunk_index INTEGER NOT NULL, start_char INTEGER NOT NULL, end_char INTEGER NOT NULL,
+      content TEXT NOT NULL, UNIQUE(document_id, chunk_index)
+    );
+    CREATE VIRTUAL TABLE chunks_fts USING fts5(
+      document_id UNINDEXED, chunk_id UNINDEXED, title, content, tags, source_uri,
+      tokenize='porter unicode61 remove_diacritics 2'
+    );
+    CREATE TABLE document_links (
+      id INTEGER PRIMARY KEY,
+      from_document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      to_document_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+      relation_type TEXT NOT NULL, discovered_url TEXT NOT NULL, resolved_url TEXT,
+      status TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(from_document_id, relation_type, discovered_url)
+    );
+    INSERT INTO documents VALUES
+      (3, 'url', 'https://a.example/post', 'A', '[]', '', 'alpha body', 'ha', 10, '2026-02-01', '2026-02-01'),
+      (5, 'url', 'https://b.example/post', 'B', '[]', '', 'beta body', 'hb', 9, '2026-02-02', '2026-02-02');
+    INSERT INTO chunks VALUES
+      (11, 3, 0, 0, 10, 'alpha body'),
+      (13, 5, 0, 0, 9, 'beta body');
+    INSERT INTO chunks_fts(rowid, document_id, chunk_id, title, content, tags, source_uri) VALUES
+      (11, 3, 11, 'A', 'alpha body', '', 'https://a.example/post'),
+      (13, 5, 13, 'B', 'beta body', '', 'https://b.example/post');
+    INSERT INTO document_links VALUES
+      (2, 3, 5, 'content_link', 'https://a.example/child', 'https://b.example/post', 'success', NULL, '2026-02-03', '2026-02-03');
+  `);
+  db.close();
+}
+
 test("writable store migrates v1 additively and preserves IDs and FTS", () => {
   const path = tempDb();
   createV1(path);
@@ -60,7 +103,7 @@ test("writable store migrates v1 additively and preserves IDs and FTS", () => {
   expect(
     db.query("SELECT value FROM meta WHERE key='schema_version'").get(),
   ).toEqual({
-    value: "2",
+    value: "3",
   });
   expect(db.query("SELECT id FROM documents").get()).toEqual({ id: 7 });
   expect(
@@ -74,6 +117,18 @@ test("writable store migrates v1 additively and preserves IDs and FTS", () => {
   expect(
     cache.search({ query: "searchable", mode: "any" }).results[0].document_id,
   ).toBe(7);
+  // Legacy document 7 gains a durable resource whose exact submitted URI is
+  // preserved as a first-class alias without inventing a normalized identity.
+  const resource = cache.resourceForDocument(7);
+  expect(resource).not.toBeNull();
+  expect(resource?.document_id).toBe(7);
+  expect(resource?.key_type).toBe("legacy_document");
+  expect(resource?.key_value).toBe("7");
+  expect(resource?.kind).toBe("text");
+  expect(resource?.sensitivity).toBe("normal");
+  expect(
+    resource?.aliases.map((alias) => [alias.alias_type, alias.locator]),
+  ).toEqual([["legacy_source_uri", "text:legacy"]]);
   cache.close();
 });
 
@@ -255,9 +310,187 @@ test("newer schema versions are rejected", () => {
   const path = tempDb();
   const db = new Database(path);
   db.exec(
-    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version','3')",
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version','4')",
   );
   db.close();
   expect(() => new ResearchStore(path)).toThrow("newer than supported");
   expect(() => new ResearchCache(path)).toThrow("newer than supported");
+});
+
+test("migration maps legacy documents and relation provenance", () => {
+  const path = tempDb();
+  createV2(path);
+  const store = new ResearchStore(path);
+  store.close();
+
+  const cache = new ResearchCache(path);
+  expect(cache.resourceForDocument(3)?.aliases.map((a) => a.locator)).toEqual([
+    "https://a.example/post",
+  ]);
+  expect(cache.resourceForDocument(5)?.aliases.map((a) => a.locator)).toEqual([
+    "https://b.example/post",
+  ]);
+  cache.close();
+
+  const db = new Database(path, { readonly: true });
+  // The existing relation is untouched and mapped as provenance on the
+  // originating resource, preserving its identity without inventing evidence.
+  expect(db.query("SELECT COUNT(*) AS c FROM document_links").get()).toEqual({
+    c: 1,
+  });
+  expect(
+    db
+      .query(
+        `SELECT p.evidence_type, p.relation_id, p.raw_metadata
+         FROM provenance p JOIN resources r ON r.id = p.resource_id
+         WHERE r.document_id = 3`,
+      )
+      .get(),
+  ).toEqual({
+    evidence_type: "legacy_relation",
+    relation_id: 2,
+    raw_metadata: "https://a.example/child",
+  });
+  db.close();
+});
+
+test("read-only cache opens a legacy v2 database without migrating it", () => {
+  const path = tempDb();
+  createV2(path);
+  const cache = new ResearchCache(path);
+  // Read commands still work against the un-migrated schema.
+  expect(cache.search({ query: "alpha", mode: "any" }).results).toHaveLength(1);
+  expect(cache.resourceForDocument(3)).toBeNull();
+  cache.close();
+
+  // The database is untouched: still v2, with no resource model created.
+  const db = new Database(path, { readonly: true });
+  expect(
+    db.query("SELECT value FROM meta WHERE key='schema_version'").get(),
+  ).toEqual({ value: "2" });
+  expect(
+    db
+      .query("SELECT COUNT(*) AS c FROM sqlite_master WHERE name='resources'")
+      .get(),
+  ).toEqual({ c: 0 });
+  db.close();
+});
+
+test("equal artifact digests and canonical URLs never merge resources", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+  const now = "2026-03-01";
+  const insertResource = (keyValue: string): number =>
+    Number(
+      store.db
+        .query(
+          `INSERT INTO resources(key_type, key_value, kind, created_at, updated_at)
+           VALUES ('url', ?, 'url', ?, ?)`,
+        )
+        .run(keyValue, now, now).lastInsertRowid,
+    );
+  const a = insertResource("url:https://a.example/");
+  const b = insertResource("url:https://b.example/");
+  const artifact = Number(
+    store.db
+      .query(
+        `INSERT INTO artifacts(content_hash, media_type, byte_size, artifact_role, created_at)
+         VALUES ('sha256:shared', 'text/markdown', 12, 'normalized_markdown', ?)`,
+      )
+      .run(now).lastInsertRowid,
+  );
+  // The same immutable bytes attach to two distinct resources, and the same
+  // observed canonical URL is a per-resource alias on both.
+  for (const id of [a, b]) {
+    store.db
+      .query(
+        "INSERT INTO resource_artifacts(resource_id, artifact_id, observed_at) VALUES (?, ?, ?)",
+      )
+      .run(id, artifact, now);
+    store.db
+      .query(
+        `INSERT INTO resource_aliases(resource_id, alias_type, locator, first_observed_at, last_observed_at)
+         VALUES (?, 'publisher_canonical', 'https://canonical.example/x', ?, ?)`,
+      )
+      .run(id, now, now);
+  }
+  expect(a).not.toBe(b);
+  expect(store.db.query("SELECT COUNT(*) AS c FROM resources").get()).toEqual({
+    c: 2,
+  });
+  expect(store.db.query("SELECT COUNT(*) AS c FROM artifacts").get()).toEqual({
+    c: 1,
+  });
+  expect(
+    store.db
+      .query(
+        "SELECT COUNT(DISTINCT resource_id) AS c FROM resource_aliases WHERE locator = 'https://canonical.example/x'",
+      )
+      .get(),
+  ).toEqual({ c: 2 });
+  store.close();
+});
+
+test("domain constraints enforce cardinality, uniqueness, and sensitivity", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+  const now = "2026-04-01";
+  const insertResource = (keyValue: string, sensitivity = "normal"): number =>
+    Number(
+      store.db
+        .query(
+          `INSERT INTO resources(key_type, key_value, kind, sensitivity, created_at, updated_at)
+           VALUES ('url', ?, 'url', ?, ?, ?)`,
+        )
+        .run(keyValue, sensitivity, now, now).lastInsertRowid,
+    );
+  const r1 = insertResource("url:https://one.example/");
+
+  // A typed resource key is unique: identity cannot silently merge.
+  expect(() => insertResource("url:https://one.example/")).toThrow();
+  // Sensitivity is drawn from a closed vocabulary, enforced by foreign key.
+  expect(() => insertResource("url:https://two.example/", "secret")).toThrow();
+
+  // A suppressed observation must carry a durable reason rather than vanish.
+  expect(() =>
+    store.db
+      .query(
+        `INSERT INTO observations(resource_id, ingress, suppressed, observed_at)
+         VALUES (?, 'cli', 1, ?)`,
+      )
+      .run(r1, now),
+  ).toThrow();
+  store.db
+    .query(
+      `INSERT INTO observations(resource_id, ingress, suppressed, suppressed_reason, observed_at)
+       VALUES (?, 'cli', 1, 'per-source limit', ?)`,
+    )
+    .run(r1, now);
+
+  // Ordered membership positions are unique within a collection; the legacy
+  // positional identifier rides along as an external reference, not a key.
+  const collection = Number(
+    store.db
+      .query(
+        `INSERT INTO collections(slug, title, created_at, updated_at)
+         VALUES ('saved-links', 'Saved links', ?, ?)`,
+      )
+      .run(now, now).lastInsertRowid,
+  );
+  const r2 = insertResource("url:https://three.example/");
+  store.db
+    .query(
+      `INSERT INTO collection_memberships(collection_id, resource_id, position, external_ref, added_at)
+       VALUES (?, ?, 0, 'link-00001', ?)`,
+    )
+    .run(collection, r1, now);
+  expect(() =>
+    store.db
+      .query(
+        `INSERT INTO collection_memberships(collection_id, resource_id, position, added_at)
+         VALUES (?, ?, 0, ?)`,
+      )
+      .run(collection, r2, now),
+  ).toThrow();
+  store.close();
 });

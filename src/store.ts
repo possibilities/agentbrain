@@ -10,7 +10,7 @@ import {
   sha256Text,
 } from "./text";
 
-export const RESEARCH_SCHEMA_VERSION = 2;
+export const RESEARCH_SCHEMA_VERSION = 3;
 
 interface Row {
   [key: string]: unknown;
@@ -120,6 +120,169 @@ const MIGRATION_V2 = `
   CREATE INDEX IF NOT EXISTS idx_document_links_status
     ON document_links(status, updated_at DESC);
   UPDATE meta SET value='2' WHERE key='schema_version';
+`;
+
+// Additive durable-ingestion domain model. Legacy documents/chunks/FTS and
+// document_links are untouched; resources reference them by nullable FK so a
+// resource's identity survives content deletion. Artifact bytes dedupe by
+// digest while resources link them many-to-many, and observed locators are
+// per-resource aliases: equal digests and canonical URLs never collapse two
+// resources (ADR 0006, ADR 0008).
+const MIGRATION_V3 = `
+  CREATE TABLE IF NOT EXISTS sensitivity_levels (
+    level TEXT PRIMARY KEY,
+    rank INTEGER NOT NULL UNIQUE
+  );
+  INSERT OR IGNORE INTO sensitivity_levels(level, rank) VALUES
+    ('public', 0), ('normal', 1), ('sensitive', 2), ('private', 3);
+
+  CREATE TABLE IF NOT EXISTS resources (
+    id INTEGER PRIMARY KEY,
+    key_type TEXT NOT NULL,
+    key_value TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    document_id INTEGER UNIQUE REFERENCES documents(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(key_type, key_value)
+  );
+  CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources(kind, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS resource_aliases (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    alias_type TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    evidence TEXT,
+    first_observed_at TEXT NOT NULL,
+    last_observed_at TEXT NOT NULL,
+    UNIQUE(resource_id, alias_type, locator)
+  );
+  CREATE INDEX IF NOT EXISTS idx_resource_aliases_locator
+    ON resource_aliases(locator, alias_type);
+
+  CREATE TABLE IF NOT EXISTS artifacts (
+    id INTEGER PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+    artifact_role TEXT NOT NULL,
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    storage_path TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(content_hash, artifact_role)
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_artifacts (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    observed_at TEXT NOT NULL,
+    UNIQUE(resource_id, artifact_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS sources (
+    id INTEGER PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    identifier TEXT NOT NULL,
+    display_name TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    schedule TEXT,
+    checkpoint TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_type, identifier)
+  );
+
+  CREATE TABLE IF NOT EXISTS collections (
+    id INTEGER PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS collection_memberships (
+    id INTEGER PRIMARY KEY,
+    collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    position INTEGER,
+    external_ref TEXT,
+    added_at TEXT NOT NULL,
+    UNIQUE(collection_id, resource_id),
+    UNIQUE(collection_id, position)
+  );
+
+  CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY,
+    run_type TEXT NOT NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    state TEXT NOT NULL DEFAULT 'pending'
+      CHECK (state IN ('pending', 'active', 'completed', 'failed', 'cancelled')),
+    checkpoint TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_runs_source ON runs(source_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    ingress TEXT NOT NULL,
+    observed_locator TEXT,
+    suppressed INTEGER NOT NULL DEFAULT 0 CHECK (suppressed IN (0, 1)),
+    suppressed_reason TEXT,
+    observed_at TEXT NOT NULL,
+    CHECK (suppressed = 0 OR suppressed_reason IS NOT NULL),
+    UNIQUE(run_id, resource_id, observed_locator)
+  );
+  CREATE INDEX IF NOT EXISTS idx_observations_resource
+    ON observations(resource_id, observed_at DESC);
+
+  CREATE TABLE IF NOT EXISTS provenance (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    evidence_type TEXT NOT NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    artifact_id INTEGER REFERENCES artifacts(id) ON DELETE SET NULL,
+    relation_id INTEGER REFERENCES document_links(id) ON DELETE SET NULL,
+    ingress TEXT,
+    raw_metadata TEXT,
+    observed_at TEXT NOT NULL,
+    UNIQUE(resource_id, evidence_type, source_id, run_id, artifact_id, relation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_provenance_resource
+    ON provenance(resource_id, evidence_type);
+
+  INSERT INTO resources(
+    key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
+  )
+    SELECT 'legacy_document', CAST(d.id AS TEXT), d.source_type, 'normal',
+           d.id, d.created_at, d.updated_at
+    FROM documents d;
+
+  INSERT INTO resource_aliases(
+    resource_id, alias_type, locator, evidence, first_observed_at, last_observed_at
+  )
+    SELECT r.id, 'legacy_source_uri', d.source_uri, d.source_type,
+           d.created_at, d.updated_at
+    FROM documents d JOIN resources r ON r.document_id = d.id;
+
+  INSERT INTO provenance(
+    resource_id, evidence_type, relation_id, raw_metadata, observed_at
+  )
+    SELECT r.id, 'legacy_relation', dl.id, dl.discovered_url, dl.created_at
+    FROM document_links dl JOIN resources r ON r.document_id = dl.from_document_id;
+
+  UPDATE meta SET value='3' WHERE key='schema_version';
 `;
 
 function nowIso(): string {
@@ -488,6 +651,7 @@ export class ResearchStore {
           );
         }
         if (version < 2) this.db.exec(MIGRATION_V2);
+        if (version < 3) this.db.exec(MIGRATION_V3);
       })
       .immediate();
   }

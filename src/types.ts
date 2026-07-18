@@ -163,3 +163,113 @@ export interface SourcesData {
   source_types: Array<{ source_type: string; count: number }>;
   domains: Array<{ domain: string; count: number }>;
 }
+
+/**
+ * Durable ingestion domain records (schema v3). Sensitivity is an inherited
+ * handling policy drawn from a closed, ranked vocabulary, never a free tag.
+ */
+export type Sensitivity = "public" | "normal" | "sensitive" | "private";
+
+export interface Resource {
+  id: number;
+  key_type: string;
+  key_value: string;
+  kind: string;
+  sensitivity: Sensitivity;
+  document_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResourceAlias {
+  id: number;
+  resource_id: number;
+  alias_type: string;
+  locator: string;
+  evidence: string | null;
+  first_observed_at: string;
+  last_observed_at: string;
+}
+
+export interface ResourceRecord extends Resource {
+  aliases: ResourceAlias[];
+}
+
+export interface Artifact {
+  id: number;
+  content_hash: string;
+  media_type: string;
+  byte_size: number;
+  artifact_role: string;
+  sensitivity: Sensitivity;
+  storage_path: string | null;
+  created_at: string;
+}
+
+export interface Source {
+  id: number;
+  source_type: string;
+  identifier: string;
+  display_name: string | null;
+  enabled: boolean;
+  sensitivity: Sensitivity;
+  schedule: string | null;
+  checkpoint: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Collection {
+  id: number;
+  slug: string;
+  title: string;
+  sensitivity: Sensitivity;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CollectionMembership {
+  id: number;
+  collection_id: number;
+  resource_id: number;
+  position: number | null;
+  external_ref: string | null;
+  added_at: string;
+}
+
+export interface Observation {
+  id: number;
+  resource_id: number;
+  source_id: number | null;
+  run_id: number | null;
+  ingress: string;
+  observed_locator: string | null;
+  suppressed: boolean;
+  suppressed_reason: string | null;
+  observed_at: string;
+}
+
+export interface Run {
+  id: number;
+  run_type: string;
+  source_id: number | null;
+  state: string;
+  checkpoint: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Provenance {
+  id: number;
+  resource_id: number;
+  evidence_type: string;
+  source_id: number | null;
+  run_id: number | null;
+  artifact_id: number | null;
+  relation_id: number | null;
+  ingress: string | null;
+  raw_metadata: string | null;
+  observed_at: string;
+}

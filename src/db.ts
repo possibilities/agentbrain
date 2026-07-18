@@ -9,13 +9,17 @@ import {
   parseTags,
   truncateContent,
 } from "./query";
+import { RESEARCH_SCHEMA_VERSION } from "./store";
 import type {
   ChunkData,
   ContextData,
   DocumentData,
+  ResourceAlias,
+  ResourceRecord,
   SearchData,
   SearchMode,
   SearchResult,
+  Sensitivity,
   SourcesData,
   StatsData,
   TagsData,
@@ -387,6 +391,47 @@ export class ResearchCache {
     };
   }
 
+  /**
+   * Typed view of the durable resource that maps a legacy document, with its
+   * observed aliases. Returns null on pre-migration databases; the read path
+   * never creates or migrates the resource model.
+   */
+  resourceForDocument(documentId: number): ResourceRecord | null {
+    if (!this.tableExists("resources")) return null;
+    const row = this.oneOrNull<{
+      id: number;
+      key_type: string;
+      key_value: string;
+      kind: string;
+      sensitivity: Sensitivity;
+      document_id: number | null;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `SELECT id, key_type, key_value, kind, sensitivity, document_id,
+              created_at, updated_at
+       FROM resources WHERE document_id = ?`,
+      [documentId],
+    );
+    if (row === null) return null;
+    const aliases: ResourceAlias[] = this.all<{
+      id: number;
+      resource_id: number;
+      alias_type: string;
+      locator: string;
+      evidence: string | null;
+      first_observed_at: string;
+      last_observed_at: string;
+    }>(
+      `SELECT id, resource_id, alias_type, locator, evidence,
+              first_observed_at, last_observed_at
+       FROM resource_aliases WHERE resource_id = ?
+       ORDER BY id ASC`,
+      [row.id],
+    );
+    return { ...row, aliases };
+  }
+
   private documentLinks(
     direction: "from_document_id" | "to_document_id",
     documentId: number,
@@ -446,10 +491,10 @@ export class ResearchCache {
         "research cache schema_version is not an integer",
       );
     }
-    if (version > 2) {
+    if (version > RESEARCH_SCHEMA_VERSION) {
       throw new CliError(
         "unsupported_schema_version",
-        `research cache schema version ${version} is newer than supported version 2`,
+        `research cache schema version ${version} is newer than supported version ${RESEARCH_SCHEMA_VERSION}`,
       );
     }
   }
