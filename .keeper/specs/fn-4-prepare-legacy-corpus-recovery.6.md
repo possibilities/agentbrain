@@ -5,7 +5,7 @@
 
 ### Approach
 
-Treat the completed body-free Agentbot database scan and bounded live Secretary pass as immutable inputs, not an invitation to contact Telegram again. Validate their hashes, permissions, fixed upper cutoff, hard caps, and `history_exhausted` marker; then deterministically union observations, preserve the original 1,075 candidate IDs, append 13 exact-URI IDs, and atomically publish a hash-addressed 1,088-candidate generation plus a safe count-only summary. Exact DM submission is normal saved-link ingress; only message/session metadata remains private unless a URL is intrinsically sensitive.
+Treat the completed body-free Agentbot database scan and bounded live Secretary pass as immutable inputs, not an invitation to contact Telegram again. Validate their hashes, permissions, fixed upper cutoff, hard caps, and `history_exhausted` marker; then deterministically union observations, preserve the original 1,075 candidate IDs, append 13 exact-URI IDs, and atomically publish a hash-addressed 1,088-candidate generation, an immutable online allowlist containing exactly the two approved opaque candidate evidence row IDs, and a safe count-only summary. Exact DM submission is normal saved-link ingress; only message/session metadata remains private unless a URL is intrinsically sensitive.
 
 ### Investigation targets
 
@@ -35,7 +35,8 @@ Use small synthetic SQLite/JSONL fixtures to prove active and soft-deleted rows,
 1. Verify the captured live cutoff/termination, input hashes, modes, schemas, and absence of retained session working copies.
 2. Define one body-free observation per exact URL and message locator, union DB/live evidence, and preserve exact URL identity separately from comparison forms.
 3. Merge 118 provenance matches without changing disposition; append 13 deterministic candidates split into six test exclusions, two approved-online human submissions, and five bot-output reviews.
-4. Stage manifest, inventory, private reconciliation, and public count-only summary under one generation ID; verify every balance and checksum before atomic publication.
+4. Bind the generation digest and exactly the two approved opaque candidate evidence row IDs into a private immutable online allowlist; reject duplicate, missing, extra, or wrong-disposition entries.
+5. Stage manifest, allowlist, inventory, private reconciliation, and public count-only summary under one generation ID; verify every balance and checksum before atomic publication.
 
 ### Alternatives
 
@@ -55,6 +56,7 @@ Preserve the baseline manifest and current private evidence unchanged. Publish a
 - [ ] Reconciliation proves 294 message-level URL observations, 131 exact URLs, 118 provenance merges, 13 exact-new candidates, eight comparison-new URLs, and one live-only URL without printing private locators or exact URLs.
 - [ ] All original 1,075 candidate IDs and dispositions remain stable; 13 collision-free deterministic IDs produce exactly 1,088 candidate outcomes regardless of comparison-URI convergence.
 - [ ] The 13 additions reconcile as six probable-test exclusions, two approved controlled-online human submissions, and five bot-output review candidates; no item is fetched in this epic.
+- [ ] A private immutable online allowlist binds the generation digest to exactly two distinct approved human candidate evidence row IDs; any duplicate, missing, extra, or wrong-disposition entry fails generation publication.
 - [ ] Human Secretary submissions and resulting public resources remain normal sensitivity unless the URL or explicit policy is sensitive; message bodies, credentials, sessions, and unnecessary Telegram identifiers never enter the generation or public summary.
 - [ ] A generation ID binds input hashes, cutoff metadata, candidate manifest, private reconciliation, count-only summary, tool/schema versions, and checksum inventory; interrupted generation cannot replace the last complete pointer.
 - [ ] Synthetic validation is deterministic and offline, and all frozen private files verify as `0600` beneath `0700` directories.
