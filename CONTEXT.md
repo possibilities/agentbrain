@@ -15,6 +15,8 @@
 - **Source** — A recurring producer or discovery definition, such as a blog feed, X account, or filesystem root. Avoid using *source* for ingress or a legacy provenance label.
 - **Collection** — A many-to-many curation and policy grouping independent of how its resources were discovered.
 - **Observation** — Evidence that a source or ingress encountered a resource during a run or job.
+- **Suppressed observation** — A discovered item intentionally not admitted as a child job, with a durable policy or limit reason rather than silent omission.
+- **Checkpoint** — A source-specific high-water mark committed only after the corresponding discovered intents are durable; it is distinct from an in-progress pagination cursor.
 - **Provenance** — Typed evidence connecting ingress, sources, runs, jobs, resources, artifacts, and relations; preserved raw historical metadata may accompany that evidence.
 - **Relation** — A typed resource-to-resource edge, such as a content link, citation, reply, or version relationship.
 - **Saved link** — A resource submitted through human ingress for membership in the saved-links collection; it is not a separate resource type.
