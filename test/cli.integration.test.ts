@@ -235,6 +235,115 @@ function makeTempDb(name: string, withLinks: boolean): string {
   return path;
 }
 
+function makeDurableQueryDb(): string {
+  const path = makeTempDb("durable-query", true);
+  const db = new Database(path);
+  db.exec(`
+    CREATE TABLE sensitivity_levels (level TEXT PRIMARY KEY, rank INTEGER NOT NULL UNIQUE);
+    INSERT INTO sensitivity_levels VALUES
+      ('public', 0), ('normal', 1), ('sensitive', 2), ('private', 3);
+    CREATE TABLE resources (
+      id INTEGER PRIMARY KEY,
+      key_type TEXT NOT NULL,
+      key_value TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      sensitivity TEXT NOT NULL,
+      document_id INTEGER UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE resource_aliases (
+      id INTEGER PRIMARY KEY,
+      resource_id INTEGER NOT NULL,
+      alias_type TEXT NOT NULL,
+      locator TEXT NOT NULL,
+      evidence TEXT,
+      first_observed_at TEXT NOT NULL,
+      last_observed_at TEXT NOT NULL
+    );
+    CREATE TABLE sources (
+      id INTEGER PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      identifier TEXT NOT NULL,
+      display_name TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      sensitivity TEXT NOT NULL,
+      schedule TEXT,
+      checkpoint TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE collections (
+      id INTEGER PRIMARY KEY,
+      slug TEXT NOT NULL,
+      title TEXT NOT NULL,
+      sensitivity TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE collection_memberships (
+      id INTEGER PRIMARY KEY,
+      collection_id INTEGER NOT NULL,
+      resource_id INTEGER NOT NULL,
+      position INTEGER,
+      external_ref TEXT,
+      added_at TEXT NOT NULL
+    );
+    CREATE TABLE runs (
+      id INTEGER PRIMARY KEY,
+      run_type TEXT NOT NULL,
+      source_id INTEGER,
+      state TEXT NOT NULL,
+      checkpoint TEXT,
+      started_at TEXT,
+      finished_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE observations (
+      id INTEGER PRIMARY KEY,
+      resource_id INTEGER NOT NULL,
+      source_id INTEGER,
+      run_id INTEGER,
+      ingress TEXT NOT NULL,
+      observed_locator TEXT,
+      suppressed INTEGER NOT NULL DEFAULT 0,
+      suppressed_reason TEXT,
+      observed_at TEXT NOT NULL
+    );
+    CREATE TABLE provenance (
+      id INTEGER PRIMARY KEY,
+      resource_id INTEGER NOT NULL,
+      evidence_type TEXT NOT NULL,
+      source_id INTEGER,
+      run_id INTEGER,
+      artifact_id INTEGER,
+      relation_id INTEGER,
+      ingress TEXT,
+      raw_metadata TEXT,
+      observed_at TEXT NOT NULL
+    );
+    INSERT INTO resources VALUES
+      (101, 'provider', 'one', 'note', 'private', 1, '2025-01-01', '2025-01-03'),
+      (102, 'provider', 'two', 'post', 'public', 2, '2025-01-01', '2025-01-02'),
+      (103, 'url', 'three', 'article', 'normal', 3, '2025-01-01', '2025-01-04');
+    INSERT INTO resource_aliases(
+      resource_id, alias_type, locator, first_observed_at, last_observed_at
+    ) VALUES (101, 'local_path', '/vault/agent.md', '2025-01-01', '2025-01-03');
+    INSERT INTO collections VALUES
+      (201, 'shared', 'Shared', 'public', '2025-01-01', '2025-01-01');
+    INSERT INTO collection_memberships(collection_id, resource_id, added_at) VALUES
+      (201, 101, '2025-01-01'), (201, 102, '2025-01-01');
+    INSERT INTO sources VALUES
+      (301, 'feed', 'agent-feed', NULL, 1, 'public', NULL, NULL, '2025-01-01', '2025-01-01');
+    INSERT INTO observations(resource_id, source_id, ingress, observed_locator, observed_at) VALUES
+      (101, 301, 'source-scheduler', 'one', '2025-01-01'),
+      (102, 301, 'source-scheduler', 'two', '2025-01-01');
+  `);
+  db.close();
+  return path;
+}
+
 function runCli(
   args: string[],
   dbPath?: string,
@@ -355,6 +464,57 @@ test("fts search and get work against the fixture DB", () => {
   expect(get.exitCode).toBe(0);
   const getPayload = JSON.parse(decode(get.stdout).trim());
   expect(getPayload.data.content).toContain("Agent memory systems");
+});
+
+test("search and context expose durable filters without relation content expansion", () => {
+  const dbPath = makeDurableQueryDb();
+  const search = runCli(
+    [
+      "search",
+      "agent",
+      "--collection",
+      "shared",
+      "--source",
+      "agent-feed",
+      "--json",
+    ],
+    dbPath,
+  );
+  expect(search.exitCode).toBe(0);
+  const payload = JSON.parse(decode(search.stdout).trim());
+  expect(payload.data.filters).toMatchObject({
+    collection: "shared",
+    source: "agent-feed",
+  });
+  expect(
+    payload.data.results
+      .map((result: { resource_id: number }) => result.resource_id)
+      .sort(),
+  ).toEqual([101, 102]);
+  expect(payload.data.results[0]).toHaveProperty("relations");
+
+  const privateContext = runCli(
+    [
+      "context",
+      "agent",
+      "--sensitivity",
+      "private",
+      "--local-path",
+      "/vault/agent.md",
+      "--json",
+    ],
+    dbPath,
+  );
+  expect(privateContext.exitCode).toBe(0);
+  const contextPayload = JSON.parse(decode(privateContext.stdout).trim());
+  expect(contextPayload.data.hits).toHaveLength(1);
+  expect(contextPayload.data.hits[0]).toMatchObject({
+    resource_id: 101,
+    resource_kind: "note",
+    sensitivity: "private",
+    relations: [],
+  });
+  expect(contextPayload.data.hits[0].content).not.toContain("Short tweet");
 });
 
 test("submit emits stable human and JSON queued and duplicate acknowledgements", () => {

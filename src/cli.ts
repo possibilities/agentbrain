@@ -48,7 +48,7 @@ import {
 } from "./render";
 import { ResearchStore } from "./store";
 import { normalizeTags } from "./text";
-import type { GlobalOptions, SearchMode } from "./types";
+import type { GlobalOptions, SearchMode, Sensitivity } from "./types";
 import { validateHttpUrl } from "./url";
 import { runWorker } from "./worker";
 
@@ -299,6 +299,14 @@ function runSearch(
     offset: { type: "number", default: 0 },
     tag: { type: "string" },
     "source-type": { type: "string" },
+    collection: { type: "string" },
+    source: { type: "string" },
+    "resource-kind": { type: "string" },
+    sensitivity: { type: "string" },
+    date: { type: "string" },
+    "date-from": { type: "string" },
+    "date-to": { type: "string" },
+    "local-path": { type: "string" },
   });
   const query = optString(opts, "query") ?? opts._.join(" ");
   const mode = parseSearchMode(optString(opts, "mode") ?? "any");
@@ -309,6 +317,14 @@ function runSearch(
     offset: optNumber(opts, "offset"),
     tag: optString(opts, "tag"),
     sourceType: optString(opts, "source-type"),
+    collection: optString(opts, "collection"),
+    source: optString(opts, "source"),
+    resourceKind: optString(opts, "resource-kind"),
+    sensitivity: optString(opts, "sensitivity") as Sensitivity | undefined,
+    date: optString(opts, "date"),
+    dateFrom: optString(opts, "date-from"),
+    dateTo: optString(opts, "date-to"),
+    localPath: optString(opts, "local-path"),
   });
   writeByFormat("search", data, globals, humanSearch, { jsonl: searchJsonl });
 }
@@ -413,12 +429,32 @@ function runContext(
     query: { type: "string" },
     limit: { type: "number", default: 6 },
     "max-chars": { type: "number", default: 12000 },
+    tag: { type: "string" },
+    "source-type": { type: "string" },
+    collection: { type: "string" },
+    source: { type: "string" },
+    "resource-kind": { type: "string" },
+    sensitivity: { type: "string" },
+    date: { type: "string" },
+    "date-from": { type: "string" },
+    "date-to": { type: "string" },
+    "local-path": { type: "string" },
   });
   const query = optString(opts, "query") ?? opts._.join(" ");
   const data = cache.context({
     query,
     limit: optNumber(opts, "limit"),
     maxChars: optNumber(opts, "max-chars"),
+    tag: optString(opts, "tag"),
+    sourceType: optString(opts, "source-type"),
+    collection: optString(opts, "collection"),
+    source: optString(opts, "source"),
+    resourceKind: optString(opts, "resource-kind"),
+    sensitivity: optString(opts, "sensitivity") as Sensitivity | undefined,
+    date: optString(opts, "date"),
+    dateFrom: optString(opts, "date-from"),
+    dateTo: optString(opts, "date-to"),
+    localPath: optString(opts, "local-path"),
   });
   writeByFormat("context", data, globals, humanContext);
 }

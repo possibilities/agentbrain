@@ -56,8 +56,24 @@ export function humanSearch(data: SearchData): string {
     lines.push(`   title: ${result.title ?? "(untitled)"}`);
     lines.push(`   source: ${result.source_uri}`);
     lines.push(
+      `   resource: ${result.resource_id ?? "legacy"} / ${result.resource_kind} / ${result.sensitivity}`,
+    );
+    lines.push(
       `   type/tags: ${result.source_type} / ${result.tags.join(", ")}`,
     );
+    if (result.collections.length > 0) {
+      lines.push(`   collections: ${result.collections.join(", ")}`);
+    }
+    if (result.sources.length > 0) {
+      lines.push(
+        `   sources: ${result.sources.map((source) => `${source.source_type}:${source.identifier}`).join(", ")}`,
+      );
+    }
+    for (const relation of result.relations) {
+      lines.push(
+        `   relation: ${relation.direction} ${relation.relation_type} document_id=${relation.linked_document_id} resource_id=${relation.linked_resource_id ?? "legacy"}`,
+      );
+    }
     lines.push(`   snippet: ${result.snippet.replaceAll("\n", " ")}`);
     lines.push("");
   }
@@ -146,6 +162,22 @@ export function humanContext(data: ContextData): string {
   ];
   for (const [index, hit] of data.hits.entries()) {
     lines.push(`${index + 1}. ${hit.citation}`);
+    lines.push(
+      `   Resource: ${hit.resource_id ?? "legacy"} / ${hit.resource_kind} / ${hit.sensitivity}`,
+    );
+    if (hit.collections.length > 0) {
+      lines.push(`   Collections: ${hit.collections.join(", ")}`);
+    }
+    if (hit.sources.length > 0) {
+      lines.push(
+        `   Sources: ${hit.sources.map((source) => `${source.source_type}:${source.identifier}`).join(", ")}`,
+      );
+    }
+    for (const relation of hit.relations) {
+      lines.push(
+        `   Relation: ${relation.direction} ${relation.relation_type} document_id=${relation.linked_document_id} resource_id=${relation.linked_resource_id ?? "legacy"}`,
+      );
+    }
     lines.push(hit.content);
     lines.push("");
   }

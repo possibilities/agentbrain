@@ -118,7 +118,15 @@ Options:
   --limit <n>         Results per page (default: 10, max: 50)
   --offset <n>        Page offset (default: 0)
   --tag <tag>         Require a document tag, exact match
-  --source-type <t>   Require source_type, e.g. tweet, tweet_article, scraped_url
+  --source-type <t>   Require a legacy document source_type
+  --collection <slug> Require exact collection membership
+  --source <id>       Require an exact source identifier (or source_type:identifier)
+  --resource-kind <k> Require an exact resource kind
+  --sensitivity <s>   Require effective public | normal | sensitive | private policy
+  --date <yyyy-mm-dd> Require the document update date
+  --date-from <date>  Require updates on or after a date or ISO timestamp
+  --date-to <date>    Require updates through a date or ISO timestamp
+  --local-path <path> Require an exact local document path or resource alias
   --json             Emit an envelope with data.results[]
   --jsonl            Emit one result per line; first line is a metadata record
 
@@ -157,15 +165,26 @@ Examples:
   context: `agentbrain context — bounded citation-ready evidence
 
 Usage:
-  agentbrain context <query> [--limit N] [--max-chars N] [--json]
+  agentbrain context <query> [--limit N] [--max-chars N] [filters] [--json]
 
 Options:
   --query <text>      Query text instead of positional words
-  --limit <n>         Maximum hits (default: 6, max: 20)
+  --limit <n>         Maximum resource hits (default: 6, max: 20)
   --max-chars <n>     Total chunk-content budget (default: 12000; 500..50000)
+  --tag <tag>         Require an exact document tag
+  --source-type <t>   Require a legacy document source_type
+  --collection <slug> Require exact collection membership
+  --source <id>       Require an exact source identifier (or source_type:identifier)
+  --resource-kind <k> Require an exact resource kind
+  --sensitivity <s>   Require effective public | normal | sensitive | private policy
+  --date <yyyy-mm-dd> Require the document update date
+  --date-from <date>  Require updates on or after a date or ISO timestamp
+  --date-to <date>    Require updates through a date or ISO timestamp
+  --local-path <path> Require an exact local document path or resource alias
 
-The JSON data.hits objects include document_id, chunk_id, title, source_uri,
-citation, content, offsets, tags, score, and per-hit truncation.
+The JSON data.hits objects include resource provenance, typed relation summaries,
+citation, bounded chunk content, offsets, tags, score, and per-hit truncation. Linked
+resource content is never concatenated into a context hit.
 `,
   submit: `agentbrain submit — durable ingestion admission
 

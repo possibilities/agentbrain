@@ -56,8 +56,31 @@ export interface StatsData extends RelationStats {
   }>;
 }
 
+export interface SourceSummary {
+  source_type: string;
+  identifier: string;
+}
+
+export interface RelationSummary {
+  relation_id: number;
+  direction: "outbound" | "inbound";
+  relation_type: string;
+  status: string;
+  linked_document_id: number;
+  linked_resource_id: number | null;
+  linked_title: string | null;
+  linked_resource_kind: string;
+  linked_sensitivity: Sensitivity;
+}
+
 export interface SearchResult {
   document_id: number;
+  resource_id: number | null;
+  resource_kind: string;
+  sensitivity: Sensitivity;
+  collections: string[];
+  sources: SourceSummary[];
+  relations: RelationSummary[];
   chunk_id: number;
   chunk_index: number;
   title: string | null;
@@ -80,6 +103,14 @@ export interface SearchData {
   filters: {
     tag?: string;
     source_type?: string;
+    collection?: string;
+    source?: string;
+    resource_kind?: string;
+    sensitivity?: Sensitivity;
+    date?: string;
+    date_from?: string;
+    date_to?: string;
+    local_path?: string;
   };
   results: SearchResult[];
   next_offset: number | null;
@@ -87,6 +118,12 @@ export interface SearchData {
 
 export interface ContextHit {
   document_id: number;
+  resource_id: number | null;
+  resource_kind: string;
+  sensitivity: Sensitivity;
+  collections: string[];
+  sources: SourceSummary[];
+  relations: RelationSummary[];
   chunk_id: number;
   chunk_index: number;
   title: string | null;
@@ -103,6 +140,7 @@ export interface ContextHit {
 
 export interface ContextData {
   query: string;
+  filters: SearchData["filters"];
   limit: number;
   max_chars: number;
   returned_chars: number;
