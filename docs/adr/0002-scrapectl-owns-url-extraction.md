@@ -1,6 +1,6 @@
 # ADR 0002: Scrapectl owns URL extraction
 
-- Status: Accepted
+- Status: Accepted; ingestion lifecycle refined by ADR 0003
 - Date: 2026-07-15
 
 ## Context
@@ -34,4 +34,4 @@ A temporarily missing CLI or unavailable Scrapectl backend must not abandon an i
 
 ## Related
 
-This refines the extraction implementation detail in [ADR 0001](0001-agentbrain-owns-research-index.md) without changing its still-valid index-ownership decision.
+This refines the extraction implementation detail in [superseded ADR 0001](superseded/0001-agentbrain-owns-research-index.md). [ADR 0003](0003-agentbrain-owns-durable-ingestion.md) retains Scrapectl as the sole URL extractor while superseding this ADR's synchronous provider-retry and X-child lifecycle details.

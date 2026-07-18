@@ -1,6 +1,6 @@
 # ADR 0001: Agentbrain owns the research index
 
-- Status: Accepted; URL-extraction detail refined by ADR 0002
+- Status: Superseded by ADR 0003; URL-extraction detail refined by ADR 0002
 - Date: 2026-07-14
 
 ## Context
@@ -32,4 +32,4 @@ The accepted boundary is:
 
 ## Related
 
-See [`CONTEXT.md`](../../CONTEXT.md) for the shared glossary, [`README.md`](../../README.md) for commands, and [ADR 0002](0002-scrapectl-owns-url-extraction.md) for the corrected URL-extraction boundary.
+See [`CONTEXT.md`](../../../CONTEXT.md) for the shared glossary, [`README.md`](../../../README.md) for commands, [ADR 0002](../0002-scrapectl-owns-url-extraction.md) for the corrected URL-extraction boundary, and [ADR 0003](../0003-agentbrain-owns-durable-ingestion.md) for the superseding durable-ingestion decision.

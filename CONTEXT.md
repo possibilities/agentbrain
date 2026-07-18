@@ -1,14 +1,21 @@
-# Research-index consolidation glossary
+# Agentbrain ingestion glossary
 
-- **Ingress** — The human-facing entry into the saved-link flow. Agentbot is the ingress in this architecture.
-- **Producer** — A component that emits work or a completed artifact for the next component. Scrapectl is the producer of completed-link payloads consumed by Agentbrain.
-- **Queue owner** — The component responsible for queued job lifecycle, retries, and queue state. Scrapectl owns the scrape queue; Agentbrain has no queue.
-- **URL extractor/backend** — The component that turns a URL into clean markdown and structured metadata, including all fetching, browser/session behavior, DNS/redirect/backend security, backend retries, and extraction hardening. Scrapectl is the only URL extractor/backend.
-- **Provider-command retry** — Agentbrain's narrow responsibility to re-invoke Scrapectl with bounded exponential backoff when the CLI or its upstream/browser backend is transiently unavailable. It does not inspect, implement, or retry Scrapectl's backend internals; permanent provider/input/content failures stop immediately.
-- **Local ingestion** — Agentbrain-owned parsing of pasted text, files, directories, local PDFs, DOCX, and EPUB. This is not web scraping.
-- **Index owner** — The only component authorized to create/migrate the research schema and read or mutate indexed documents, chunks, FTS rows, and relations. Agentbrain is the index owner.
-- **Completed-link payload** — One JSON object containing required `url` and non-empty `markdown`, plus optional `structured`, `source`, title/category/tags, summary/notes, and preset metadata. It represents an already-extracted root.
-- **Root/child relation** — The durable `document_links` provenance from a committed completed X root to one outbound destination. Generic completed roots do not fan out. For X roots Agentbrain attempts at most one child hop; every child URL uses the same Scrapectl provider adapter, then Agentbrain stores either a target document or a retryable failure.
-- **Compatibility adapter** — The temporary `research-ingest-link` executable that accepts the completed-link payload but returns Scrapectl's legacy bare JSON fields and exit codes instead of Agentbrain's normal envelope.
+- **Ingress** — The actor or interface that submits ingestion intent, such as Agentbot, a CLI user, an importer, or a source run. Avoid using *source* for the submitter.
+- **Ingestion** — The durable lifecycle from submitted intent through materialization and indexing or an inspectable terminal disposition. Extraction is one possible stage of ingestion, not a synonym for it.
+- **Ingestion job** — One immutable, durable intent to ingest or reconcile an item. A retry does not replace the job; it adds an attempt.
+- **Attempt** — One leased execution of an ingestion job, including its timing, outcome, and failure classification. Avoid using *run* for a job attempt.
+- **Run** — A source synchronization or import batch that groups jobs and owns batch-level progress or checkpoints.
+- **Resource** — One logical item with a stable identity independent of its current content, discovery path, or indexed representation.
+- **Document** — The current searchable representation of a resource in Agentbrain's index.
+- **Artifact** — An immutable captured or derived representation observed at a particular time, such as imported Markdown or extracted content. A content digest identifies artifact bytes, not the resource itself.
+- **Source** — A recurring producer or discovery definition, such as a blog feed, X account, or filesystem root. Avoid using *source* for ingress or a legacy provenance label.
+- **Collection** — A many-to-many curation and policy grouping independent of how its resources were discovered.
+- **Observation** — Evidence that a source or ingress encountered a resource during a run or job.
+- **Provenance** — Typed evidence connecting ingress, sources, runs, jobs, resources, artifacts, and relations; preserved raw historical metadata may accompany that evidence.
+- **Relation** — A typed resource-to-resource edge, such as a content link, citation, reply, or version relationship.
+- **Saved link** — A resource submitted through human ingress for membership in the saved-links collection; it is not a separate resource type.
+- **Ingestion ledger** — Agentbrain's durable record of jobs, attempts, runs, state transitions, and operator dispositions. Its runnable jobs form the ingestion queue.
+- **URL extractor/backend** — The component that turns a URL into bounded extracted output and owns fetching, browser/session behavior, network security, redirects, and provider-specific parsing. Scrapectl is the only URL extractor/backend.
+- **Index owner** — The only component authorized to create or migrate the schema and mutate resources, documents, chunks, FTS rows, ingestion state, and provenance. Agentbrain is the index owner.
 
-The accepted ownership decision and tradeoffs are recorded in [ADR 0001](docs/adr/0001-agentbrain-owns-research-index.md), with the corrected URL-extraction boundary in [ADR 0002](docs/adr/0002-scrapectl-owns-url-extraction.md).
+The current ownership decision is recorded in [ADR 0003](docs/adr/0003-agentbrain-owns-durable-ingestion.md). [ADR 0002](docs/adr/0002-scrapectl-owns-url-extraction.md) records the retained URL-extraction boundary; the original consolidation decision is preserved under [superseded ADR 0001](docs/adr/superseded/0001-agentbrain-owns-research-index.md).
