@@ -9,7 +9,7 @@
     "fn-3-cut-over-agentbot-ingestion"
   ],
   "id": "fn-5-execute-approved-corpus-import",
-  "last_validated_at": null,
+  "last_validated_at": "2026-07-18T23:52:31.966000Z",
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -17,5 +17,5 @@
   "touched_repos": [
     "/Users/mike/code/agentbrain"
   ],
-  "updated_at": "2026-07-18T23:46:04.411000Z"
+  "updated_at": "2026-07-18T23:52:31.966000Z"
 }
