@@ -1,0 +1,31 @@
+{
+  "audit_policy": {
+    "flagged_task_ids": [
+      "fn-5-execute-approved-corpus-import.1"
+    ],
+    "reason": null,
+    "status": "applied"
+  },
+  "cells": [
+    {
+      "confidence": 0.96,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Authoritative live-state mutation requires subtle correctness, privacy, offline-isolation, exact-reconciliation, and rollback invariants across a long destructive workflow.",
+      "task_id": "fn-5-execute-approved-corpus-import.1",
+      "tier": "max"
+    }
+  ],
+  "config_hash": "3537a88634e79a3ab85b1440da7d1b1be09c92bd75b69d3a0a1354c88e0b97ef",
+  "created_at": "2026-07-18T21:31:55.610000Z",
+  "epic_id": "fn-5-execute-approved-corpus-import",
+  "input_hash": "1892bad6001912dfe20276c3097bf3a1055f3da0b4b1b4c5692ea32e42495c3a",
+  "outcome": "completed",
+  "schema_version": 1,
+  "selector": {
+    "harness": "subagent",
+    "model": "plan:model-selector"
+  },
+  "shuffle_seed": 412269270,
+  "verdict_raw": "{\"cells\":[{\"task_id\":\"fn-5-execute-approved-corpus-import.1\",\"tier\":\"max\",\"model\":\"opus\",\"rationale\":\"Authoritative live-state mutation requires subtle correctness, privacy, offline-isolation, exact-reconciliation, and rollback invariants across a long destructive workflow.\",\"confidence\":0.96}]}"
+}
