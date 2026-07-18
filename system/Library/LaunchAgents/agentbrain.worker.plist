@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- agentbrain-installer-owned: agentbrain.worker.v1 -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>agentbrain.worker</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__AGENTBRAIN_PROGRAM__</string>
+		<string>worker</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__AGENTBRAIN_HOME__</string>
+		<key>PATH</key>
+		<string>__AGENTBRAIN_PATH__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>__AGENTBRAIN_LOG__</string>
+	<key>StandardErrorPath</key>
+	<string>__AGENTBRAIN_LOG__</string>
+</dict>
+</plist>

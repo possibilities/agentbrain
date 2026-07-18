@@ -1,7 +1,16 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type {
+  ArtifactReconciliationReport,
+  ArtifactStore,
+  LocalFileSnapshot,
+  ReconcileOptions,
+  StoredArtifact,
+} from "./artifacts";
+import { isSafeArtifactStoragePath, SHA256_DIGEST_PATTERN } from "./artifacts";
 import { CliError } from "./errors";
+import { sanitizeExternalError } from "./sanitize";
 import {
   chunkText,
   cleanText,
@@ -9,8 +18,63 @@ import {
   normalizeTags,
   sha256Text,
 } from "./text";
+import type {
+  Artifact,
+  Attempt,
+  CancelResult,
+  ClaimResult,
+  CompleteResult,
+  FailResult,
+  FailureClass,
+  HeartbeatResult,
+  Job,
+  JobState,
+  LifecyclePolicy,
+  RecoveredLease,
+  Sensitivity,
+} from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 2;
+export const RESEARCH_SCHEMA_VERSION = 5;
+
+/**
+ * Default lease and retry policy. Durations are policy, not identity: callers
+ * may override any field per invocation without altering persisted job
+ * semantics or idempotency keys (ADR 0004).
+ */
+export const DEFAULT_LIFECYCLE_POLICY: LifecyclePolicy = {
+  leaseMs: 60_000,
+  maxItemRetries: 5,
+  infraBaseMs: 5_000,
+  infraCapMs: 300_000,
+  itemBaseMs: 2_000,
+  itemCapMs: 120_000,
+  jitterRatio: 0.1,
+};
+
+/**
+ * The accepted job state machine (ADR 0004). Every state change routes through
+ * assertTransition so an illegal transition is rejected rather than silently
+ * corrupting queue state. Sensitive-inspection audit is a self-loop recorded
+ * outside this map because it never changes state.
+ */
+const LEGAL_JOB_TRANSITIONS: Record<JobState, readonly JobState[]> = {
+  queued: ["running", "cancelled", "excluded"],
+  running: ["completed", "retry_wait", "blocked", "failed", "cancelled"],
+  retry_wait: ["running", "queued", "cancelled", "excluded"],
+  blocked: ["queued", "cancelled", "excluded"],
+  failed: ["queued", "cancelled", "excluded"],
+  completed: [],
+  excluded: ["queued"],
+  cancelled: ["queued"],
+};
+
+interface LifecycleOptions {
+  now?: Date;
+  /** Lease duration for this claim/heartbeat; falls back to policy.leaseMs. */
+  leaseMs?: number;
+  policy?: Partial<LifecyclePolicy>;
+  random?: () => number;
+}
 
 interface Row {
   [key: string]: unknown;
@@ -122,8 +186,324 @@ const MIGRATION_V2 = `
   UPDATE meta SET value='2' WHERE key='schema_version';
 `;
 
+// Additive durable-ingestion domain model. Legacy documents/chunks/FTS and
+// document_links are untouched; resources reference them by nullable FK so a
+// resource's identity survives content deletion. Artifact bytes dedupe by
+// digest while resources link them many-to-many, and observed locators are
+// per-resource aliases: equal digests and canonical URLs never collapse two
+// resources (ADR 0006, ADR 0008).
+const MIGRATION_V3 = `
+  CREATE TABLE IF NOT EXISTS sensitivity_levels (
+    level TEXT PRIMARY KEY,
+    rank INTEGER NOT NULL UNIQUE
+  );
+  INSERT OR IGNORE INTO sensitivity_levels(level, rank) VALUES
+    ('public', 0), ('normal', 1), ('sensitive', 2), ('private', 3);
+
+  CREATE TABLE IF NOT EXISTS resources (
+    id INTEGER PRIMARY KEY,
+    key_type TEXT NOT NULL,
+    key_value TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    document_id INTEGER UNIQUE REFERENCES documents(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(key_type, key_value)
+  );
+  CREATE INDEX IF NOT EXISTS idx_resources_kind ON resources(kind, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS resource_aliases (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    alias_type TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    evidence TEXT,
+    first_observed_at TEXT NOT NULL,
+    last_observed_at TEXT NOT NULL,
+    UNIQUE(resource_id, alias_type, locator)
+  );
+  CREATE INDEX IF NOT EXISTS idx_resource_aliases_locator
+    ON resource_aliases(locator, alias_type);
+
+  CREATE TABLE IF NOT EXISTS artifacts (
+    id INTEGER PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+    artifact_role TEXT NOT NULL,
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    storage_path TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(content_hash, artifact_role)
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_artifacts (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    observed_at TEXT NOT NULL,
+    UNIQUE(resource_id, artifact_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS sources (
+    id INTEGER PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    identifier TEXT NOT NULL,
+    display_name TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    schedule TEXT,
+    checkpoint TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_type, identifier)
+  );
+
+  CREATE TABLE IF NOT EXISTS collections (
+    id INTEGER PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS collection_memberships (
+    id INTEGER PRIMARY KEY,
+    collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    position INTEGER,
+    external_ref TEXT,
+    added_at TEXT NOT NULL,
+    UNIQUE(collection_id, resource_id),
+    UNIQUE(collection_id, position)
+  );
+
+  CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY,
+    run_type TEXT NOT NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    state TEXT NOT NULL DEFAULT 'pending'
+      CHECK (state IN ('pending', 'active', 'completed', 'failed', 'cancelled')),
+    checkpoint TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_runs_source ON runs(source_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    ingress TEXT NOT NULL,
+    observed_locator TEXT,
+    suppressed INTEGER NOT NULL DEFAULT 0 CHECK (suppressed IN (0, 1)),
+    suppressed_reason TEXT,
+    observed_at TEXT NOT NULL,
+    CHECK (suppressed = 0 OR suppressed_reason IS NOT NULL),
+    UNIQUE(run_id, resource_id, observed_locator)
+  );
+  CREATE INDEX IF NOT EXISTS idx_observations_resource
+    ON observations(resource_id, observed_at DESC);
+
+  CREATE TABLE IF NOT EXISTS provenance (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    evidence_type TEXT NOT NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    artifact_id INTEGER REFERENCES artifacts(id) ON DELETE SET NULL,
+    relation_id INTEGER REFERENCES document_links(id) ON DELETE SET NULL,
+    ingress TEXT,
+    raw_metadata TEXT,
+    observed_at TEXT NOT NULL,
+    UNIQUE(resource_id, evidence_type, source_id, run_id, artifact_id, relation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_provenance_resource
+    ON provenance(resource_id, evidence_type);
+
+  INSERT INTO resources(
+    key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
+  )
+    SELECT 'legacy_document', CAST(d.id AS TEXT), d.source_type, 'normal',
+           d.id, d.created_at, d.updated_at
+    FROM documents d;
+
+  INSERT INTO resource_aliases(
+    resource_id, alias_type, locator, evidence, first_observed_at, last_observed_at
+  )
+    SELECT r.id, 'legacy_source_uri', d.source_uri, d.source_type,
+           d.created_at, d.updated_at
+    FROM documents d JOIN resources r ON r.document_id = d.id;
+
+  INSERT INTO provenance(
+    resource_id, evidence_type, relation_id, raw_metadata, observed_at
+  )
+    SELECT r.id, 'legacy_relation', dl.id, dl.discovered_url, dl.created_at
+    FROM document_links dl JOIN resources r ON r.document_id = dl.from_document_id;
+
+  UPDATE meta SET value='3' WHERE key='schema_version';
+`;
+
+// Additive durable ingestion ledger (ADR 0004). Jobs hold one immutable intent
+// and a mutable disposition; attempts are append-only leased executions whose
+// autoincrement id doubles as a globally monotonic fencing token; transitions
+// are an append-only audit of every disposition change and operator action.
+// current_attempt_id is the job's live fencing token (a logical reference, not
+// an enforced FK, to avoid a jobs<->attempts cycle). No legacy table is touched.
+const MIGRATION_V4 = `
+  CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    intent TEXT,
+    resource_id INTEGER REFERENCES resources(id) ON DELETE SET NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN (
+      'queued', 'running', 'retry_wait', 'blocked',
+      'failed', 'completed', 'excluded', 'cancelled'
+    )),
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    item_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (item_retry_count >= 0),
+    current_attempt_id INTEGER,
+    run_at TEXT NOT NULL,
+    block_reason TEXT,
+    failure_class TEXT,
+    failure_summary TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_jobs_runnable ON jobs(state, run_at, id);
+  CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS attempts (
+    id INTEGER PRIMARY KEY,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+    worker TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'leased' CHECK (state IN (
+      'leased', 'succeeded', 'failed', 'stale', 'cancelled'
+    )),
+    lease_expires_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    failure_class TEXT,
+    failure_summary TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    UNIQUE(job_id, attempt_number)
+  );
+  CREATE INDEX IF NOT EXISTS idx_attempts_job ON attempts(job_id, attempt_number);
+  CREATE INDEX IF NOT EXISTS idx_attempts_lease ON attempts(state, lease_expires_at);
+
+  CREATE TABLE IF NOT EXISTS job_transitions (
+    id INTEGER PRIMARY KEY,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    attempt_id INTEGER REFERENCES attempts(id) ON DELETE SET NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT,
+    detail TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_job_transitions_job
+    ON job_transitions(job_id, id);
+
+  UPDATE meta SET value='4' WHERE key='schema_version';
+`;
+
+// Artifact derivation is many-to-many: a normalized Artifact can be derived
+// from one or more captured Artifacts without placing bytes in SQLite or
+// treating a content digest as a Resource key (ADR 0008).
+const MIGRATION_V5 = `
+  CREATE TABLE IF NOT EXISTS artifact_derivations (
+    id INTEGER PRIMARY KEY,
+    artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    parent_artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,
+    derivation_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (artifact_id <> parent_artifact_id),
+    UNIQUE(artifact_id, parent_artifact_id, derivation_type)
+  );
+  CREATE INDEX IF NOT EXISTS idx_artifact_derivations_parent
+    ON artifact_derivations(parent_artifact_id, artifact_id);
+  UPDATE meta SET value='5' WHERE key='schema_version';
+`;
+
+const MEDIA_TYPE_PATTERN =
+  /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[ -~]+)?$/;
+
+const SENSITIVITY_RANK: Record<Sensitivity, number> = {
+  public: 0,
+  normal: 1,
+  sensitive: 2,
+  private: 3,
+};
+
+export interface RegisterArtifactInput {
+  contentDigest: string;
+  mediaType: string;
+  byteSize: number;
+  artifactRole: string;
+  sensitivity?: Sensitivity;
+  storagePath: string;
+  resourceId?: number;
+  observedAt?: Date;
+  derivedFromArtifactId?: number;
+  derivationType?: string;
+  jobId?: number;
+  sourceId?: number;
+  provenance?: {
+    evidenceType: string;
+    ingress?: string | null;
+    runId?: number | null;
+    rawMetadata?: unknown;
+  };
+}
+
+export interface RegisteredArtifactResult {
+  artifact: Artifact;
+  resourceReferenceCreated: boolean;
+  derivationCreated: boolean;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+const JOB_COLUMNS = `id, idempotency_key, kind, intent, resource_id, source_id,
+  run_id, state, sensitivity, attempt_count, item_retry_count,
+  current_attempt_id, run_at, block_reason, failure_class, failure_summary,
+  created_at, updated_at`;
+
+const ATTEMPT_COLUMNS = `id, job_id, attempt_number, worker, state,
+  lease_expires_at, heartbeat_at, failure_class, failure_summary, started_at,
+  finished_at`;
+
+function backoffMs(
+  attempt: number,
+  baseMs: number,
+  capMs: number,
+  jitterRatio: number,
+  random: () => number,
+): number {
+  const exponential = Math.min(capMs, baseMs * 2 ** Math.max(0, attempt - 1));
+  const jitter = exponential * jitterRatio * random();
+  return Math.round(exponential + jitter);
+}
+
+function isoAfter(now: Date, deltaMs: number): string {
+  return new Date(now.getTime() + deltaMs).toISOString();
+}
+
+function isExpired(leaseExpiresAt: string, now: Date): boolean {
+  return Date.parse(leaseExpiresAt) <= now.getTime();
 }
 
 function pythonStyleTagJson(tags: string[]): string {
@@ -441,6 +821,1117 @@ export class ResearchStore {
     return transaction.immediate();
   }
 
+  // ---- Content-addressed Artifact metadata (ADR 0008) ----
+
+  /**
+   * Register typed metadata only after Artifact bytes have been verified and
+   * promoted. Replays are idempotent for the same digest/role, while Resource
+   * references remain distinct even when their Artifact bytes deduplicate.
+   */
+  registerArtifact(input: RegisterArtifactInput): RegisteredArtifactResult {
+    const contentDigest = String(input.contentDigest || "").toLowerCase();
+    if (!SHA256_DIGEST_PATTERN.test(contentDigest)) {
+      throw new CliError("invalid_digest", "invalid SHA-256 content digest");
+    }
+    const mediaType = String(input.mediaType || "")
+      .trim()
+      .toLowerCase();
+    const artifactRole = String(input.artifactRole || "")
+      .trim()
+      .toLowerCase();
+    if (
+      mediaType.length === 0 ||
+      mediaType.length > 255 ||
+      !MEDIA_TYPE_PATTERN.test(mediaType)
+    ) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact media_type must be a valid type/subtype of at most 255 characters",
+      );
+    }
+    if (artifactRole.length === 0 || artifactRole.length > 100) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact role is required and must be at most 100 characters",
+      );
+    }
+    if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 0) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact byte_size must be a non-negative safe integer",
+      );
+    }
+    if (!isSafeArtifactStoragePath(input.storagePath, contentDigest)) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact storage_path must be the digest-derived relative path",
+      );
+    }
+    const requestedSensitivity = input.sensitivity ?? "normal";
+    if (!(requestedSensitivity in SENSITIVITY_RANK)) {
+      throw new CliError("bad_artifact", "invalid Artifact sensitivity");
+    }
+    if (
+      input.derivedFromArtifactId !== undefined &&
+      !String(input.derivationType || "").trim()
+    ) {
+      throw new CliError(
+        "bad_artifact",
+        "derived Artifacts require a derivation_type",
+      );
+    }
+    if (
+      input.derivedFromArtifactId === undefined &&
+      input.derivationType !== undefined
+    ) {
+      throw new CliError(
+        "bad_artifact",
+        "derivation_type requires a parent Artifact",
+      );
+    }
+    if (input.provenance !== undefined && input.resourceId === undefined) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact provenance requires a Resource reference",
+      );
+    }
+    const timestamp = (input.observedAt ?? new Date()).toISOString();
+
+    const transaction = this.db.transaction((): RegisteredArtifactResult => {
+      const inherited: Sensitivity[] = [requestedSensitivity];
+      const inherit = (table: string, id: number | undefined): void => {
+        if (id === undefined) return;
+        const row = this.db
+          .query(`SELECT sensitivity FROM ${table} WHERE id=?`)
+          .get(id) as { sensitivity: Sensitivity } | null;
+        if (row === null) {
+          throw new CliError(
+            "bad_artifact_reference",
+            `referenced ${table.slice(0, -1)} does not exist`,
+          );
+        }
+        inherited.push(row.sensitivity);
+      };
+      inherit("resources", input.resourceId);
+      inherit("jobs", input.jobId);
+      inherit("sources", input.sourceId);
+      inherit("artifacts", input.derivedFromArtifactId);
+      if (input.resourceId !== undefined) {
+        const collectionPolicies = this.db
+          .query(
+            `SELECT c.sensitivity FROM collections c
+             JOIN collection_memberships cm ON cm.collection_id=c.id
+             WHERE cm.resource_id=?`,
+          )
+          .all(input.resourceId) as Array<{ sensitivity: Sensitivity }>;
+        inherited.push(...collectionPolicies.map((row) => row.sensitivity));
+      }
+      const sensitivity = inherited.reduce((strictest, candidate) =>
+        SENSITIVITY_RANK[candidate] > SENSITIVITY_RANK[strictest]
+          ? candidate
+          : strictest,
+      );
+
+      let artifact = this.db
+        .query(
+          "SELECT * FROM artifacts WHERE content_hash=? AND artifact_role=?",
+        )
+        .get(contentDigest, artifactRole) as Artifact | null;
+      if (artifact === null) {
+        const inserted = this.db
+          .query(
+            `INSERT INTO artifacts(
+               content_hash, media_type, byte_size, artifact_role, sensitivity,
+               storage_path, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            contentDigest,
+            mediaType,
+            input.byteSize,
+            artifactRole,
+            sensitivity,
+            input.storagePath,
+            timestamp,
+          );
+        artifact = this.db
+          .query("SELECT * FROM artifacts WHERE id=?")
+          .get(Number(inserted.lastInsertRowid)) as Artifact;
+      } else {
+        if (
+          artifact.media_type !== mediaType ||
+          artifact.byte_size !== input.byteSize ||
+          artifact.storage_path !== input.storagePath
+        ) {
+          throw new CliError(
+            "artifact_metadata_conflict",
+            "registered Artifact metadata conflicts with the existing digest and role",
+          );
+        }
+        if (
+          SENSITIVITY_RANK[sensitivity] > SENSITIVITY_RANK[artifact.sensitivity]
+        ) {
+          this.db
+            .query("UPDATE artifacts SET sensitivity=? WHERE id=?")
+            .run(sensitivity, artifact.id);
+          artifact = this.db
+            .query("SELECT * FROM artifacts WHERE id=?")
+            .get(artifact.id) as Artifact;
+        }
+      }
+
+      let resourceReferenceCreated = false;
+      if (input.resourceId !== undefined) {
+        const result = this.db
+          .query(
+            `INSERT OR IGNORE INTO resource_artifacts(
+               resource_id, artifact_id, observed_at
+             ) VALUES (?, ?, ?)`,
+          )
+          .run(input.resourceId, artifact.id, timestamp);
+        resourceReferenceCreated = result.changes > 0;
+      }
+
+      let derivationCreated = false;
+      if (input.derivedFromArtifactId !== undefined) {
+        if (input.derivedFromArtifactId === artifact.id) {
+          throw new CliError(
+            "bad_artifact",
+            "an Artifact cannot be derived from itself",
+          );
+        }
+        const result = this.db
+          .query(
+            `INSERT OR IGNORE INTO artifact_derivations(
+               artifact_id, parent_artifact_id, derivation_type, created_at
+             ) VALUES (?, ?, ?, ?)`,
+          )
+          .run(
+            artifact.id,
+            input.derivedFromArtifactId,
+            String(input.derivationType).trim().toLowerCase(),
+            timestamp,
+          );
+        derivationCreated = result.changes > 0;
+      }
+
+      if (input.provenance !== undefined && input.resourceId !== undefined) {
+        const evidenceType = String(input.provenance.evidenceType || "").trim();
+        if (!evidenceType) {
+          throw new CliError(
+            "bad_artifact",
+            "Provenance evidence_type is required",
+          );
+        }
+        const rawMetadata =
+          input.provenance.rawMetadata === undefined
+            ? null
+            : typeof input.provenance.rawMetadata === "string"
+              ? input.provenance.rawMetadata
+              : JSON.stringify(input.provenance.rawMetadata);
+        const sourceId = input.sourceId ?? null;
+        const runId = input.provenance.runId ?? null;
+        const ingress = input.provenance.ingress ?? null;
+        const existingProvenance = this.db
+          .query(
+            `SELECT id FROM provenance
+             WHERE resource_id=? AND evidence_type=? AND source_id IS ?
+               AND run_id IS ? AND artifact_id=? AND relation_id IS NULL
+               AND ingress IS ? AND raw_metadata IS ?`,
+          )
+          .get(
+            input.resourceId,
+            evidenceType,
+            sourceId,
+            runId,
+            artifact.id,
+            ingress,
+            rawMetadata,
+          );
+        if (existingProvenance === null) {
+          this.db
+            .query(
+              `INSERT INTO provenance(
+                 resource_id, evidence_type, source_id, run_id, artifact_id,
+                 ingress, raw_metadata, observed_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              input.resourceId,
+              evidenceType,
+              sourceId,
+              runId,
+              artifact.id,
+              ingress,
+              rawMetadata,
+              timestamp,
+            );
+        }
+      }
+      return { artifact, resourceReferenceCreated, derivationCreated };
+    });
+    return transaction.immediate();
+  }
+
+  registerStoredArtifact(
+    stored: StoredArtifact,
+    metadata: Omit<
+      RegisterArtifactInput,
+      "contentDigest" | "byteSize" | "storagePath"
+    >,
+  ): RegisteredArtifactResult {
+    return this.registerArtifact({
+      ...metadata,
+      contentDigest: stored.contentDigest,
+      byteSize: stored.byteSize,
+      storagePath: stored.storagePath,
+    });
+  }
+
+  /**
+   * Admit local-file work only from an already-promoted immutable snapshot.
+   * The durable intent deliberately contains no mutable or private source path.
+   */
+  enqueueLocalFileSnapshot(input: {
+    idempotencyKey: string;
+    snapshot: LocalFileSnapshot;
+    artifactStore: ArtifactStore;
+    artifactRole?: string;
+    sensitivity?: Sensitivity;
+    resourceId?: number;
+    sourceId?: number;
+    runId?: number;
+    now?: Date;
+  }): {
+    artifact: Artifact;
+    job: Job;
+    created: boolean;
+  } {
+    const verified = input.artifactStore.verify(input.snapshot.contentDigest);
+    if (
+      verified.byteSize !== input.snapshot.byteSize ||
+      verified.storagePath !== input.snapshot.storagePath
+    ) {
+      throw new CliError(
+        "snapshot_mismatch",
+        "local-file snapshot metadata does not match immutable Artifact bytes",
+      );
+    }
+    const registered = this.registerStoredArtifact(input.snapshot, {
+      mediaType: input.snapshot.mediaType,
+      artifactRole: input.artifactRole ?? "original",
+      sensitivity: input.sensitivity,
+      resourceId: input.resourceId,
+      sourceId: input.sourceId,
+      observedAt: input.now,
+    });
+    const admitted = this.enqueueJob({
+      idempotencyKey: input.idempotencyKey,
+      kind: "local_file_snapshot",
+      intent: {
+        artifact_id: registered.artifact.id,
+        content_digest: input.snapshot.contentDigest,
+        byte_size: input.snapshot.byteSize,
+        media_type: input.snapshot.mediaType,
+        artifact_role: registered.artifact.artifact_role,
+      },
+      sensitivity: registered.artifact.sensitivity,
+      resourceId: input.resourceId,
+      sourceId: input.sourceId,
+      runId: input.runId,
+      now: input.now,
+    });
+    return { artifact: registered.artifact, ...admitted };
+  }
+
+  /** Content digests known to SQLite, suitable as reconciliation roots. */
+  registeredArtifactDigests(): string[] {
+    return (
+      this.db
+        .query(
+          "SELECT DISTINCT content_hash FROM artifacts ORDER BY content_hash",
+        )
+        .all() as Array<{ content_hash: string }>
+    ).map((row) => row.content_hash);
+  }
+
+  reconcileArtifactStore(
+    artifactStore: ArtifactStore,
+    options: ReconcileOptions = {},
+  ): ArtifactReconciliationReport {
+    return artifactStore.reconcile(this.registeredArtifactDigests(), options);
+  }
+
+  /**
+   * Rebuild searchable content from a retained normalized Artifact, without a
+   * source file or network. Digest verification happens before UTF-8 decoding.
+   */
+  rebuildDocumentFromArtifact(input: {
+    artifactId: number;
+    artifactStore: ArtifactStore;
+    sourceType?: string;
+    sourceUri?: string;
+    title?: string | null;
+    tags?: unknown;
+    notes?: string | null;
+    resourceId?: number;
+    maxBytes?: number;
+  }): UpsertDocumentResult {
+    const artifact = this.db
+      .query("SELECT * FROM artifacts WHERE id=?")
+      .get(input.artifactId) as Artifact | null;
+    if (artifact === null) {
+      throw new CliError(
+        "artifact_not_found",
+        `Artifact ${input.artifactId} not found`,
+      );
+    }
+    const normalizedRoles = new Set([
+      "normalized",
+      "normalized_text",
+      "normalized_markdown",
+      "imported_markdown",
+      "extracted_markdown",
+    ]);
+    if (!normalizedRoles.has(artifact.artifact_role)) {
+      throw new CliError(
+        "artifact_not_normalized",
+        "only a normalized Artifact can rebuild indexed content",
+      );
+    }
+    if (
+      !artifact.media_type.startsWith("text/") &&
+      artifact.media_type !== "application/markdown"
+    ) {
+      throw new CliError(
+        "artifact_not_text",
+        "normalized Artifact media_type must be textual",
+      );
+    }
+    if (input.resourceId !== undefined) {
+      const resource = this.db
+        .query("SELECT id FROM resources WHERE id=?")
+        .get(input.resourceId);
+      if (resource === null) {
+        throw new CliError(
+          "resource_not_found",
+          `Resource ${input.resourceId} not found`,
+        );
+      }
+    }
+    const content = input.artifactStore.readUtf8(
+      artifact.content_hash,
+      input.maxBytes,
+    );
+    const result = this.upsertDocument({
+      sourceType: input.sourceType ?? "artifact",
+      sourceUri: input.sourceUri ?? `artifact:sha256:${artifact.content_hash}`,
+      title: input.title,
+      tags: input.tags,
+      notes: input.notes,
+      content,
+      force: true,
+    });
+    if (input.resourceId !== undefined) {
+      const update = this.db
+        .query("UPDATE resources SET document_id=?, updated_at=? WHERE id=?")
+        .run(result.document_id, nowIso(), input.resourceId);
+      if (update.changes === 0) {
+        throw new CliError(
+          "resource_update_failed",
+          `Resource ${input.resourceId} could not attach rebuilt content`,
+        );
+      }
+    }
+    return result;
+  }
+
+  // ---- Durable ingestion job lifecycle (ADR 0004) ----
+
+  /**
+   * Admission: create or identify a durable job for one intent. Idempotent on
+   * `idempotencyKey`, so replayed submissions return the existing job instead
+   * of forking a second lifecycle. Returns whether the job was newly created.
+   */
+  enqueueJob(input: {
+    idempotencyKey: string;
+    kind: string;
+    intent?: unknown;
+    sensitivity?: string;
+    resourceId?: number | null;
+    sourceId?: number | null;
+    runId?: number | null;
+    now?: Date;
+  }): { job: Job; created: boolean } {
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey.length === 0) {
+      throw new CliError("bad_intent", "idempotency_key is required");
+    }
+    const kind = String(input.kind || "").trim();
+    if (kind.length === 0) throw new CliError("bad_intent", "kind is required");
+    const intent =
+      input.intent === undefined || input.intent === null
+        ? null
+        : typeof input.intent === "string"
+          ? input.intent
+          : JSON.stringify(input.intent);
+    const sensitivity = input.sensitivity ?? "normal";
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+
+    const transaction = this.db.transaction(
+      (): { job: Job; created: boolean } => {
+        const existing = this.loadJobByKey(idempotencyKey);
+        if (existing !== null) return { job: existing, created: false };
+        const inserted = this.db
+          .query(
+            `INSERT INTO jobs(
+             idempotency_key, kind, intent, resource_id, source_id, run_id,
+             state, sensitivity, run_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+          )
+          .run(
+            idempotencyKey,
+            kind,
+            intent,
+            input.resourceId ?? null,
+            input.sourceId ?? null,
+            input.runId ?? null,
+            sensitivity,
+            timestamp,
+            timestamp,
+            timestamp,
+          );
+        const jobId = Number(inserted.lastInsertRowid);
+        this.recordTransition(
+          jobId,
+          null,
+          null,
+          "queued",
+          "system",
+          "admitted",
+          null,
+          timestamp,
+        );
+        return { job: this.requireJob(jobId), created: true };
+      },
+    );
+    return transaction.immediate();
+  }
+
+  /**
+   * Atomically claim the next runnable job and open a fresh leased attempt.
+   * The immediate transaction takes the write lock at BEGIN, and the runnable
+   * predicate excludes any already-running job, so two concurrent claimers can
+   * never obtain the same active lease. The new attempt id is the fencing token.
+   */
+  claimJob(input: { worker: string } & LifecycleOptions): ClaimResult {
+    const worker = String(input.worker || "").trim();
+    if (worker.length === 0)
+      throw new CliError("bad_claim", "worker is required");
+    const now = input.now ?? new Date();
+    const policy = { ...DEFAULT_LIFECYCLE_POLICY, ...input.policy };
+    const timestamp = now.toISOString();
+    const leaseExpiresAt = isoAfter(now, input.leaseMs ?? policy.leaseMs);
+
+    const transaction = this.db.transaction((): ClaimResult => {
+      const candidate = this.db
+        .query(
+          `SELECT ${JOB_COLUMNS} FROM jobs
+           WHERE state IN ('queued', 'retry_wait') AND run_at <= ?
+           ORDER BY run_at ASC, id ASC LIMIT 1`,
+        )
+        .get(timestamp) as Job | null;
+      if (candidate === null) return { claimed: false };
+
+      const attemptNumber = candidate.attempt_count + 1;
+      const inserted = this.db
+        .query(
+          `INSERT INTO attempts(
+             job_id, attempt_number, worker, state, lease_expires_at,
+             heartbeat_at, started_at
+           ) VALUES (?, ?, ?, 'leased', ?, ?, ?)`,
+        )
+        .run(
+          candidate.id,
+          attemptNumber,
+          worker,
+          leaseExpiresAt,
+          timestamp,
+          timestamp,
+        );
+      const attemptId = Number(inserted.lastInsertRowid);
+      this.assertTransition(candidate.state, "running");
+      this.db
+        .query(
+          `UPDATE jobs SET state='running', attempt_count=?, current_attempt_id=?,
+             updated_at=? WHERE id=?`,
+        )
+        .run(attemptNumber, attemptId, timestamp, candidate.id);
+      this.recordTransition(
+        candidate.id,
+        attemptId,
+        candidate.state,
+        "running",
+        worker,
+        "claimed",
+        null,
+        timestamp,
+      );
+      return {
+        claimed: true,
+        job: this.requireJob(candidate.id),
+        attempt: this.requireAttempt(attemptId),
+        fencing_token: attemptId,
+      };
+    });
+    return transaction.immediate();
+  }
+
+  /** Extend a live lease. Rejects an expired (stale) or fenced token. */
+  heartbeat(
+    input: { fencingToken: number } & LifecycleOptions,
+  ): HeartbeatResult {
+    const now = input.now ?? new Date();
+    const policy = { ...DEFAULT_LIFECYCLE_POLICY, ...input.policy };
+    const timestamp = now.toISOString();
+    const leaseExpiresAt = isoAfter(now, input.leaseMs ?? policy.leaseMs);
+
+    const transaction = this.db.transaction((): HeartbeatResult => {
+      const guard = this.guardActiveToken(input.fencingToken, now);
+      if (guard.ok === false) return guard;
+      this.db
+        .query(
+          "UPDATE attempts SET lease_expires_at=?, heartbeat_at=? WHERE id=?",
+        )
+        .run(leaseExpiresAt, timestamp, input.fencingToken);
+      return {
+        ok: true,
+        job: this.requireJob(guard.job.id),
+        attempt: this.requireAttempt(input.fencingToken),
+      };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Fenced, idempotent success. `apply` runs the resource/provenance/index
+   * effects inside the same transaction that finalizes the attempt and job, so
+   * they commit together. A replayed completion of an already-completed job is
+   * a no-op (`idempotent: true`) that never re-runs `apply`, so at-least-once
+   * execution cannot duplicate resource, provenance, or terminal job effects.
+   */
+  completeJob(
+    input: {
+      fencingToken: number;
+      resourceId?: number | null;
+      apply?: (db: Database) => void;
+    } & LifecycleOptions,
+  ): CompleteResult {
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+
+    const transaction = this.db.transaction((): CompleteResult => {
+      const attempt = this.requireAttempt(input.fencingToken);
+      const job = this.requireJob(attempt.job_id);
+      if (job.state === "completed" && attempt.state === "succeeded") {
+        return { ok: true, idempotent: true, job };
+      }
+      const guard = this.guardActiveToken(input.fencingToken, now);
+      if (guard.ok === false) return guard;
+
+      if (input.apply !== undefined) input.apply(this.db);
+      this.db
+        .query(
+          "UPDATE attempts SET state='succeeded', finished_at=? WHERE id=?",
+        )
+        .run(timestamp, input.fencingToken);
+      this.assertTransition(guard.job.state, "completed");
+      this.db
+        .query(
+          `UPDATE jobs SET state='completed', resource_id=COALESCE(?, resource_id),
+             updated_at=? WHERE id=?`,
+        )
+        .run(input.resourceId ?? null, timestamp, guard.job.id);
+      this.recordTransition(
+        guard.job.id,
+        input.fencingToken,
+        guard.job.state,
+        "completed",
+        guard.job_worker,
+        "completed",
+        null,
+        timestamp,
+      );
+      return {
+        ok: true,
+        idempotent: false,
+        job: this.requireJob(guard.job.id),
+      };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Fenced failure classification. Infrastructure failure retries indefinitely
+   * in retry_wait; item-transient failure consumes a bounded budget and blocks
+   * once exhausted; permanent failure fails terminally; auth/config blocks.
+   */
+  failAttempt(
+    input: {
+      fencingToken: number;
+      failureClass: FailureClass;
+      summary?: unknown;
+    } & LifecycleOptions,
+  ): FailResult {
+    const now = input.now ?? new Date();
+    const policy = { ...DEFAULT_LIFECYCLE_POLICY, ...input.policy };
+    const random = input.random ?? Math.random;
+    const timestamp = now.toISOString();
+    const summary =
+      input.summary === undefined ? null : sanitizeExternalError(input.summary);
+
+    const transaction = this.db.transaction((): FailResult => {
+      const guard = this.guardActiveToken(input.fencingToken, now);
+      if (guard.ok === false) return guard;
+      const job = guard.job;
+      this.db
+        .query(
+          `UPDATE attempts SET state='failed', failure_class=?, failure_summary=?,
+             finished_at=? WHERE id=?`,
+        )
+        .run(input.failureClass, summary, timestamp, input.fencingToken);
+
+      let toState: JobState;
+      let runAt = job.run_at;
+      let itemRetryCount = job.item_retry_count;
+      let blockReason: string | null = null;
+      let reason: string;
+      if (input.failureClass === "infra") {
+        toState = "retry_wait";
+        runAt = isoAfter(
+          now,
+          backoffMs(
+            job.attempt_count,
+            policy.infraBaseMs,
+            policy.infraCapMs,
+            policy.jitterRatio,
+            random,
+          ),
+        );
+        reason = "infra_retry";
+      } else if (input.failureClass === "item_transient") {
+        itemRetryCount = job.item_retry_count + 1;
+        if (itemRetryCount >= policy.maxItemRetries) {
+          toState = "blocked";
+          blockReason = "item_retry_exhausted";
+          reason = "item_retry_exhausted";
+        } else {
+          toState = "retry_wait";
+          runAt = isoAfter(
+            now,
+            backoffMs(
+              itemRetryCount,
+              policy.itemBaseMs,
+              policy.itemCapMs,
+              policy.jitterRatio,
+              random,
+            ),
+          );
+          reason = "item_retry";
+        }
+      } else if (input.failureClass === "auth_config") {
+        toState = "blocked";
+        blockReason = "auth_config";
+        reason = "auth_config";
+      } else {
+        toState = "failed";
+        reason = "permanent";
+      }
+
+      this.assertTransition(job.state, toState);
+      this.db
+        .query(
+          `UPDATE jobs SET state=?, item_retry_count=?, run_at=?, block_reason=?,
+             failure_class=?, failure_summary=?, current_attempt_id=NULL,
+             updated_at=? WHERE id=?`,
+        )
+        .run(
+          toState,
+          itemRetryCount,
+          runAt,
+          blockReason,
+          input.failureClass,
+          summary,
+          timestamp,
+          job.id,
+        );
+      this.recordTransition(
+        job.id,
+        input.fencingToken,
+        job.state,
+        toState,
+        guard.job_worker,
+        reason,
+        summary,
+        timestamp,
+      );
+      return {
+        ok: true,
+        job: this.requireJob(job.id),
+        attempt: this.requireAttempt(input.fencingToken),
+        disposition: toState,
+      };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Reconcile leases whose worker crashed or stalled: mark each expired leased
+   * attempt stale and return its job to retry_wait with infra backoff. A crash
+   * is not attributable to the item, so it never consumes the item budget.
+   */
+  recoverExpiredLeases(input: LifecycleOptions = {}): RecoveredLease[] {
+    const now = input.now ?? new Date();
+    const policy = { ...DEFAULT_LIFECYCLE_POLICY, ...input.policy };
+    const random = input.random ?? Math.random;
+    const timestamp = now.toISOString();
+
+    const transaction = this.db.transaction((): RecoveredLease[] => {
+      const expired = this.db
+        .query(
+          `SELECT a.id AS attempt_id, a.job_id AS job_id, j.state AS state,
+                  j.attempt_count AS attempt_count
+           FROM attempts a JOIN jobs j ON j.id = a.job_id
+           WHERE a.state='leased' AND a.lease_expires_at <= ? AND j.state='running'
+           ORDER BY a.id ASC`,
+        )
+        .all(timestamp) as Array<{
+        attempt_id: number;
+        job_id: number;
+        state: JobState;
+        attempt_count: number;
+      }>;
+      const recovered: RecoveredLease[] = [];
+      for (const row of expired) {
+        this.db
+          .query("UPDATE attempts SET state='stale', finished_at=? WHERE id=?")
+          .run(timestamp, row.attempt_id);
+        const runAt = isoAfter(
+          now,
+          backoffMs(
+            row.attempt_count,
+            policy.infraBaseMs,
+            policy.infraCapMs,
+            policy.jitterRatio,
+            random,
+          ),
+        );
+        this.assertTransition(row.state, "retry_wait");
+        this.db
+          .query(
+            `UPDATE jobs SET state='retry_wait', run_at=?, current_attempt_id=NULL,
+               updated_at=? WHERE id=?`,
+          )
+          .run(runAt, timestamp, row.job_id);
+        this.recordTransition(
+          row.job_id,
+          row.attempt_id,
+          row.state,
+          "retry_wait",
+          "system",
+          "lease_expired",
+          null,
+          timestamp,
+        );
+        recovered.push({
+          job_id: row.job_id,
+          attempt_id: row.attempt_id,
+          disposition: "retry_wait",
+        });
+      }
+      return recovered;
+    });
+    return transaction.immediate();
+  }
+
+  /** Operator manual retry: requeue the same job, preserving prior attempts. */
+  retryJob(input: {
+    jobId: number;
+    actor?: string;
+    reason?: string;
+    now?: Date;
+  }): Job {
+    return this.operatorTransition(
+      input.jobId,
+      "queued",
+      input.actor ?? "operator",
+      input.reason ?? "manual_retry",
+      null,
+      input.now,
+      true,
+    );
+  }
+
+  /** Operator reopen of a terminal disposition back to the runnable queue. */
+  reopenJob(input: {
+    jobId: number;
+    actor?: string;
+    reason?: string;
+    now?: Date;
+  }): Job {
+    return this.operatorTransition(
+      input.jobId,
+      "queued",
+      input.actor ?? "operator",
+      input.reason ?? "reopened",
+      null,
+      input.now,
+      true,
+    );
+  }
+
+  /** Operator exclusion: durably remove a job from processing with a reason. */
+  excludeJob(input: {
+    jobId: number;
+    actor?: string;
+    reason: string;
+    now?: Date;
+  }): Job {
+    const reason = String(input.reason || "").trim();
+    if (reason.length === 0)
+      throw new CliError("bad_exclude", "exclusion requires a reason");
+    return this.operatorTransition(
+      input.jobId,
+      "excluded",
+      input.actor ?? "operator",
+      reason,
+      reason,
+      input.now,
+      false,
+    );
+  }
+
+  /**
+   * Operator cancellation, fenced by a compare-and-swap: a job that already
+   * committed a completion wins the race and cancellation is refused; otherwise
+   * the job is cancelled and any live attempt is marked cancelled so a late
+   * worker cannot commit.
+   */
+  cancelJob(input: {
+    jobId: number;
+    actor?: string;
+    reason?: string;
+    now?: Date;
+  }): CancelResult {
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+    const actor = input.actor ?? "operator";
+    const reason = input.reason ?? "cancelled";
+
+    const transaction = this.db.transaction((): CancelResult => {
+      const job = this.requireJob(input.jobId);
+      if (job.state === "completed") {
+        return { ok: false, reason: "already_completed", job };
+      }
+      if (job.state === "cancelled") return { ok: true, job };
+      this.assertTransition(job.state, "cancelled");
+      if (job.current_attempt_id !== null) {
+        this.db
+          .query(
+            "UPDATE attempts SET state='cancelled', finished_at=? WHERE id=? AND state='leased'",
+          )
+          .run(timestamp, job.current_attempt_id);
+      }
+      this.db
+        .query(
+          "UPDATE jobs SET state='cancelled', current_attempt_id=NULL, updated_at=? WHERE id=?",
+        )
+        .run(timestamp, input.jobId);
+      this.recordTransition(
+        input.jobId,
+        job.current_attempt_id,
+        job.state,
+        "cancelled",
+        actor,
+        reason,
+        null,
+        timestamp,
+      );
+      return { ok: true, job: this.requireJob(input.jobId) };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Append durable audit evidence without changing the job's state, e.g. an
+   * operator inspecting a sensitive job. This is a self-loop, so it deliberately
+   * bypasses the state-transition table.
+   */
+  recordSensitiveInspection(input: {
+    jobId: number;
+    actor: string;
+    detail: string;
+    now?: Date;
+  }): Job {
+    const actor = String(input.actor || "").trim();
+    if (actor.length === 0)
+      throw new CliError("bad_audit", "an actor is required");
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+    const detail = sanitizeExternalError(input.detail);
+
+    const transaction = this.db.transaction((): Job => {
+      const job = this.requireJob(input.jobId);
+      this.recordTransition(
+        job.id,
+        job.current_attempt_id,
+        job.state,
+        job.state,
+        actor,
+        "sensitive_inspection",
+        detail,
+        timestamp,
+      );
+      return job;
+    });
+    return transaction.immediate();
+  }
+
+  private operatorTransition(
+    jobId: number,
+    toState: JobState,
+    actor: string,
+    reason: string,
+    blockReason: string | null,
+    nowInput: Date | undefined,
+    resetRunAt: boolean,
+  ): Job {
+    const now = nowInput ?? new Date();
+    const timestamp = now.toISOString();
+    const transaction = this.db.transaction((): Job => {
+      const job = this.requireJob(jobId);
+      this.assertTransition(job.state, toState);
+      if (job.current_attempt_id !== null) {
+        this.db
+          .query(
+            "UPDATE attempts SET state='stale', finished_at=? WHERE id=? AND state='leased'",
+          )
+          .run(timestamp, job.current_attempt_id);
+      }
+      this.db
+        .query(
+          `UPDATE jobs SET state=?, run_at=?, block_reason=?, current_attempt_id=NULL,
+             updated_at=? WHERE id=?`,
+        )
+        .run(
+          toState,
+          resetRunAt ? timestamp : job.run_at,
+          blockReason,
+          timestamp,
+          jobId,
+        );
+      this.recordTransition(
+        jobId,
+        job.current_attempt_id,
+        job.state,
+        toState,
+        actor,
+        reason,
+        null,
+        timestamp,
+      );
+      return this.requireJob(jobId);
+    });
+    return transaction.immediate();
+  }
+
+  private guardActiveToken(
+    token: number,
+    now: Date,
+  ):
+    | { ok: true; job: Job; job_worker: string }
+    | { ok: false; reason: "stale" | "fenced" | "terminal"; job: Job } {
+    const attempt = this.requireAttempt(token);
+    const job = this.requireJob(attempt.job_id);
+    const TERMINAL: readonly JobState[] = [
+      "completed",
+      "failed",
+      "excluded",
+      "cancelled",
+    ];
+    if (TERMINAL.includes(job.state))
+      return { ok: false, reason: "terminal", job };
+    if (job.current_attempt_id !== token)
+      return { ok: false, reason: "fenced", job };
+    if (attempt.state !== "leased") return { ok: false, reason: "stale", job };
+    if (isExpired(attempt.lease_expires_at, now))
+      return { ok: false, reason: "stale", job };
+    return { ok: true, job, job_worker: attempt.worker };
+  }
+
+  private assertTransition(from: JobState, to: JobState): void {
+    if (!LEGAL_JOB_TRANSITIONS[from].includes(to)) {
+      throw new CliError(
+        "illegal_transition",
+        `illegal job transition ${from} -> ${to}`,
+      );
+    }
+  }
+
+  private recordTransition(
+    jobId: number,
+    attemptId: number | null,
+    fromState: JobState | null,
+    toState: JobState,
+    actor: string,
+    reason: string | null,
+    detail: string | null,
+    timestamp: string,
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO job_transitions(
+           job_id, attempt_id, from_state, to_state, actor, reason, detail, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        jobId,
+        attemptId,
+        fromState,
+        toState,
+        actor,
+        reason,
+        detail,
+        timestamp,
+      );
+  }
+
+  private loadJobByKey(idempotencyKey: string): Job | null {
+    return this.db
+      .query(`SELECT ${JOB_COLUMNS} FROM jobs WHERE idempotency_key=?`)
+      .get(idempotencyKey) as Job | null;
+  }
+
+  private requireJob(jobId: number): Job {
+    const job = this.db
+      .query(`SELECT ${JOB_COLUMNS} FROM jobs WHERE id=?`)
+      .get(jobId) as Job | null;
+    if (job === null)
+      throw new CliError("job_not_found", `job ${jobId} not found`);
+    return job;
+  }
+
+  private requireAttempt(attemptId: number): Attempt {
+    const attempt = this.db
+      .query(`SELECT ${ATTEMPT_COLUMNS} FROM attempts WHERE id=?`)
+      .get(attemptId) as Attempt | null;
+    if (attempt === null) {
+      throw new CliError("attempt_not_found", `attempt ${attemptId} not found`);
+    }
+    return attempt;
+  }
+
   private rejectUnsupportedExistingSchema(): void {
     const hasMeta = this.db
       .query(
@@ -488,6 +1979,9 @@ export class ResearchStore {
           );
         }
         if (version < 2) this.db.exec(MIGRATION_V2);
+        if (version < 3) this.db.exec(MIGRATION_V3);
+        if (version < 4) this.db.exec(MIGRATION_V4);
+        if (version < 5) this.db.exec(MIGRATION_V5);
       })
       .immediate();
   }

@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
 import {
+  type AdmissionResult,
+  admitSubmission,
+  DEFAULT_WAIT_TIMEOUT_MS,
+  SUBMISSION_VERSION,
+  waitForAdmission,
+} from "./admission";
+import {
   optBoolean,
   optNumber,
   optString,
@@ -14,10 +21,19 @@ import {
 } from "./completed-link-input";
 import { ResearchCache } from "./db";
 import { CliError } from "./errors";
-import { errorEnvelope, writeByFormat, writeJson } from "./format";
+import { errorEnvelope, formatList, writeByFormat, writeJson } from "./format";
 import { buildGuide, HARNESS_DOCS_PROMPT } from "./guide";
 import { COMMANDS, helpFor, TOP_HELP, VERSION } from "./help";
-import { type IngestSourceType, ingestSource } from "./ingest";
+import type { IngestSourceType } from "./ingest";
+import {
+  doctor,
+  jobStats,
+  listJobs,
+  parseJobState,
+  revealJob,
+  safeJobView,
+  showJob,
+} from "./jobs";
 import { ingestPrescrapedLink } from "./link-ingest";
 import {
   humanChunk,
@@ -32,8 +48,9 @@ import {
 } from "./render";
 import { ResearchStore } from "./store";
 import { normalizeTags } from "./text";
-import type { GlobalOptions, SearchMode } from "./types";
+import type { GlobalOptions, SearchMode, Sensitivity } from "./types";
 import { validateHttpUrl } from "./url";
+import { runWorker } from "./worker";
 
 const COMMAND_NAMES = new Set(COMMANDS.map((c) => c.name));
 const READ_COMMANDS = new Set([
@@ -43,12 +60,23 @@ const READ_COMMANDS = new Set([
   "tags",
   "sources",
   "context",
+  "doctor",
 ]);
-const MUTATION_COMMANDS = new Set(["ingest", "ingest-link", "delete"]);
+const MUTATION_COMMANDS = new Set([
+  "submit",
+  "ingest",
+  "ingest-link",
+  "delete",
+  "worker",
+]);
 
 interface IngestRequest {
+  version: number;
   source: string;
   sourceType: IngestSourceType;
+  ingress: string;
+  collections: string[];
+  idempotencyKey?: string;
   title?: string;
   tags: string[];
   notes?: string;
@@ -57,6 +85,8 @@ interface IngestRequest {
   maxBytes: number;
   force: boolean;
   skipSecrets: boolean;
+  wait: boolean;
+  waitTimeoutMs: number;
 }
 
 interface DeleteRequest {
@@ -66,7 +96,12 @@ interface DeleteRequest {
 }
 
 const INGEST_OPTION_SPECS = {
+  "intent-version": { type: "number", default: SUBMISSION_VERSION },
+  kind: { type: "string" },
   "source-type": { type: "string", default: "auto" },
+  ingress: { type: "string", default: "cli" },
+  collection: { type: "string", multiple: true },
+  "idempotency-key": { type: "string" },
   title: { type: "string" },
   tag: { type: "string", multiple: true },
   tags: { type: "string", multiple: true },
@@ -76,6 +111,8 @@ const INGEST_OPTION_SPECS = {
   "max-bytes": { type: "number", default: 5000000 },
   force: { type: "boolean", default: false },
   "skip-secrets": { type: "boolean", default: true },
+  wait: { type: "boolean", default: false },
+  "wait-timeout-ms": { type: "number", default: DEFAULT_WAIT_TIMEOUT_MS },
 } as const;
 
 const DELETE_OPTION_SPECS = {
@@ -121,6 +158,11 @@ async function runParsed(
     });
   }
 
+  if (command === "jobs") {
+    await runJobs(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);
+    return;
+  }
+
   if (command === "guide") {
     writeByFormat(
       "guide",
@@ -158,10 +200,22 @@ async function runParsed(
         case "context":
           runContext(cache, parsed.commandArgv, parsed.globals);
           break;
+        case "doctor":
+          runDoctor(cache, parsed.commandArgv, parsed.globals);
+          break;
       }
     } finally {
       cache.close();
     }
+    return;
+  }
+
+  if (command === "worker") {
+    await runWorkerCommand(
+      parsed.globals.dbPath,
+      parsed.commandArgv,
+      parsed.globals,
+    );
     return;
   }
 
@@ -175,11 +229,11 @@ async function runParsed(
   }
 
   if (MUTATION_COMMANDS.has(command)) {
-    if (command === "ingest") {
-      const request = parseIngestRequest(parsed.commandArgv);
+    if (command === "submit" || command === "ingest") {
+      const request = parseIngestRequest(parsed.commandArgv, command);
       const store = new ResearchStore(parsed.globals.dbPath);
       try {
-        await executeIngest(store, request, parsed.globals);
+        await executeAdmission(store, request, parsed.globals, command);
       } finally {
         store.close();
       }
@@ -245,6 +299,14 @@ function runSearch(
     offset: { type: "number", default: 0 },
     tag: { type: "string" },
     "source-type": { type: "string" },
+    collection: { type: "string" },
+    source: { type: "string" },
+    "resource-kind": { type: "string" },
+    sensitivity: { type: "string" },
+    date: { type: "string" },
+    "date-from": { type: "string" },
+    "date-to": { type: "string" },
+    "local-path": { type: "string" },
   });
   const query = optString(opts, "query") ?? opts._.join(" ");
   const mode = parseSearchMode(optString(opts, "mode") ?? "any");
@@ -255,6 +317,14 @@ function runSearch(
     offset: optNumber(opts, "offset"),
     tag: optString(opts, "tag"),
     sourceType: optString(opts, "source-type"),
+    collection: optString(opts, "collection"),
+    source: optString(opts, "source"),
+    resourceKind: optString(opts, "resource-kind"),
+    sensitivity: optString(opts, "sensitivity") as Sensitivity | undefined,
+    date: optString(opts, "date"),
+    dateFrom: optString(opts, "date-from"),
+    dateTo: optString(opts, "date-to"),
+    localPath: optString(opts, "local-path"),
   });
   writeByFormat("search", data, globals, humanSearch, { jsonl: searchJsonl });
 }
@@ -359,26 +429,312 @@ function runContext(
     query: { type: "string" },
     limit: { type: "number", default: 6 },
     "max-chars": { type: "number", default: 12000 },
+    tag: { type: "string" },
+    "source-type": { type: "string" },
+    collection: { type: "string" },
+    source: { type: "string" },
+    "resource-kind": { type: "string" },
+    sensitivity: { type: "string" },
+    date: { type: "string" },
+    "date-from": { type: "string" },
+    "date-to": { type: "string" },
+    "local-path": { type: "string" },
   });
   const query = optString(opts, "query") ?? opts._.join(" ");
   const data = cache.context({
     query,
     limit: optNumber(opts, "limit"),
     maxChars: optNumber(opts, "max-chars"),
+    tag: optString(opts, "tag"),
+    sourceType: optString(opts, "source-type"),
+    collection: optString(opts, "collection"),
+    source: optString(opts, "source"),
+    resourceKind: optString(opts, "resource-kind"),
+    sensitivity: optString(opts, "sensitivity") as Sensitivity | undefined,
+    date: optString(opts, "date"),
+    dateFrom: optString(opts, "date-from"),
+    dateTo: optString(opts, "date-to"),
+    localPath: optString(opts, "local-path"),
   });
   writeByFormat("context", data, globals, humanContext);
 }
 
-function parseIngestRequest(argv: string[]): IngestRequest {
+async function runJobs(
+  dbPath: string,
+  argv: string[],
+  globals: GlobalOptions,
+): Promise<void> {
+  const subcommand = argv[0];
+  if (
+    !subcommand ||
+    !["list", "show", "retry", "cancel", "exclude", "stats"].includes(
+      subcommand,
+    )
+  ) {
+    throw new CliError(
+      "bad_jobs_command",
+      "jobs requires one of: list, show, retry, cancel, exclude, stats",
+      { exitCode: 2 },
+    );
+  }
+  const args = argv.slice(1);
+  if (subcommand === "list") {
+    const opts = parseOptions(args, {
+      state: { type: "string" },
+      limit: { type: "number", default: 100 },
+    });
+    if (opts._.length > 0)
+      throw new CliError(
+        "unexpected_args",
+        "jobs list accepts no positional arguments",
+        { exitCode: 2 },
+      );
+    const cache = new ResearchCache(dbPath);
+    try {
+      const data = listJobs(cache, {
+        state: parseJobState(optString(opts, "state")),
+        limit: optNumber(opts, "limit"),
+      });
+      writeByFormat("jobs list", data, globals, (rows) =>
+        formatList(
+          rows.map((row) => ({
+            id: row.id,
+            kind: row.kind,
+            state: row.state,
+            attempts: row.attempt_count,
+            run_at: row.run_at,
+          })),
+          ["id", "kind", "state", "attempts", "run_at"],
+        ),
+      );
+    } finally {
+      cache.close();
+    }
+    return;
+  }
+  if (subcommand === "stats") {
+    const opts = parseOptions(args, {});
+    if (opts._.length > 0)
+      throw new CliError(
+        "unexpected_args",
+        "jobs stats accepts no positional arguments",
+        { exitCode: 2 },
+      );
+    const cache = new ResearchCache(dbPath);
+    try {
+      const data = jobStats(cache);
+      writeByFormat(
+        "jobs stats",
+        data,
+        globals,
+        (value) => `${JSON.stringify(value, null, 2)}\n`,
+      );
+    } finally {
+      cache.close();
+    }
+    return;
+  }
+
+  const opts = parseOptions(args, {
+    reason: { type: "string" },
+    actor: { type: "string", default: "operator" },
+    "reveal-content": { type: "boolean", default: false },
+    "max-bytes": { type: "number", default: 5000000 },
+  });
+  if (opts._.length !== 1) {
+    throw new CliError(
+      "bad_job_id",
+      `jobs ${subcommand} requires exactly one job id`,
+      { exitCode: 2 },
+    );
+  }
+  const jobId = assertPositiveInteger(Number(opts._[0]), "job-id");
+  const actor = optString(opts, "actor") ?? "operator";
+  const reason = optString(opts, "reason");
+  if (subcommand === "show") {
+    if (reason !== undefined)
+      throw new CliError(
+        "unexpected_option",
+        "jobs show does not accept --reason",
+        { exitCode: 2 },
+      );
+    if (optBoolean(opts, "reveal-content")) {
+      const store = new ResearchStore(dbPath);
+      try {
+        const data = revealJob(store, jobId, {
+          actor,
+          maxBytes: assertPositiveInteger(
+            optNumber(opts, "max-bytes") ?? 5000000,
+            "max-bytes",
+          ),
+        });
+        writeByFormat(
+          "jobs show",
+          data,
+          globals,
+          (value) => `${JSON.stringify(value, null, 2)}\n`,
+          { readOnly: false },
+        );
+      } finally {
+        store.close();
+      }
+    } else {
+      const cache = new ResearchCache(dbPath);
+      try {
+        const data = showJob(cache, jobId);
+        writeByFormat(
+          "jobs show",
+          data,
+          globals,
+          (value) => `${JSON.stringify(value, null, 2)}\n`,
+        );
+      } finally {
+        cache.close();
+      }
+    }
+    return;
+  }
+  if (optBoolean(opts, "reveal-content")) {
+    throw new CliError(
+      "unexpected_option",
+      `jobs ${subcommand} does not accept --reveal-content`,
+      { exitCode: 2 },
+    );
+  }
+  const store = new ResearchStore(dbPath);
+  try {
+    let data: unknown;
+    if (subcommand === "retry") {
+      data = safeJobView(store.retryJob({ jobId, actor, reason }));
+    } else if (subcommand === "cancel") {
+      const cancelled = store.cancelJob({ jobId, actor, reason });
+      data = cancelled.ok
+        ? { ok: true, job: safeJobView(cancelled.job) }
+        : {
+            ok: false,
+            reason: cancelled.reason,
+            job: safeJobView(cancelled.job),
+          };
+    } else {
+      if (!reason?.trim())
+        throw new CliError("bad_exclude", "jobs exclude requires --reason", {
+          exitCode: 2,
+        });
+      data = safeJobView(store.excludeJob({ jobId, actor, reason }));
+    }
+    writeByFormat(
+      `jobs ${subcommand}`,
+      data,
+      globals,
+      (value) => `${JSON.stringify(value, null, 2)}\n`,
+      { readOnly: false },
+    );
+  } finally {
+    store.close();
+  }
+}
+
+function runDoctor(
+  cache: ResearchCache,
+  argv: string[],
+  globals: GlobalOptions,
+): void {
+  const opts = parseOptions(argv, {});
+  if (opts._.length > 0)
+    throw new CliError(
+      "unexpected_args",
+      "doctor accepts no positional arguments",
+      { exitCode: 2 },
+    );
+  const data = doctor(cache);
+  writeByFormat(
+    "doctor",
+    data,
+    globals,
+    (value) => `${JSON.stringify(value, null, 2)}\n`,
+  );
+  if (!data.healthy) process.exitCode = 1;
+}
+
+async function runWorkerCommand(
+  dbPath: string,
+  argv: string[],
+  globals: GlobalOptions,
+): Promise<void> {
+  const opts = parseOptions(argv, {
+    once: { type: "boolean", default: false },
+    "worker-id": { type: "string" },
+    "poll-ms": { type: "number", default: 1000 },
+    "lease-ms": { type: "number", default: 60000 },
+    "heartbeat-ms": { type: "number", default: 20000 },
+    "shutdown-grace-ms": { type: "number", default: 10000 },
+  });
+  if (opts._.length > 0)
+    throw new CliError(
+      "unexpected_args",
+      "worker accepts no positional arguments",
+      { exitCode: 2 },
+    );
+  const store = new ResearchStore(dbPath);
+  try {
+    const data = await runWorker(store, {
+      once: optBoolean(opts, "once"),
+      workerId: optString(opts, "worker-id"),
+      pollMs: assertPositiveInteger(
+        optNumber(opts, "poll-ms") ?? 1000,
+        "poll-ms",
+      ),
+      leaseMs: assertPositiveInteger(
+        optNumber(opts, "lease-ms") ?? 60000,
+        "lease-ms",
+      ),
+      heartbeatMs: assertPositiveInteger(
+        optNumber(opts, "heartbeat-ms") ?? 20000,
+        "heartbeat-ms",
+      ),
+      shutdownGraceMs: assertNonNegativeInteger(
+        optNumber(opts, "shutdown-grace-ms") ?? 10000,
+        "shutdown-grace-ms",
+      ),
+    });
+    writeByFormat(
+      "worker",
+      data,
+      globals,
+      (value) => `${JSON.stringify(value, null, 2)}\n`,
+      { readOnly: false },
+    );
+  } finally {
+    store.close();
+  }
+}
+
+function parseIngestRequest(
+  argv: string[],
+  command: "submit" | "ingest",
+): IngestRequest {
   const opts = parseOptions(argv, INGEST_OPTION_SPECS);
   if (opts._.length !== 1) {
     throw new CliError(
       "bad_source",
-      "ingest requires exactly one <source> positional argument",
+      `${command} requires exactly one <source> positional argument`,
       { exitCode: 2 },
     );
   }
-  const sourceType = optString(opts, "source-type") ?? "auto";
+  const compatibilityType = optString(opts, "source-type") ?? "auto";
+  const explicitKind = optString(opts, "kind");
+  if (
+    explicitKind !== undefined &&
+    compatibilityType !== "auto" &&
+    explicitKind !== compatibilityType
+  ) {
+    throw new CliError(
+      "bad_source_type",
+      "--kind and --source-type must agree when both are provided",
+      { exitCode: 2 },
+    );
+  }
+  const sourceType = explicitKind ?? compatibilityType;
   if (!["auto", "url", "file", "directory", "text"].includes(sourceType)) {
     throw new CliError(
       "bad_source_type",
@@ -404,8 +760,15 @@ function parseIngestRequest(argv: string[]): IngestRequest {
     }
   }
   return {
+    version: assertPositiveInteger(
+      optNumber(opts, "intent-version") ?? SUBMISSION_VERSION,
+      "intent-version",
+    ),
     source,
     sourceType: sourceType as IngestSourceType,
+    ingress: optString(opts, "ingress") ?? "cli",
+    collections: optStrings(opts, "collection"),
+    idempotencyKey: optString(opts, "idempotency-key"),
     title: optString(opts, "title"),
     tags: [...optStrings(opts, "tag"), ...optStrings(opts, "tags")].flatMap(
       (tag) => normalizeTags(tag),
@@ -422,16 +785,52 @@ function parseIngestRequest(argv: string[]): IngestRequest {
     ),
     force: optBoolean(opts, "force"),
     skipSecrets: optBoolean(opts, "skip-secrets"),
+    wait: optBoolean(opts, "wait"),
+    waitTimeoutMs: assertNonNegativeInteger(
+      optNumber(opts, "wait-timeout-ms") ?? DEFAULT_WAIT_TIMEOUT_MS,
+      "wait-timeout-ms",
+    ),
   };
 }
 
-async function executeIngest(
+function humanAdmission(result: AdmissionResult): string {
+  return [
+    `${result.status}: ingestion job ${result.job_id}`,
+    `idempotency_key: ${result.idempotency_key}`,
+    `state: ${result.state}`,
+    ...(result.wait_status === undefined
+      ? []
+      : [`wait_status: ${result.wait_status}`]),
+    "",
+  ].join("\n");
+}
+
+async function executeAdmission(
   store: ResearchStore,
   request: IngestRequest,
   globals: GlobalOptions,
+  command: "submit" | "ingest",
 ): Promise<void> {
-  const result = await ingestSource(store, request);
-  writeByFormat("ingest", result, globals, humanMutation, { readOnly: false });
+  let result = admitSubmission(store, {
+    version: request.version as typeof SUBMISSION_VERSION,
+    source: request.source,
+    kind: request.sourceType,
+    ingress: request.ingress,
+    collections: request.collections,
+    idempotencyKey: request.idempotencyKey,
+    title: request.title,
+    tags: request.tags,
+    notes: request.notes,
+    recursive: request.recursive,
+    maxFiles: request.maxFiles,
+    maxBytes: request.maxBytes,
+    force: request.force,
+    skipSecrets: request.skipSecrets,
+  });
+  if (request.wait) {
+    result = await waitForAdmission(store, result, request.waitTimeoutMs);
+  }
+  writeByFormat(command, result, globals, humanAdmission, { readOnly: false });
 }
 
 async function runIngestLink(
@@ -534,6 +933,16 @@ function assertPositiveInteger(value: number, name: string): number {
   const integer = assertInteger(value, name);
   if (integer < 1) {
     throw new CliError("bad_integer", `--${name} must be positive`, {
+      exitCode: 2,
+    });
+  }
+  return integer;
+}
+
+function assertNonNegativeInteger(value: number, name: string): number {
+  const integer = assertInteger(value, name);
+  if (integer < 0) {
+    throw new CliError("bad_integer", `--${name} must not be negative`, {
       exitCode: 2,
     });
   }

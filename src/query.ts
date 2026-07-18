@@ -1,5 +1,76 @@
 import { CliError } from "./errors";
-import type { SearchMode } from "./types";
+import type { SearchMode, Sensitivity } from "./types";
+
+export interface QueryFilters {
+  tag?: string;
+  sourceType?: string;
+  collection?: string;
+  source?: string;
+  resourceKind?: string;
+  sensitivity?: Sensitivity;
+  date?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  localPath?: string;
+}
+
+const SENSITIVITIES = new Set<Sensitivity>([
+  "public",
+  "normal",
+  "sensitive",
+  "private",
+]);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function validateQueryFilters(filters: QueryFilters): QueryFilters {
+  for (const [name, value] of Object.entries(filters)) {
+    if (value !== undefined && value.trim().length === 0) {
+      throw new CliError("bad_filter", `${name} filter must not be empty`, {
+        exitCode: 2,
+      });
+    }
+  }
+  if (
+    filters.sensitivity !== undefined &&
+    !SENSITIVITIES.has(filters.sensitivity)
+  ) {
+    throw new CliError(
+      "bad_sensitivity",
+      "sensitivity must be public, normal, sensitive, or private",
+      { exitCode: 2 },
+    );
+  }
+  for (const value of [filters.date, filters.dateFrom, filters.dateTo]) {
+    if (value !== undefined) validateDate(value);
+  }
+  return filters;
+}
+
+function validateDate(value: string): void {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) {
+    throw new CliError("bad_date", `invalid date filter '${value}'`, {
+      exitCode: 2,
+    });
+  }
+  if (ISO_DATE.test(value)) {
+    const normalized = new Date(`${value}T00:00:00.000Z`)
+      .toISOString()
+      .slice(0, 10);
+    if (normalized !== value) {
+      throw new CliError("bad_date", `invalid date filter '${value}'`, {
+        exitCode: 2,
+      });
+    }
+  }
+}
+
+export function exclusiveDateUpperBound(value: string): string {
+  if (!ISO_DATE.test(value)) return value;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
 
 const FTS_TOKEN = /[\p{L}\p{N}_./:@-]+/gu;
 

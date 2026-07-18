@@ -19,8 +19,24 @@ export const COMMANDS = [
     summary: "Return bounded citation-ready context for a query",
   },
   {
+    name: "submit",
+    summary: "Durably queue a text, file, directory, or URL intent",
+  },
+  {
     name: "ingest",
-    summary: "Index text, a file/directory, or a URL via Scrapectl",
+    summary: "Compatibility alias for durable queued admission",
+  },
+  {
+    name: "worker",
+    summary: "Lease and materialize durable ingestion jobs",
+  },
+  {
+    name: "jobs",
+    summary: "Safely inspect and operate on the ingestion ledger",
+  },
+  {
+    name: "doctor",
+    summary: "Check database, Artifact, lease, and provider health",
   },
   {
     name: "ingest-link",
@@ -71,10 +87,10 @@ Agent defaults:
   4. Cite document_id, chunk_id when present, title, source_uri, and relation provenance when relevant.
 
 Search/get/stats/tags/sources/context use structurally read-only SQLite connections.
-Mutations use a separate writable schema-v2 store. Linkctl owns link admission and duplicate policy;
-Scrapectl owns URL fetching, browser/session behavior, backend hardening/retries, and extraction;
-Agentbrain retries only transient provider-command availability, indexes completed markdown, and never falls back to direct HTTP.
-Use --help on any command for command-specific options.
+Agentbrain submit is the durable admission boundary. Accepted intents are queued before any
+extraction or indexing; Scrapectl remains the sole URL extraction and network boundary.
+Use --help on any command for command-specific options. Job inspection omits durable
+intent bodies and URLs unless jobs show is given the audited --reveal-content option.
 `;
 
 export const HELP: Record<string, string> = {
@@ -102,7 +118,15 @@ Options:
   --limit <n>         Results per page (default: 10, max: 50)
   --offset <n>        Page offset (default: 0)
   --tag <tag>         Require a document tag, exact match
-  --source-type <t>   Require source_type, e.g. tweet, tweet_article, scraped_url
+  --source-type <t>   Require a legacy document source_type
+  --collection <slug> Require exact collection membership
+  --source <id>       Require an exact source identifier (or source_type:identifier)
+  --resource-kind <k> Require an exact resource kind
+  --sensitivity <s>   Require effective public | normal | sensitive | private policy
+  --date <yyyy-mm-dd> Require the document update date
+  --date-from <date>  Require updates on or after a date or ISO timestamp
+  --date-to <date>    Require updates through a date or ISO timestamp
+  --local-path <path> Require an exact local document path or resource alias
   --json             Emit an envelope with data.results[]
   --jsonl            Emit one result per line; first line is a metadata record
 
@@ -141,46 +165,106 @@ Examples:
   context: `agentbrain context — bounded citation-ready evidence
 
 Usage:
-  agentbrain context <query> [--limit N] [--max-chars N] [--json]
+  agentbrain context <query> [--limit N] [--max-chars N] [filters] [--json]
 
 Options:
   --query <text>      Query text instead of positional words
-  --limit <n>         Maximum hits (default: 6, max: 20)
+  --limit <n>         Maximum resource hits (default: 6, max: 20)
   --max-chars <n>     Total chunk-content budget (default: 12000; 500..50000)
+  --tag <tag>         Require an exact document tag
+  --source-type <t>   Require a legacy document source_type
+  --collection <slug> Require exact collection membership
+  --source <id>       Require an exact source identifier (or source_type:identifier)
+  --resource-kind <k> Require an exact resource kind
+  --sensitivity <s>   Require effective public | normal | sensitive | private policy
+  --date <yyyy-mm-dd> Require the document update date
+  --date-from <date>  Require updates on or after a date or ISO timestamp
+  --date-to <date>    Require updates through a date or ISO timestamp
+  --local-path <path> Require an exact local document path or resource alias
 
-The JSON data.hits objects include document_id, chunk_id, title, source_uri,
-citation, content, offsets, tags, score, and per-hit truncation.
+The JSON data.hits objects include resource provenance, typed relation summaries,
+citation, bounded chunk content, offsets, tags, score, and per-hit truncation. Linked
+resource content is never concatenated into a context hit.
 `,
-  ingest: `agentbrain ingest — index a generic source
+  submit: `agentbrain submit — durable ingestion admission
+
+Usage:
+  agentbrain submit <source> [options]
+
+Options:
+  --intent-version <n> Versioned intent contract (default: 1)
+  --kind <kind>        auto | url | file | directory | text (default: auto)
+  --ingress <name>     Submitting actor/interface (default: cli)
+  --collection <slug> Request collection membership; repeatable
+  --idempotency-key <key> Explicit replay identity
+  --title <text>       Requested title
+  --tag <tag>          Add a tag; repeatable
+  --tags <tags>        Add comma/hash-separated tags; repeatable
+  --notes <text>       Store requested notes
+  --recursive=<bool>   Recurse through directories (default: true)
+  --max-files <n>      Directory snapshot cap (default: 300; max: 5000)
+  --max-bytes <n>      Text or per-file snapshot cap (default: 5000000)
+  --force              Request rematerialization
+  --skip-secrets=<b>   Skip sensitive files/path components (default: true)
+  --wait               Observe the admitted job without bypassing the worker
+  --wait-timeout-ms <n> Stop observing after this duration (default: 30000)
+  --json               Emit a versioned success or error envelope
+
+A new intent exits 0 with status queued. An equivalent intent exits 0 with status
+duplicate and the same job_id. Reusing an explicit idempotency key for different intent
+fails. Local bytes are snapshotted into the Artifact store before acknowledgement. URL
+admission performs no network work. A wait timeout leaves the job queued and recoverable.
+`,
+  ingest: `agentbrain ingest — queued compatibility alias
 
 Usage:
   agentbrain ingest <source> [options]
 
-Options:
-  --source-type <t>   auto | url | file | directory | text (default: auto)
-  --title <text>      Override title
-  --tag <tag>         Add a tag; repeatable
-  --tags <tags>       Add comma/hash-separated tags; repeatable
-  --notes <text>      Store notes
-  --recursive=<bool>  Recurse through directories (default: true)
-  --max-files <n>     Directory success cap (default: 300; max: 5000)
-  --max-bytes <n>     Per-file or extracted-URL markdown cap (default: 5000000)
-  --force             Rewrite chunks even if content and metadata are unchanged
-  --skip-secrets=<b>  Skip sensitive files/path components (default: true)
-  --json              Emit the normal Agentbrain envelope with read_only=false
+This command accepts the same options and returns the same acknowledgement as
+\`agentbrain submit\`. It never extracts, parses, or writes a document directly.
+Prefer \`agentbrain submit\` for new integrations. \`--source-type\` remains an alias for
+\`--kind\` during cutover.
+`,
+  worker: `agentbrain worker — execute durable ingestion jobs
 
-Directory traversal streams entries and caps traversal at 20000 entries / 10000
-supported candidates in addition to --max-files. URL ingestion validates HTTP(S) syntax,
-then invokes PATH-resolved \`scrapectl fetch-markdown --markdown URL\` without a shell.
-Scrapectl selects extraction presets and emits final Markdown; Agentbrain does not render
-provider schemas. \`--max-bytes\` caps accepted Markdown. The normalized requested URL is
-the stable identity, and title comes from --title or Markdown. Scrapectl owns all URL
-fetching, browser/session behavior, DNS/redirect/backend security/retries, and extraction.
-Agentbrain retries only transient CLI/backend availability with bounded exponential
-backoff (default 1s..30s; env AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS and
-AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS accept 100..3600000ms, otherwise defaults). Auth,
-invalid input, empty output, and oversized
-content stop without retry. Local PDF extraction requires pdftotext on PATH.
+Usage:
+  agentbrain worker [--once] [options]
+
+Options:
+  --once                    Recover stale leases, drain work due now, and exit
+  --worker-id <id>          Diagnostic worker identity
+  --poll-ms <n>             Idle polling interval (default: 1000)
+  --lease-ms <n>            Attempt lease duration (default: 60000)
+  --heartbeat-ms <n>        Active lease heartbeat interval (default: 20000)
+  --shutdown-grace-ms <n>   Bounded completion grace after a signal (default: 10000)
+
+Materialization happens outside SQLite write transactions. Completion and failure are
+fenced by the attempt token. Signal shutdown stops new claims and leaves unfinished work
+recoverable through lease expiry.
+`,
+  jobs: `agentbrain jobs — inspect and operate on ingestion jobs
+
+Usage:
+  agentbrain jobs list [--state STATE] [--limit N] [--json]
+  agentbrain jobs show JOB_ID [--reveal-content] [--actor NAME] [--json]
+  agentbrain jobs retry JOB_ID [--reason TEXT] [--actor NAME] [--json]
+  agentbrain jobs cancel JOB_ID [--reason TEXT] [--actor NAME] [--json]
+  agentbrain jobs exclude JOB_ID --reason TEXT [--actor NAME] [--json]
+  agentbrain jobs stats [--json]
+
+List, ordinary show, and stats are structurally read-only and omit durable intent,
+Artifact bodies, raw URLs, query values, worker names, and detailed diagnostics.
+--reveal-content explicitly reads Artifact bodies and appends a sensitive-inspection
+audit record. Retry, cancel, and exclude append transitions and preserve all attempts.
+`,
+  doctor: `agentbrain doctor — operational health checks
+
+Usage:
+  agentbrain doctor [--json]
+
+Uses a structurally read-only database connection. Reports safe status/count data for
+SQLite integrity, schema, Artifact references, leases, and Scrapectl availability.
+Exits 1 when a required check fails.
 `,
   "ingest-link": `agentbrain ingest-link — index a completed scraped link
 

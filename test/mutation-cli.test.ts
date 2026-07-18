@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scrapeWithScrapectl } from "../src/scrapectl";
+import { ResearchStore } from "../src/store";
 
 const REPO = join(import.meta.dir, "..");
 const dirs: string[] = [];
@@ -70,8 +71,8 @@ function run(
   });
 }
 
-test("CLI text ingest, context, and guarded delete use command-specific metadata", () => {
-  const { db } = temp();
+test("CLI ingest queues durably while context and guarded delete keep command metadata", () => {
+  const { dir, db } = temp();
   const ingest = run(
     "agentbrain",
     [
@@ -83,7 +84,7 @@ test("CLI text ingest, context, and guarded delete use command-specific metadata
       "memory",
       "--json",
     ],
-    { db },
+    { db, env: { XDG_DATA_HOME: join(dir, "data") } },
   );
   expect(ingest.exitCode).toBe(0);
   const ingested = JSON.parse(decode(ingest.stdout));
@@ -91,8 +92,21 @@ test("CLI text ingest, context, and guarded delete use command-specific metadata
     ok: true,
     command: "ingest",
     meta: { read_only: false },
-    data: { status: "created" },
+    data: { status: "queued", job_id: 1, state: "queued" },
   });
+
+  const store = new ResearchStore(db);
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM documents").get(),
+  ).toEqual({ count: 0 });
+  const seeded = store.upsertDocument({
+    sourceType: "text",
+    sourceUri: "fixture:materialized",
+    title: "Materialized fixture",
+    content: "Citation-ready agent memory",
+    tags: ["memory"],
+  });
+  store.close();
 
   const context = run(
     "agentbrain",
@@ -107,14 +121,14 @@ test("CLI text ingest, context, and guarded delete use command-specific metadata
     meta: { read_only: true },
   });
   expect(contextPayload.data.hits[0]).toMatchObject({
-    document_id: ingested.data.document_id,
-    source_uri: ingested.data.source_uri,
+    document_id: seeded.document_id,
+    source_uri: "fixture:materialized",
   });
   expect(contextPayload.data.hits[0].citation).toContain("document_id:");
 
   const refused = run(
     "agentbrain",
-    ["delete", "--document-id", String(ingested.data.document_id), "--json"],
+    ["delete", "--document-id", String(seeded.document_id), "--json"],
     { db },
   );
   expect(refused.exitCode).toBe(2);
@@ -128,7 +142,7 @@ test("CLI text ingest, context, and guarded delete use command-specific metadata
     [
       "delete",
       "--document-id",
-      String(ingested.data.document_id),
+      String(seeded.document_id),
       "--confirm",
       "delete",
       "--json",
@@ -139,7 +153,7 @@ test("CLI text ingest, context, and guarded delete use command-specific metadata
   expect(JSON.parse(decode(deleted.stdout))).toMatchObject({
     ok: true,
     meta: { read_only: false },
-    data: { deleted_document_id: ingested.data.document_id },
+    data: { deleted_document_id: seeded.document_id },
   });
 });
 

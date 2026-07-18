@@ -1,21 +1,35 @@
 import { Database } from "bun:sqlite";
 import { existsSync, statSync } from "node:fs";
 import { CliError } from "./errors";
+import type { QueryFilters } from "./query";
 import {
   clampLimit,
   domainFromUri,
+  exclusiveDateUpperBound,
   nonNegativeOffset,
   normalizeSearchQuery,
   parseTags,
   truncateContent,
+  validateQueryFilters,
 } from "./query";
+import { RESEARCH_SCHEMA_VERSION } from "./store";
 import type {
+  Attempt,
   ChunkData,
   ContextData,
   DocumentData,
+  Job,
+  JobRecord,
+  JobState,
+  JobTransition,
+  RelationSummary,
+  ResourceAlias,
+  ResourceRecord,
   SearchData,
   SearchMode,
   SearchResult,
+  Sensitivity,
+  SourceSummary,
   SourcesData,
   StatsData,
   TagsData,
@@ -113,33 +127,112 @@ export class ResearchCache {
     };
   }
 
-  search(input: {
-    query: string;
-    mode: SearchMode;
-    limit?: number;
-    offset?: number;
-    tag?: string;
-    sourceType?: string;
-  }): SearchData {
+  search(
+    input: {
+      query: string;
+      mode: SearchMode;
+      limit?: number;
+      offset?: number;
+    } & QueryFilters,
+  ): SearchData {
     const limit = clampLimit(input.limit, 10, 50);
     const offset = nonNegativeOffset(input.offset);
     const normalized = normalizeSearchQuery(input.query, input.mode);
+    const queryFilters = validateQueryFilters({
+      tag: input.tag,
+      sourceType: input.sourceType,
+      collection: input.collection,
+      source: input.source,
+      resourceKind: input.resourceKind,
+      sensitivity: input.sensitivity,
+      date: input.date,
+      dateFrom: input.dateFrom,
+      dateTo: input.dateTo,
+      localPath: input.localPath,
+    });
+    const hasResources = this.tableExists("resources");
     const params: unknown[] = [normalized];
     const filters: string[] = [];
-    if (input.tag !== undefined) {
+    const sourceMembership = hasResources
+      ? this.sourceMembershipSql("r.id")
+      : "0";
+    const effectiveSensitivity = hasResources
+      ? this.effectiveSensitivitySql("r.id", "r.sensitivity")
+      : "'normal'";
+
+    if (queryFilters.tag !== undefined) {
       filters.push(
         "EXISTS (SELECT 1 FROM json_each(d.tags) jt WHERE jt.value = ?)",
       );
-      params.push(input.tag);
+      params.push(queryFilters.tag);
     }
-    if (input.sourceType !== undefined) {
+    if (queryFilters.sourceType !== undefined) {
       filters.push("d.source_type = ?");
-      params.push(input.sourceType);
+      params.push(queryFilters.sourceType);
     }
-    params.push(limit + 1, offset);
+    if (queryFilters.collection !== undefined) {
+      filters.push(
+        hasResources
+          ? `EXISTS (
+               SELECT 1 FROM collection_memberships cm
+               JOIN collections col ON col.id=cm.collection_id
+               WHERE cm.resource_id=r.id AND col.slug=?
+             )`
+          : "0",
+      );
+      if (hasResources) params.push(queryFilters.collection);
+    }
+    if (queryFilters.source !== undefined) {
+      filters.push(sourceMembership);
+      if (hasResources) {
+        params.push(queryFilters.source, queryFilters.source);
+      }
+    }
+    if (queryFilters.resourceKind !== undefined) {
+      filters.push(hasResources ? "r.kind = ?" : "d.source_type = ?");
+      params.push(queryFilters.resourceKind);
+    }
+    if (queryFilters.sensitivity !== undefined) {
+      filters.push(`${effectiveSensitivity} = ?`);
+      params.push(queryFilters.sensitivity);
+    }
+    if (queryFilters.date !== undefined) {
+      filters.push("substr(d.updated_at, 1, 10) = ?");
+      params.push(queryFilters.date);
+    }
+    if (queryFilters.dateFrom !== undefined) {
+      filters.push("d.updated_at >= ?");
+      params.push(queryFilters.dateFrom);
+    }
+    if (queryFilters.dateTo !== undefined) {
+      const upper = exclusiveDateUpperBound(queryFilters.dateTo);
+      filters.push(
+        upper === queryFilters.dateTo
+          ? "d.updated_at <= ?"
+          : "d.updated_at < ?",
+      );
+      params.push(upper);
+    }
+    if (queryFilters.localPath !== undefined) {
+      filters.push(
+        hasResources
+          ? `(d.source_uri = ? OR EXISTS (
+               SELECT 1 FROM resource_aliases ra
+               WHERE ra.resource_id=r.id AND ra.locator=?
+             ))`
+          : "d.source_uri = ?",
+      );
+      params.push(queryFilters.localPath);
+      if (hasResources) params.push(queryFilters.localPath);
+    }
+
     const where = filters.length === 0 ? "" : ` AND ${filters.join(" AND ")}`;
+    params.push(limit + 1, offset);
     const rows = this.all<{
       document_id: number;
+      resource_id: number | null;
+      resource_kind: string;
+      sensitivity: Sensitivity;
       chunk_id: number;
       chunk_index: number;
       title: string | null;
@@ -150,10 +243,12 @@ export class ResearchCache {
       start_char: number;
       end_char: number;
       score: number;
-      snippet: string;
     }>(
       `SELECT
          d.id AS document_id,
+         ${hasResources ? "r.id" : "NULL"} AS resource_id,
+         ${hasResources ? "COALESCE(r.kind, d.source_type)" : "d.source_type"} AS resource_kind,
+         ${effectiveSensitivity} AS sensitivity,
          c.id AS chunk_id,
          c.chunk_index AS chunk_index,
          d.title AS title,
@@ -163,43 +258,57 @@ export class ResearchCache {
          d.updated_at AS updated_at,
          c.start_char AS start_char,
          c.end_char AS end_char,
-         bm25(chunks_fts) AS score,
-         snippet(chunks_fts, 3, '⟦', '⟧', ' … ', 48) AS snippet
+         MIN(chunks_fts.rank) AS score
        FROM chunks_fts
        JOIN chunks c ON c.id = chunks_fts.chunk_id
        JOIN documents d ON d.id = chunks_fts.document_id
+       ${hasResources ? "LEFT JOIN resources r ON r.document_id=d.id" : ""}
        WHERE chunks_fts MATCH ?${where}
+       GROUP BY d.id
        ORDER BY score ASC, d.updated_at DESC, c.id ASC
        LIMIT ? OFFSET ?`,
       params,
     );
     const page = rows.slice(0, limit);
-    const results: SearchResult[] = page.map((row) => ({
-      ...row,
-      tags: parseTags(row.tags),
-    }));
+    const results: SearchResult[] = page.map((row) => {
+      const snippet = this.one<{ snippet: string }>(
+        `SELECT snippet(chunks_fts, 3, '⟦', '⟧', ' … ', 48) AS snippet
+         FROM chunks_fts
+         WHERE chunks_fts MATCH ? AND chunk_id=?`,
+        [normalized, row.chunk_id],
+      ).snippet;
+      const provenance = this.resourceProvenance(row.resource_id);
+      return {
+        ...row,
+        tags: parseTags(row.tags),
+        collections: provenance.collections,
+        sources: provenance.sources,
+        relations: this.relationSummaries(
+          row.document_id,
+          queryFilters.sensitivity,
+        ),
+        snippet,
+      };
+    });
     return {
       query: input.query,
       normalized_query: normalized,
       mode: input.mode,
       limit,
       offset,
-      filters: {
-        ...(input.tag !== undefined ? { tag: input.tag } : {}),
-        ...(input.sourceType !== undefined
-          ? { source_type: input.sourceType }
-          : {}),
-      },
+      filters: this.outputFilters(queryFilters),
       results,
       next_offset: rows.length > limit ? offset + limit : null,
     };
   }
 
-  context(input: {
-    query: string;
-    limit?: number;
-    maxChars?: number;
-  }): ContextData {
+  context(
+    input: {
+      query: string;
+      limit?: number;
+      maxChars?: number;
+    } & QueryFilters,
+  ): ContextData {
     const limit = clampLimit(input.limit, 6, 20);
     const maxChars = input.maxChars ?? 12_000;
     if (!Number.isInteger(maxChars) || maxChars < 500 || maxChars > 50_000) {
@@ -210,6 +319,7 @@ export class ResearchCache {
       );
     }
     const search = this.search({
+      ...input,
       query: input.query,
       mode: "any",
       limit,
@@ -235,6 +345,12 @@ export class ResearchCache {
       truncated ||= wasTruncated;
       hits.push({
         document_id: result.document_id,
+        resource_id: result.resource_id,
+        resource_kind: result.resource_kind,
+        sensitivity: result.sensitivity,
+        collections: result.collections,
+        sources: result.sources,
+        relations: result.relations,
         chunk_id: result.chunk_id,
         chunk_index: result.chunk_index,
         title: result.title,
@@ -252,6 +368,7 @@ export class ResearchCache {
     if (hits.length < search.results.length) truncated = true;
     return {
       query: input.query,
+      filters: search.filters,
       limit,
       max_chars: maxChars,
       returned_chars: returnedChars,
@@ -387,6 +504,258 @@ export class ResearchCache {
     };
   }
 
+  /**
+   * Typed view of the durable resource that maps a legacy document, with its
+   * observed aliases. Returns null on pre-migration databases; the read path
+   * never creates or migrates the resource model.
+   */
+  resourceForDocument(documentId: number): ResourceRecord | null {
+    if (!this.tableExists("resources")) return null;
+    const row = this.oneOrNull<{
+      id: number;
+      key_type: string;
+      key_value: string;
+      kind: string;
+      sensitivity: Sensitivity;
+      document_id: number | null;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `SELECT id, key_type, key_value, kind, sensitivity, document_id,
+              created_at, updated_at
+       FROM resources WHERE document_id = ?`,
+      [documentId],
+    );
+    if (row === null) return null;
+    const aliases: ResourceAlias[] = this.all<{
+      id: number;
+      resource_id: number;
+      alias_type: string;
+      locator: string;
+      evidence: string | null;
+      first_observed_at: string;
+      last_observed_at: string;
+    }>(
+      `SELECT id, resource_id, alias_type, locator, evidence,
+              first_observed_at, last_observed_at
+       FROM resource_aliases WHERE resource_id = ?
+       ORDER BY id ASC`,
+      [row.id],
+    );
+    return { ...row, aliases };
+  }
+
+  /**
+   * Read-only view of one durable ingestion job with its append-only attempts
+   * and audited transitions. Returns null on pre-lifecycle databases; this path
+   * only ever reads, so it can never mutate queue, schema, or index state.
+   */
+  job(jobId: number): JobRecord | null {
+    if (!this.tableExists("jobs")) return null;
+    const row = this.oneOrNull<Job & Row>("SELECT * FROM jobs WHERE id = ?", [
+      jobId,
+    ]);
+    if (row === null) return null;
+    const attempts = this.all<Attempt & Row>(
+      "SELECT * FROM attempts WHERE job_id = ? ORDER BY attempt_number ASC",
+      [jobId],
+    );
+    const transitions = this.all<JobTransition & Row>(
+      "SELECT * FROM job_transitions WHERE job_id = ? ORDER BY id ASC",
+      [jobId],
+    );
+    return { ...row, attempts, transitions };
+  }
+
+  /**
+   * Read-only listing of durable ingestion jobs, optionally by state. The
+   * runnable jobs among these form the ingestion queue.
+   */
+  jobs(filter: { state?: JobState } = {}): Job[] {
+    if (!this.tableExists("jobs")) return [];
+    if (filter.state !== undefined) {
+      return this.all<Job & Row>(
+        "SELECT * FROM jobs WHERE state = ? ORDER BY run_at ASC, id ASC",
+        [filter.state],
+      );
+    }
+    return this.all<Job & Row>(
+      "SELECT * FROM jobs ORDER BY run_at ASC, id ASC",
+    );
+  }
+
+  private outputFilters(filters: QueryFilters): SearchData["filters"] {
+    return {
+      ...(filters.tag !== undefined ? { tag: filters.tag } : {}),
+      ...(filters.sourceType !== undefined
+        ? { source_type: filters.sourceType }
+        : {}),
+      ...(filters.collection !== undefined
+        ? { collection: filters.collection }
+        : {}),
+      ...(filters.source !== undefined ? { source: filters.source } : {}),
+      ...(filters.resourceKind !== undefined
+        ? { resource_kind: filters.resourceKind }
+        : {}),
+      ...(filters.sensitivity !== undefined
+        ? { sensitivity: filters.sensitivity }
+        : {}),
+      ...(filters.date !== undefined ? { date: filters.date } : {}),
+      ...(filters.dateFrom !== undefined
+        ? { date_from: filters.dateFrom }
+        : {}),
+      ...(filters.dateTo !== undefined ? { date_to: filters.dateTo } : {}),
+      ...(filters.localPath !== undefined
+        ? { local_path: filters.localPath }
+        : {}),
+    };
+  }
+
+  private sourceConnectionsSql(
+    resourceIdSql: string,
+    sourceIdSql: string,
+  ): string {
+    const connections = [
+      `EXISTS (
+        SELECT 1 FROM observations o
+        WHERE o.resource_id=${resourceIdSql}
+          AND (o.source_id=${sourceIdSql} OR EXISTS (
+            SELECT 1 FROM runs sr
+            WHERE sr.id=o.run_id AND sr.source_id=${sourceIdSql}
+          ))
+      )`,
+      `EXISTS (
+        SELECT 1 FROM provenance p
+        WHERE p.resource_id=${resourceIdSql}
+          AND (p.source_id=${sourceIdSql} OR EXISTS (
+            SELECT 1 FROM runs sr
+            WHERE sr.id=p.run_id AND sr.source_id=${sourceIdSql}
+          ))
+      )`,
+    ];
+    if (this.tableExists("jobs")) {
+      connections.push(
+        `EXISTS (
+          SELECT 1 FROM jobs j
+          WHERE j.resource_id=${resourceIdSql}
+            AND (j.source_id=${sourceIdSql} OR EXISTS (
+              SELECT 1 FROM runs sr
+              WHERE sr.id=j.run_id AND sr.source_id=${sourceIdSql}
+            ))
+        )`,
+      );
+    }
+    return `(${connections.join(" OR ")})`;
+  }
+
+  private sourceMembershipSql(resourceIdSql: string): string {
+    return `EXISTS (
+      SELECT 1 FROM sources qs
+      WHERE (qs.identifier=? OR qs.source_type || ':' || qs.identifier=?)
+        AND ${this.sourceConnectionsSql(resourceIdSql, "qs.id")}
+    )`;
+  }
+
+  private effectiveSensitivitySql(
+    resourceIdSql: string,
+    sensitivitySql: string,
+  ): string {
+    const rank = `MAX(
+      COALESCE((SELECT rank FROM sensitivity_levels WHERE level=${sensitivitySql}), 1),
+      COALESCE((
+        SELECT MAX(csl.rank)
+        FROM collection_memberships ecm
+        JOIN collections ec ON ec.id=ecm.collection_id
+        JOIN sensitivity_levels csl ON csl.level=ec.sensitivity
+        WHERE ecm.resource_id=${resourceIdSql}
+      ), 0),
+      COALESCE((
+        SELECT MAX(ssl.rank)
+        FROM sources es
+        JOIN sensitivity_levels ssl ON ssl.level=es.sensitivity
+        WHERE ${this.sourceConnectionsSql(resourceIdSql, "es.id")}
+      ), 0)
+    )`;
+    return `CASE ${rank}
+      WHEN 0 THEN 'public'
+      WHEN 1 THEN 'normal'
+      WHEN 2 THEN 'sensitive'
+      WHEN 3 THEN 'private'
+    END`;
+  }
+
+  private resourceProvenance(resourceId: number | null): {
+    collections: string[];
+    sources: SourceSummary[];
+  } {
+    if (resourceId === null || !this.tableExists("resources")) {
+      return { collections: [], sources: [] };
+    }
+    const collections = this.all<{ slug: string }>(
+      `SELECT col.slug
+       FROM collection_memberships cm
+       JOIN collections col ON col.id=cm.collection_id
+       WHERE cm.resource_id=?
+       ORDER BY col.slug ASC`,
+      [resourceId],
+    ).map((row) => row.slug);
+    const sources = this.all<SourceSummary & Row>(
+      `SELECT s.source_type, s.identifier
+       FROM sources s
+       WHERE ${this.sourceConnectionsSql("?", "s.id")}
+       ORDER BY s.source_type ASC, s.identifier ASC`,
+      this.tableExists("jobs")
+        ? [resourceId, resourceId, resourceId]
+        : [resourceId, resourceId],
+    );
+    return { collections, sources };
+  }
+
+  private relationSummaries(
+    documentId: number,
+    sensitivity?: Sensitivity,
+  ): RelationSummary[] {
+    if (!this.tableExists("document_links")) return [];
+    const hasResources = this.tableExists("resources");
+    type RelationRow = {
+      relation_id: number;
+      direction: "outbound" | "inbound";
+      relation_type: string;
+      status: string;
+      linked_document_id: number;
+      linked_resource_id: number | null;
+      linked_title: string | null;
+      linked_resource_kind: string;
+      linked_sensitivity: Sensitivity;
+    };
+    const linkedSensitivity = hasResources
+      ? this.effectiveSensitivitySql("lr.id", "lr.sensitivity")
+      : "'normal'";
+    const select = (direction: "outbound" | "inbound"): RelationRow[] => {
+      const outbound = direction === "outbound";
+      return this.all<RelationRow & Row>(
+        `SELECT dl.id AS relation_id, '${direction}' AS direction,
+                dl.relation_type, dl.status,
+                ld.id AS linked_document_id,
+                ${hasResources ? "lr.id" : "NULL"} AS linked_resource_id,
+                ld.title AS linked_title,
+                ${hasResources ? "COALESCE(lr.kind, ld.source_type)" : "ld.source_type"} AS linked_resource_kind,
+                ${linkedSensitivity} AS linked_sensitivity
+         FROM document_links dl
+         JOIN documents ld ON ld.id=dl.${outbound ? "to_document_id" : "from_document_id"}
+         ${hasResources ? "LEFT JOIN resources lr ON lr.document_id=ld.id" : ""}
+         WHERE dl.${outbound ? "from_document_id" : "to_document_id"}=?
+           ${sensitivity === undefined ? "" : `AND ${linkedSensitivity}=?`}
+         ORDER BY dl.id ASC
+         LIMIT 50`,
+        sensitivity === undefined ? [documentId] : [documentId, sensitivity],
+      );
+    };
+    return [...select("outbound"), ...select("inbound")]
+      .sort((left, right) => left.relation_id - right.relation_id)
+      .slice(0, 50);
+  }
+
   private documentLinks(
     direction: "from_document_id" | "to_document_id",
     documentId: number,
@@ -446,10 +815,10 @@ export class ResearchCache {
         "research cache schema_version is not an integer",
       );
     }
-    if (version > 2) {
+    if (version > RESEARCH_SCHEMA_VERSION) {
       throw new CliError(
         "unsupported_schema_version",
-        `research cache schema version ${version} is newer than supported version 2`,
+        `research cache schema version ${version} is newer than supported version ${RESEARCH_SCHEMA_VERSION}`,
       );
     }
   }

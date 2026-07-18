@@ -1,11 +1,52 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/install.sh [--install|--uninstall|--help]
+
+Install creates the agentbrain and research-ingest-link commands plus one owned
+user LaunchAgent for `agentbrain worker`. Agentbrain owns the durable SQLite
+queue and index; the worker leases admitted ingestion jobs from that queue. This
+installer does not create or enable recurring remote sources.
+
+Uninstall gracefully unloads and removes only the owned LaunchAgent and command
+links. It preserves the database, Artifacts, and private worker log.
+EOF
+}
+
+ACTION=install
+case "${1:-}" in
+  ""|--install) ;;
+  --uninstall) ACTION=uninstall ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+if (( $# > 1 )); then
+  usage >&2
+  exit 2
+fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="${AGENTBRAIN_INSTALL_BIN_DIR:-$HOME/.local/bin}"
+LAUNCH_AGENTS_DIR="${AGENTBRAIN_INSTALL_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
+STATE_DIR="${AGENTBRAIN_INSTALL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agentbrain}"
 AGENTBRAIN_SOURCE="$ROOT/src/cli.ts"
 ADAPTER_SOURCE="$ROOT/src/research-ingest-link.ts"
+PLIST_SOURCE="$ROOT/system/Library/LaunchAgents/agentbrain.worker.plist"
+SERVICE_DEST="$LAUNCH_AGENTS_DIR/agentbrain.worker.plist"
+LOG_PATH="$STATE_DIR/worker.log"
+SERVICE_LABEL="agentbrain.worker"
+OWNERSHIP_MARKER="agentbrain-installer-owned: agentbrain.worker.v1"
 EXPECTED_LEGACY_SOURCE="$(dirname "$ROOT")/hermes-greybird/bin/research-ingest-link"
+LAUNCHCTL="${AGENTBRAIN_INSTALL_LAUNCHCTL:-launchctl}"
 
 canonical_path() {
   bun -e '
@@ -28,6 +69,20 @@ AGENTBRAIN_CANONICAL="$(canonical_path "$AGENTBRAIN_SOURCE")"
 ADAPTER_CANONICAL="$(canonical_path "$ADAPTER_SOURCE")"
 LEGACY_CANONICAL="$(canonical_path "$EXPECTED_LEGACY_SOURCE")"
 
+symlink_is_owned() {
+  local destination="$1"
+  local expected="$2"
+  local target candidate
+  [[ -L "$destination" ]] || return 1
+  target="$(readlink "$destination")"
+  if [[ "$target" = /* ]]; then
+    candidate="$target"
+  else
+    candidate="$(dirname "$destination")/$target"
+  fi
+  [[ "$(canonical_path "$candidate")" == "$expected" ]]
+}
+
 check_destination() {
   local destination="$1"
   local expected="$2"
@@ -40,35 +95,191 @@ check_destination() {
     echo "refusing to overwrite non-symlink: $destination" >&2
     return 1
   fi
-
-  local target candidate canonical
-  target="$(readlink "$destination")"
-  if [[ "$target" = /* ]]; then
-    candidate="$target"
-  else
-    candidate="$(dirname "$destination")/$target"
-  fi
-  canonical="$(canonical_path "$candidate")"
-  if [[ "$canonical" == "$expected" ]]; then
+  if symlink_is_owned "$destination" "$expected"; then
     return 0
   fi
-  if [[ "$allow_legacy" == "yes" && "$canonical" == "$LEGACY_CANONICAL" ]]; then
+  if [[ "$allow_legacy" == yes ]] && symlink_is_owned "$destination" "$LEGACY_CANONICAL"; then
     return 0
   fi
 
-  echo "refusing to overwrite unrelated symlink: $destination -> $target" >&2
+  echo "refusing to overwrite unrelated symlink: $destination -> $(readlink "$destination")" >&2
   return 1
 }
 
-mkdir -p "$BIN_DIR"
+service_is_owned() {
+  [[ -f "$SERVICE_DEST" && ! -L "$SERVICE_DEST" ]] &&
+    grep -Fq "$OWNERSHIP_MARKER" "$SERVICE_DEST" &&
+    grep -Fq '<string>agentbrain.worker</string>' "$SERVICE_DEST"
+}
 
-# Preflight both destinations so a refusal cannot leave a half-installed pair.
+check_service_destination() {
+  if [[ ! -e "$SERVICE_DEST" && ! -L "$SERVICE_DEST" ]]; then
+    return 0
+  fi
+  if service_is_owned; then
+    return 0
+  fi
+  echo "refusing to overwrite foreign service: $SERVICE_DEST" >&2
+  return 1
+}
+
+check_private_paths() {
+  if [[ -L "$STATE_DIR" || ( -e "$STATE_DIR" && ! -d "$STATE_DIR" ) ]]; then
+    echo "refusing unsafe state directory: $STATE_DIR" >&2
+    return 1
+  fi
+  if [[ -L "$LOG_PATH" || ( -e "$LOG_PATH" && ! -f "$LOG_PATH" ) ]]; then
+    echo "refusing unsafe worker log: $LOG_PATH" >&2
+    return 1
+  fi
+}
+
+launchctl_available() {
+  [[ "$LAUNCHCTL" != none ]] && command -v "$LAUNCHCTL" >/dev/null 2>&1
+}
+
+LOADED_SERVICE_STATE=absent
+inspect_loaded_service() {
+  LOADED_SERVICE_STATE=absent
+  launchctl_available || return 0
+  local description line
+  description="$("$LAUNCHCTL" print "gui/$(id -u)/$SERVICE_LABEL" 2>/dev/null)" || return 0
+  LOADED_SERVICE_STATE=foreign
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    if [[ "$line" == "program = $BIN_DIR/agentbrain" ]]; then
+      LOADED_SERVICE_STATE=owned
+      return 0
+    fi
+  done <<<"$description"
+}
+
+check_loaded_service() {
+  inspect_loaded_service
+  if [[ "$LOADED_SERVICE_STATE" == foreign ]]; then
+    echo "refusing to unload foreign service: $SERVICE_LABEL" >&2
+    return 1
+  fi
+}
+
+unload_owned_service() {
+  launchctl_available || return 0
+  local target
+  target="gui/$(id -u)/$SERVICE_LABEL"
+  if "$LAUNCHCTL" bootout "$target" >/dev/null 2>&1; then
+    LOADED_SERVICE_STATE=absent
+    return 0
+  fi
+
+  inspect_loaded_service
+  if [[ "$LOADED_SERVICE_STATE" == absent ]]; then
+    return 0
+  fi
+  if [[ "$LOADED_SERVICE_STATE" == foreign ]]; then
+    echo "refusing to unload foreign service after bootout race: $SERVICE_LABEL" >&2
+  else
+    echo "failed to unload owned service: $SERVICE_LABEL" >&2
+  fi
+  return 1
+}
+
+preflight_owned_removal() {
+  local destination="$1"
+  local expected="$2"
+  if [[ ! -e "$destination" && ! -L "$destination" ]]; then
+    return 0
+  fi
+  if symlink_is_owned "$destination" "$expected"; then
+    return 0
+  fi
+  echo "refusing to remove foreign command: $destination" >&2
+  return 1
+}
+
+if [[ "$ACTION" == uninstall ]]; then
+  preflight_owned_removal "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL"
+  preflight_owned_removal "$BIN_DIR/research-ingest-link" "$ADAPTER_CANONICAL"
+  check_service_destination
+  check_loaded_service
+
+  if service_is_owned || [[ "$LOADED_SERVICE_STATE" == owned ]]; then
+    unload_owned_service
+  fi
+  if service_is_owned; then
+    rm -f "$SERVICE_DEST"
+  fi
+  if symlink_is_owned "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL"; then
+    rm -f "$BIN_DIR/agentbrain"
+  fi
+  if symlink_is_owned "$BIN_DIR/research-ingest-link" "$ADAPTER_CANONICAL"; then
+    rm -f "$BIN_DIR/research-ingest-link"
+  fi
+  printf 'uninstalled owned Agentbrain commands and service\n'
+  exit 0
+fi
+
 check_destination "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL" no
 check_destination "$BIN_DIR/research-ingest-link" "$ADAPTER_CANONICAL" yes
+check_service_destination
+check_private_paths
+check_loaded_service
 
+mkdir -p "$BIN_DIR" "$LAUNCH_AGENTS_DIR" "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+touch "$LOG_PATH"
+chmod 600 "$LOG_PATH"
 chmod +x "$AGENTBRAIN_SOURCE" "$ADAPTER_SOURCE"
+
+BUN_BIN="$(command -v bun)"
+SERVICE_PATH="$(dirname "$BUN_BIN"):$BIN_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+TEMP_PLIST="$(mktemp "$LAUNCH_AGENTS_DIR/.agentbrain.worker.plist.XXXXXX")"
+trap 'rm -f "$TEMP_PLIST"' EXIT
+export AGENTBRAIN_RENDER_PROGRAM="$BIN_DIR/agentbrain"
+export AGENTBRAIN_RENDER_HOME="$HOME"
+export AGENTBRAIN_RENDER_PATH="$SERVICE_PATH"
+export AGENTBRAIN_RENDER_LOG="$LOG_PATH"
+# The single-quoted argument intentionally contains JavaScript template literals.
+# shellcheck disable=SC2016
+bun -e '
+  const [source, destination] = Bun.argv.slice(-2);
+  const escapeXml = (value) => value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("\u0027", "&apos;");
+  const replacements = {
+    __AGENTBRAIN_PROGRAM__: process.env.AGENTBRAIN_RENDER_PROGRAM,
+    __AGENTBRAIN_HOME__: process.env.AGENTBRAIN_RENDER_HOME,
+    __AGENTBRAIN_PATH__: process.env.AGENTBRAIN_RENDER_PATH,
+    __AGENTBRAIN_LOG__: process.env.AGENTBRAIN_RENDER_LOG,
+  };
+  let rendered = await Bun.file(source).text();
+  for (const [token, value] of Object.entries(replacements)) {
+    if (value === undefined) throw new Error(`missing render value for ${token}`);
+    rendered = rendered.replaceAll(token, escapeXml(value));
+  }
+  if (rendered.includes("__AGENTBRAIN_")) throw new Error("unrendered plist token");
+  await Bun.write(destination, rendered);
+' "$PLIST_SOURCE" "$TEMP_PLIST"
+chmod 600 "$TEMP_PLIST"
+if command -v plutil >/dev/null 2>&1; then
+  plutil -lint "$TEMP_PLIST" >/dev/null
+fi
+
+if service_is_owned || [[ "$LOADED_SERVICE_STATE" == owned ]]; then
+  unload_owned_service
+fi
+mv -f "$TEMP_PLIST" "$SERVICE_DEST"
+trap - EXIT
 ln -sfn "$AGENTBRAIN_SOURCE" "$BIN_DIR/agentbrain"
 ln -sfn "$ADAPTER_SOURCE" "$BIN_DIR/research-ingest-link"
 
+if launchctl_available; then
+  "$LAUNCHCTL" bootstrap "gui/$(id -u)" "$SERVICE_DEST"
+  printf 'installed and loaded %s\n' "$SERVICE_DEST"
+else
+  printf 'installed %s (launchctl unavailable; service not loaded)\n' "$SERVICE_DEST"
+fi
 printf 'installed %s -> %s\n' "$BIN_DIR/agentbrain" "$AGENTBRAIN_SOURCE"
 printf 'installed %s -> %s\n' "$BIN_DIR/research-ingest-link" "$ADAPTER_SOURCE"
