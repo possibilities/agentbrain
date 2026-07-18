@@ -54,5 +54,5 @@ Install only after temporary-DB smoke passes; unload and revert the service befo
 - [ ] README and help accurately describe implemented queue ownership and explicitly defer remote source activation.
 
 ## Done summary
-
+Installed one owned user LaunchAgent for agentbrain worker with deterministic private log/state paths, idempotent install/uninstall, stale/foreign-service protection, and offline worker smoke coverage; README documents installation, operation, repair, and rollback while explicitly deferring recurring remote source activation.
 ## Evidence
