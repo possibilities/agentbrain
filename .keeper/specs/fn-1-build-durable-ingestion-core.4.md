@@ -55,5 +55,5 @@ Preserve `ingest` as a queued alias during cutover; specialized completed-link a
 - [ ] `--wait` disconnect or timeout leaves the accepted job active and recoverable.
 
 ## Done summary
-
+Added versioned agentbrain submit contract with durable idempotent admission; routed text/file/directory/legacy ingest surfaces through admission with local snapshotting, intent-hash idempotency, queued/duplicate acknowledgements, conflict rejection, and --wait observation.
 ## Evidence
