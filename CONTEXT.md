@@ -20,6 +20,7 @@
 - **Provenance** — Typed evidence connecting ingress, sources, runs, jobs, resources, artifacts, and relations; preserved raw historical metadata may accompany that evidence.
 - **Relation** — A typed resource-to-resource edge, such as a content link, citation, reply, or version relationship.
 - **Saved link** — A resource submitted through human ingress for membership in the saved-links collection; it is not a separate resource type.
+- **Recovery evidence** — A provenance record reconstructed from historical catalogs, artifacts, or metadata. Evidence may identify a candidate resource without approving content ingestion.
 - **Ingestion ledger** — Agentbrain's durable record of jobs, attempts, runs, state transitions, and operator dispositions. Its runnable jobs form the ingestion queue.
 - **URL extractor/backend** — The component that turns a URL into bounded extracted output and owns fetching, browser/session behavior, network security, redirects, and provider-specific parsing. Scrapectl is the only URL extractor/backend.
 - **Extraction envelope** — A versioned, provider-neutral result or classified failure returned by an extractor to an ingestion worker. Avoid persisting provider-specific response schemas as Agentbrain domain data.
