@@ -10,7 +10,7 @@
     "fn-1354-own-pi-skill-shorthands"
   ],
   "id": "fn-7-add-reusable-brain-skill",
-  "last_validated_at": null,
+  "last_validated_at": "2026-07-18T22:05:36.896000Z",
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -19,5 +19,5 @@
     "/Users/mike/code/arthack",
     "/Users/mike/code/keeper"
   ],
-  "updated_at": "2026-07-18T22:05:31.994000Z"
+  "updated_at": "2026-07-18T22:05:36.896000Z"
 }
