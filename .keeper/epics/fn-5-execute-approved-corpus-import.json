@@ -3,7 +3,10 @@
   "bundles": [],
   "created_at": "2026-07-18T21:25:44.050000Z",
   "depends_on_epics": [
-    "fn-4-prepare-legacy-corpus-recovery"
+    "fn-4-prepare-legacy-corpus-recovery",
+    "fn-1-build-durable-ingestion-core",
+    "fn-2-integrate-queued-url-extraction",
+    "fn-3-cut-over-agentbot-ingestion"
   ],
   "id": "fn-5-execute-approved-corpus-import",
   "last_validated_at": null,
@@ -14,5 +17,5 @@
   "touched_repos": [
     "/Users/mike/code/agentbrain"
   ],
-  "updated_at": "2026-07-18T23:43:55.349000Z"
+  "updated_at": "2026-07-18T23:44:08.722000Z"
 }
