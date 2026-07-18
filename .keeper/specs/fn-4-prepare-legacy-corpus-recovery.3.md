@@ -5,54 +5,56 @@
 
 ### Approach
 
-Build a bounded JSONL manifest reader that validates candidate IDs, exact URLs, dispositions, artifact paths/hashes, catalog positions, and provenance before admitting one queued recovery run and idempotent child jobs. Parse Linkctl frontmatter locally, preserve exact evidence, strip it from searchable bodies, and prohibit all network work during import.
+Build a bounded generation reader that verifies the atomic generation descriptor and every JSONL/hash before admitting one queued recovery run and idempotent child jobs. Validate exact URLs, stable candidate IDs, dispositions, artifact paths/hashes, catalog positions, and body-free provenance; parse Linkctl frontmatter locally, strip it from searchable bodies, and prohibit all network work during import. Comparison URIs aid diagnostics only and cannot collapse candidate outcomes or authorize identity merges.
 
 ### Investigation targets
 
 *Verify before relying — these file:line refs are planner-verified at authoring time, but the repo moves.*
 
 **Required** (read before coding):
-- `~/docs/agentbrain-recovery-manifest-2026-07-15.jsonl:1` — authoritative candidate format; read-only.
-- `~/.local/share/agentbrain/recovery/tools/build_agentbrain_recovery_manifest.py:219-284` — disposition derivation; do not duplicate heuristics.
+- `~/.local/share/agentbrain/recovery/manifests/current.json:1` — final generation descriptor after Task 6; verify before relying.
+- `~/.local/share/agentbrain/recovery/tools/build_agentbot_secretary_link_index.py:302-450` — frozen Telegram disposition and reconciliation derivation; do not duplicate heuristics.
 - `src/completed-link-input.ts:24-120` — bounded validation pattern.
-- `docs/adr/0010-legacy-recovery-import-contract.md:1` — exact cohort contract.
+- `docs/adr/0010-legacy-recovery-import-contract.md:13-35` — exact cohort and generation contract.
 
 **Optional** (reference as needed):
 - `~/content/links/links.yaml:1` — ordered catalog evidence.
+- `docs/adr/0006-conservative-resource-identity.md:13-24` — exact identity and comparison boundary.
 
 ### Risks
 
-External paths may be missing or malicious, private records must not leak, and canonicalization can accidentally reduce exact candidate accounting.
+External paths may be missing or malicious, generation files can be mixed or replaced, private identifiers must not leak, and canonicalization can accidentally reduce exact candidate accounting. A queued approved-online job can fetch too early if offline gating is incomplete.
 
 ### Test notes
 
-Generate synthetic manifests for every disposition plus duplicate IDs, unsafe paths, hash mismatch, malformed frontmatter, alias convergence, partial rerun, and non-empty database merge.
+Generate synthetic generations for every disposition plus duplicate IDs, unsafe/symlink paths, hash mismatch, mixed generation IDs, malformed frontmatter, exact/comparison convergence, private provenance, partial rerun, and non-empty database merge. Install a fake Scrapectl that fails the test if invoked.
 
 ### Detailed phases
 
-1. Validate and summarize manifest/evidence without mutation.
-2. Admit the import run, memberships, evidence, excluded records, blocked review jobs, and approved offline jobs.
-3. Add resumable per-candidate outcome reporting and dry-run parity.
+1. Validate generation identity, hashes, safe roots, counts, and summaries without mutation.
+2. Admit the import run, memberships, evidence, exclusions, blocked reviews, non-runnable approved-online jobs, and approved offline jobs.
+3. Add resumable per-candidate and per-observation reconciliation with dry-run parity and safe opaque diagnostics.
 
 ### Alternatives
 
-Re-running recovery heuristics inside Agentbrain is rejected; the verified manifest is the immutable import contract.
+Re-running recovery heuristics inside Agentbrain is rejected; the verified generation is the immutable import contract. Direct SQL is rejected because all outcomes belong in the durable ledger.
 
 ### Non-functional targets
 
-Input is streaming and bounded, file access stays within declared roots, no private body is emitted, and dry-run creates no DB/artifact state.
+Input is streaming and bounded, generation publication is fail-closed, file access stays within declared roots, no private body or raw Telegram identifier is emitted, and dry-run creates no DB/artifact state.
 
 ### Rollout
 
-Use synthetic fixtures and read-only real-manifest dry runs; live admission is deferred to the operational recovery epic.
+Use synthetic fixtures and the read-only frozen-generation dry run; live admission is deferred to the operational recovery epic.
 
 ## Acceptance
 
-- [ ] Dry-run reports exactly 1,075 candidate rows and the locked disposition counts without writing state or making network calls.
+- [ ] Dry-run verifies one complete generation and reports exactly 1,088 candidate rows, 294 Telegram observations, and the locked disposition counts without writing state or making network calls.
 - [ ] Approved artifacts are hash-verified and admitted with original URL identity, summary, catalog position, and legacy provenance.
-- [ ] Fetch/retry cohorts become blocked review jobs; review-only and excluded cohorts create no fetch work.
-- [ ] Partial rerun and non-empty database merge preserve one outcome per candidate without duplicate effects.
-- [ ] Private message bodies and unsafe external paths never enter output, artifacts, or searchable content.
+- [ ] The two approved-online Secretary candidates are durably admitted but cannot run during offline recovery; legacy fetch/retry and bot-output review cohorts remain blocked or evidence-only as specified.
+- [ ] All 118 existing exact candidates gain idempotent Telegram provenance without changed disposition or duplicate candidate outcomes.
+- [ ] Partial rerun, old 1,075-generation evidence, and non-empty database merge preserve stable IDs and one outcome per candidate without duplicate effects.
+- [ ] Private message bodies, credentials, raw Telegram identifiers, unsafe paths, and exact URLs in ordinary diagnostics never enter output, artifacts, or searchable content.
 
 ## Done summary
 
