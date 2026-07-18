@@ -54,5 +54,5 @@ Keep worker execution disabled; prove the lifecycle entirely through temporary-d
 - [ ] Idempotent completion cannot duplicate resource, provenance, or terminal job effects.
 
 ## Done summary
-
+Add the durable ingestion job lifecycle: a v4 additive migration (jobs, append-only attempts, audited transitions, lease and due-work indexes) plus atomic claim, heartbeat, fenced idempotent completion, failure classification, lease recovery, and audited operator actions, all proven offline against temporary SQLite databases including a spawned-process claim race.
 ## Evidence
