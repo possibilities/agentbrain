@@ -55,5 +55,5 @@ Exercise only temporary databases in this task; no live database mutation is par
 - [ ] Unsupported future schema versions fail clearly on both read and write paths.
 
 ## Done summary
-
+Added additive schema-v3 migration for the durable ingestion domain model (resources, typed keys, aliases, content-addressed artifacts, sources, collections with ordered membership, observations, runs, typed provenance, ranked sensitivity), backfilling legacy documents/relations while keeping equal digests and canonical URLs from merging identities and preserving the read-only query boundary.
 ## Evidence
