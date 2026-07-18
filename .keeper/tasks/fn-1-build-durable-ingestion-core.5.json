@@ -13,5 +13,6 @@
   "target_repo": "/Users/mike/code/agentbrain",
   "tier": "xhigh",
   "title": "Implement worker operator controls",
-  "updated_at": "2026-07-18T21:30:19.133000Z"
+  "updated_at": "2026-07-18T22:52:41.462000Z",
+  "worker_done_at": "2026-07-18T22:52:41.462000Z"
 }

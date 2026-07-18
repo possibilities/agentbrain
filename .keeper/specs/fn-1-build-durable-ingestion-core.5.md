@@ -56,5 +56,5 @@ Provide `worker --once` before enabling a long-running service; all tests use fa
 - [ ] Worker and operator tests require no Scrapectl installation or network.
 
 ## Done summary
-
+Implemented the singleton worker loop (atomic fenced leases, local materializer dispatch outside write transactions, heartbeats, stale-lease recovery, bounded graceful shutdown, due-retry handling, --once mode) plus jobs list/show/retry/cancel/exclude/stats and doctor CLI surfaces with redacted-by-default output, explicit content reveal, and audited operator transitions.
 ## Evidence
