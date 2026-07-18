@@ -1,0 +1,53 @@
+{
+  "audit_policy": {
+    "flagged_task_ids": [],
+    "reason": null,
+    "status": "applied"
+  },
+  "cells": [
+    {
+      "confidence": 0.96,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Designing a security-sensitive cross-repo wire contract with bounded sanitization and provider-leak prevention requires subtle architectural and correctness judgment.",
+      "task_id": "fn-2-integrate-queued-url-extraction.1",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.97,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Fencing, transaction boundaries, cancellation, and idempotent artifact reuse create subtle distributed-lifecycle correctness invariants across multiple failure domains.",
+      "task_id": "fn-2-integrate-queued-url-extraction.2",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.95,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Atomic fanout, replay idempotency, alias collapse, and shared-child provenance form a cross-cutting transactional correctness problem.",
+      "task_id": "fn-2-integrate-queued-url-extraction.3",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.9,
+      "label_source": "heuristic-guided",
+      "model": "gpt-5.5",
+      "rationale": "The regression gates, smoke rewrite, and documentation are substantial multi-file work but have explicit acceptance and established patterns.",
+      "task_id": "fn-2-integrate-queued-url-extraction.4",
+      "tier": "high"
+    }
+  ],
+  "config_hash": "3537a88634e79a3ab85b1440da7d1b1be09c92bd75b69d3a0a1354c88e0b97ef",
+  "created_at": "2026-07-18T21:30:19.546000Z",
+  "epic_id": "fn-2-integrate-queued-url-extraction",
+  "input_hash": "d92ab96350d6134778ec10be237da5e259c62e521489a8c2e80a7340c0af6d6f",
+  "outcome": "completed",
+  "schema_version": 1,
+  "selector": {
+    "harness": "subagent",
+    "model": "plan:model-selector"
+  },
+  "shuffle_seed": 3643455843,
+  "verdict_raw": "{\"cells\":[{\"task_id\":\"fn-2-integrate-queued-url-extraction.1\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Designing a security-sensitive cross-repo wire contract with bounded sanitization and provider-leak prevention requires subtle architectural and correctness judgment.\",\"confidence\":0.96},{\"task_id\":\"fn-2-integrate-queued-url-extraction.2\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Fencing, transaction boundaries, cancellation, and idempotent artifact reuse create subtle distributed-lifecycle correctness invariants across multiple failure domains.\",\"confidence\":0.97},{\"task_id\":\"fn-2-integrate-queued-url-extraction.3\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Atomic fanout, replay idempotency, alias collapse, and shared-child provenance form a cross-cutting transactional correctness problem.\",\"confidence\":0.95},{\"task_id\":\"fn-2-integrate-queued-url-extraction.4\",\"tier\":\"high\",\"model\":\"gpt-5.5\",\"rationale\":\"The regression gates, smoke rewrite, and documentation are substantial multi-file work but have explicit acceptance and established patterns.\",\"confidence\":0.9}]}"
+}
