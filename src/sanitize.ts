@@ -1,8 +1,38 @@
 const ERROR_LIMIT = 600;
+const COMMON_PRIVATE_PATH =
+  /(^|[\s"'(=])((?:\/(?:Users|home|tmp|private|var\/folders)\/)[^\s"',;)]+)/g;
 
-/** Redact likely credentials before an external-process error is persisted or emitted. */
-export function sanitizeExternalError(value: unknown): string {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Remove private filesystem locations while retaining a useful error class. */
+export function sanitizePrivatePaths(
+  value: unknown,
+  privatePaths: readonly string[] = [],
+): string {
   let message = value instanceof Error ? value.message : String(value ?? "");
+  for (const path of [...privatePaths].sort((a, b) => b.length - a.length)) {
+    if (!path) continue;
+    message = message.replace(
+      new RegExp(escapeRegExp(path), "g"),
+      "[PRIVATE_PATH]",
+    );
+  }
+  return message.replace(COMMON_PRIVATE_PATH, "$1[PRIVATE_PATH]");
+}
+
+/** Sanitize an Artifact/filesystem diagnostic without disclosing private roots. */
+export function sanitizeArtifactError(
+  value: unknown,
+  privatePaths: readonly string[] = [],
+): string {
+  return sanitizeExternalError(sanitizePrivatePaths(value, privatePaths));
+}
+
+/** Redact likely credentials and private paths before an error is persisted or emitted. */
+export function sanitizeExternalError(value: unknown): string {
+  let message = sanitizePrivatePaths(value);
   message = Array.from(message, (character) => {
     const code = character.codePointAt(0) ?? 0;
     return code <= 31 || code === 127 ? " " : character;

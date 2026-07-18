@@ -1,6 +1,14 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type {
+  ArtifactReconciliationReport,
+  ArtifactStore,
+  LocalFileSnapshot,
+  ReconcileOptions,
+  StoredArtifact,
+} from "./artifacts";
+import { isSafeArtifactStoragePath, SHA256_DIGEST_PATTERN } from "./artifacts";
 import { CliError } from "./errors";
 import { sanitizeExternalError } from "./sanitize";
 import {
@@ -11,6 +19,7 @@ import {
   sha256Text,
 } from "./text";
 import type {
+  Artifact,
   Attempt,
   CancelResult,
   ClaimResult,
@@ -22,9 +31,10 @@ import type {
   JobState,
   LifecyclePolicy,
   RecoveredLease,
+  Sensitivity,
 } from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 4;
+export const RESEARCH_SCHEMA_VERSION = 5;
 
 /**
  * Default lease and retry policy. Durations are policy, not identity: callers
@@ -408,6 +418,61 @@ const MIGRATION_V4 = `
   UPDATE meta SET value='4' WHERE key='schema_version';
 `;
 
+// Artifact derivation is many-to-many: a normalized Artifact can be derived
+// from one or more captured Artifacts without placing bytes in SQLite or
+// treating a content digest as a Resource key (ADR 0008).
+const MIGRATION_V5 = `
+  CREATE TABLE IF NOT EXISTS artifact_derivations (
+    id INTEGER PRIMARY KEY,
+    artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    parent_artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,
+    derivation_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (artifact_id <> parent_artifact_id),
+    UNIQUE(artifact_id, parent_artifact_id, derivation_type)
+  );
+  CREATE INDEX IF NOT EXISTS idx_artifact_derivations_parent
+    ON artifact_derivations(parent_artifact_id, artifact_id);
+  UPDATE meta SET value='5' WHERE key='schema_version';
+`;
+
+const MEDIA_TYPE_PATTERN =
+  /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[ -~]+)?$/;
+
+const SENSITIVITY_RANK: Record<Sensitivity, number> = {
+  public: 0,
+  normal: 1,
+  sensitive: 2,
+  private: 3,
+};
+
+export interface RegisterArtifactInput {
+  contentDigest: string;
+  mediaType: string;
+  byteSize: number;
+  artifactRole: string;
+  sensitivity?: Sensitivity;
+  storagePath: string;
+  resourceId?: number;
+  observedAt?: Date;
+  derivedFromArtifactId?: number;
+  derivationType?: string;
+  jobId?: number;
+  sourceId?: number;
+  provenance?: {
+    evidenceType: string;
+    ingress?: string | null;
+    runId?: number | null;
+    rawMetadata?: unknown;
+  };
+}
+
+export interface RegisteredArtifactResult {
+  artifact: Artifact;
+  resourceReferenceCreated: boolean;
+  derivationCreated: boolean;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -754,6 +819,431 @@ export class ResearchStore {
       };
     });
     return transaction.immediate();
+  }
+
+  // ---- Content-addressed Artifact metadata (ADR 0008) ----
+
+  /**
+   * Register typed metadata only after Artifact bytes have been verified and
+   * promoted. Replays are idempotent for the same digest/role, while Resource
+   * references remain distinct even when their Artifact bytes deduplicate.
+   */
+  registerArtifact(input: RegisterArtifactInput): RegisteredArtifactResult {
+    const contentDigest = String(input.contentDigest || "").toLowerCase();
+    if (!SHA256_DIGEST_PATTERN.test(contentDigest)) {
+      throw new CliError("invalid_digest", "invalid SHA-256 content digest");
+    }
+    const mediaType = String(input.mediaType || "")
+      .trim()
+      .toLowerCase();
+    const artifactRole = String(input.artifactRole || "")
+      .trim()
+      .toLowerCase();
+    if (
+      mediaType.length === 0 ||
+      mediaType.length > 255 ||
+      !MEDIA_TYPE_PATTERN.test(mediaType)
+    ) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact media_type must be a valid type/subtype of at most 255 characters",
+      );
+    }
+    if (artifactRole.length === 0 || artifactRole.length > 100) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact role is required and must be at most 100 characters",
+      );
+    }
+    if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 0) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact byte_size must be a non-negative safe integer",
+      );
+    }
+    if (!isSafeArtifactStoragePath(input.storagePath, contentDigest)) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact storage_path must be the digest-derived relative path",
+      );
+    }
+    const requestedSensitivity = input.sensitivity ?? "normal";
+    if (!(requestedSensitivity in SENSITIVITY_RANK)) {
+      throw new CliError("bad_artifact", "invalid Artifact sensitivity");
+    }
+    if (
+      input.derivedFromArtifactId !== undefined &&
+      !String(input.derivationType || "").trim()
+    ) {
+      throw new CliError(
+        "bad_artifact",
+        "derived Artifacts require a derivation_type",
+      );
+    }
+    if (
+      input.derivedFromArtifactId === undefined &&
+      input.derivationType !== undefined
+    ) {
+      throw new CliError(
+        "bad_artifact",
+        "derivation_type requires a parent Artifact",
+      );
+    }
+    if (input.provenance !== undefined && input.resourceId === undefined) {
+      throw new CliError(
+        "bad_artifact",
+        "Artifact provenance requires a Resource reference",
+      );
+    }
+    const timestamp = (input.observedAt ?? new Date()).toISOString();
+
+    const transaction = this.db.transaction((): RegisteredArtifactResult => {
+      const inherited: Sensitivity[] = [requestedSensitivity];
+      const inherit = (table: string, id: number | undefined): void => {
+        if (id === undefined) return;
+        const row = this.db
+          .query(`SELECT sensitivity FROM ${table} WHERE id=?`)
+          .get(id) as { sensitivity: Sensitivity } | null;
+        if (row === null) {
+          throw new CliError(
+            "bad_artifact_reference",
+            `referenced ${table.slice(0, -1)} does not exist`,
+          );
+        }
+        inherited.push(row.sensitivity);
+      };
+      inherit("resources", input.resourceId);
+      inherit("jobs", input.jobId);
+      inherit("sources", input.sourceId);
+      inherit("artifacts", input.derivedFromArtifactId);
+      if (input.resourceId !== undefined) {
+        const collectionPolicies = this.db
+          .query(
+            `SELECT c.sensitivity FROM collections c
+             JOIN collection_memberships cm ON cm.collection_id=c.id
+             WHERE cm.resource_id=?`,
+          )
+          .all(input.resourceId) as Array<{ sensitivity: Sensitivity }>;
+        inherited.push(...collectionPolicies.map((row) => row.sensitivity));
+      }
+      const sensitivity = inherited.reduce((strictest, candidate) =>
+        SENSITIVITY_RANK[candidate] > SENSITIVITY_RANK[strictest]
+          ? candidate
+          : strictest,
+      );
+
+      let artifact = this.db
+        .query(
+          "SELECT * FROM artifacts WHERE content_hash=? AND artifact_role=?",
+        )
+        .get(contentDigest, artifactRole) as Artifact | null;
+      if (artifact === null) {
+        const inserted = this.db
+          .query(
+            `INSERT INTO artifacts(
+               content_hash, media_type, byte_size, artifact_role, sensitivity,
+               storage_path, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            contentDigest,
+            mediaType,
+            input.byteSize,
+            artifactRole,
+            sensitivity,
+            input.storagePath,
+            timestamp,
+          );
+        artifact = this.db
+          .query("SELECT * FROM artifacts WHERE id=?")
+          .get(Number(inserted.lastInsertRowid)) as Artifact;
+      } else {
+        if (
+          artifact.media_type !== mediaType ||
+          artifact.byte_size !== input.byteSize ||
+          artifact.storage_path !== input.storagePath
+        ) {
+          throw new CliError(
+            "artifact_metadata_conflict",
+            "registered Artifact metadata conflicts with the existing digest and role",
+          );
+        }
+        if (
+          SENSITIVITY_RANK[sensitivity] > SENSITIVITY_RANK[artifact.sensitivity]
+        ) {
+          this.db
+            .query("UPDATE artifacts SET sensitivity=? WHERE id=?")
+            .run(sensitivity, artifact.id);
+          artifact = this.db
+            .query("SELECT * FROM artifacts WHERE id=?")
+            .get(artifact.id) as Artifact;
+        }
+      }
+
+      let resourceReferenceCreated = false;
+      if (input.resourceId !== undefined) {
+        const result = this.db
+          .query(
+            `INSERT OR IGNORE INTO resource_artifacts(
+               resource_id, artifact_id, observed_at
+             ) VALUES (?, ?, ?)`,
+          )
+          .run(input.resourceId, artifact.id, timestamp);
+        resourceReferenceCreated = result.changes > 0;
+      }
+
+      let derivationCreated = false;
+      if (input.derivedFromArtifactId !== undefined) {
+        if (input.derivedFromArtifactId === artifact.id) {
+          throw new CliError(
+            "bad_artifact",
+            "an Artifact cannot be derived from itself",
+          );
+        }
+        const result = this.db
+          .query(
+            `INSERT OR IGNORE INTO artifact_derivations(
+               artifact_id, parent_artifact_id, derivation_type, created_at
+             ) VALUES (?, ?, ?, ?)`,
+          )
+          .run(
+            artifact.id,
+            input.derivedFromArtifactId,
+            String(input.derivationType).trim().toLowerCase(),
+            timestamp,
+          );
+        derivationCreated = result.changes > 0;
+      }
+
+      if (input.provenance !== undefined && input.resourceId !== undefined) {
+        const evidenceType = String(input.provenance.evidenceType || "").trim();
+        if (!evidenceType) {
+          throw new CliError(
+            "bad_artifact",
+            "Provenance evidence_type is required",
+          );
+        }
+        const rawMetadata =
+          input.provenance.rawMetadata === undefined
+            ? null
+            : typeof input.provenance.rawMetadata === "string"
+              ? input.provenance.rawMetadata
+              : JSON.stringify(input.provenance.rawMetadata);
+        const sourceId = input.sourceId ?? null;
+        const runId = input.provenance.runId ?? null;
+        const ingress = input.provenance.ingress ?? null;
+        const existingProvenance = this.db
+          .query(
+            `SELECT id FROM provenance
+             WHERE resource_id=? AND evidence_type=? AND source_id IS ?
+               AND run_id IS ? AND artifact_id=? AND relation_id IS NULL
+               AND ingress IS ? AND raw_metadata IS ?`,
+          )
+          .get(
+            input.resourceId,
+            evidenceType,
+            sourceId,
+            runId,
+            artifact.id,
+            ingress,
+            rawMetadata,
+          );
+        if (existingProvenance === null) {
+          this.db
+            .query(
+              `INSERT INTO provenance(
+                 resource_id, evidence_type, source_id, run_id, artifact_id,
+                 ingress, raw_metadata, observed_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              input.resourceId,
+              evidenceType,
+              sourceId,
+              runId,
+              artifact.id,
+              ingress,
+              rawMetadata,
+              timestamp,
+            );
+        }
+      }
+      return { artifact, resourceReferenceCreated, derivationCreated };
+    });
+    return transaction.immediate();
+  }
+
+  registerStoredArtifact(
+    stored: StoredArtifact,
+    metadata: Omit<
+      RegisterArtifactInput,
+      "contentDigest" | "byteSize" | "storagePath"
+    >,
+  ): RegisteredArtifactResult {
+    return this.registerArtifact({
+      ...metadata,
+      contentDigest: stored.contentDigest,
+      byteSize: stored.byteSize,
+      storagePath: stored.storagePath,
+    });
+  }
+
+  /**
+   * Admit local-file work only from an already-promoted immutable snapshot.
+   * The durable intent deliberately contains no mutable or private source path.
+   */
+  enqueueLocalFileSnapshot(input: {
+    idempotencyKey: string;
+    snapshot: LocalFileSnapshot;
+    artifactStore: ArtifactStore;
+    artifactRole?: string;
+    sensitivity?: Sensitivity;
+    resourceId?: number;
+    sourceId?: number;
+    runId?: number;
+    now?: Date;
+  }): {
+    artifact: Artifact;
+    job: Job;
+    created: boolean;
+  } {
+    const verified = input.artifactStore.verify(input.snapshot.contentDigest);
+    if (
+      verified.byteSize !== input.snapshot.byteSize ||
+      verified.storagePath !== input.snapshot.storagePath
+    ) {
+      throw new CliError(
+        "snapshot_mismatch",
+        "local-file snapshot metadata does not match immutable Artifact bytes",
+      );
+    }
+    const registered = this.registerStoredArtifact(input.snapshot, {
+      mediaType: input.snapshot.mediaType,
+      artifactRole: input.artifactRole ?? "original",
+      sensitivity: input.sensitivity,
+      resourceId: input.resourceId,
+      sourceId: input.sourceId,
+      observedAt: input.now,
+    });
+    const admitted = this.enqueueJob({
+      idempotencyKey: input.idempotencyKey,
+      kind: "local_file_snapshot",
+      intent: {
+        artifact_id: registered.artifact.id,
+        content_digest: input.snapshot.contentDigest,
+        byte_size: input.snapshot.byteSize,
+        media_type: input.snapshot.mediaType,
+        artifact_role: registered.artifact.artifact_role,
+      },
+      sensitivity: registered.artifact.sensitivity,
+      resourceId: input.resourceId,
+      sourceId: input.sourceId,
+      runId: input.runId,
+      now: input.now,
+    });
+    return { artifact: registered.artifact, ...admitted };
+  }
+
+  /** Content digests known to SQLite, suitable as reconciliation roots. */
+  registeredArtifactDigests(): string[] {
+    return (
+      this.db
+        .query(
+          "SELECT DISTINCT content_hash FROM artifacts ORDER BY content_hash",
+        )
+        .all() as Array<{ content_hash: string }>
+    ).map((row) => row.content_hash);
+  }
+
+  reconcileArtifactStore(
+    artifactStore: ArtifactStore,
+    options: ReconcileOptions = {},
+  ): ArtifactReconciliationReport {
+    return artifactStore.reconcile(this.registeredArtifactDigests(), options);
+  }
+
+  /**
+   * Rebuild searchable content from a retained normalized Artifact, without a
+   * source file or network. Digest verification happens before UTF-8 decoding.
+   */
+  rebuildDocumentFromArtifact(input: {
+    artifactId: number;
+    artifactStore: ArtifactStore;
+    sourceType?: string;
+    sourceUri?: string;
+    title?: string | null;
+    tags?: unknown;
+    notes?: string | null;
+    resourceId?: number;
+    maxBytes?: number;
+  }): UpsertDocumentResult {
+    const artifact = this.db
+      .query("SELECT * FROM artifacts WHERE id=?")
+      .get(input.artifactId) as Artifact | null;
+    if (artifact === null) {
+      throw new CliError(
+        "artifact_not_found",
+        `Artifact ${input.artifactId} not found`,
+      );
+    }
+    const normalizedRoles = new Set([
+      "normalized",
+      "normalized_text",
+      "normalized_markdown",
+      "imported_markdown",
+      "extracted_markdown",
+    ]);
+    if (!normalizedRoles.has(artifact.artifact_role)) {
+      throw new CliError(
+        "artifact_not_normalized",
+        "only a normalized Artifact can rebuild indexed content",
+      );
+    }
+    if (
+      !artifact.media_type.startsWith("text/") &&
+      artifact.media_type !== "application/markdown"
+    ) {
+      throw new CliError(
+        "artifact_not_text",
+        "normalized Artifact media_type must be textual",
+      );
+    }
+    if (input.resourceId !== undefined) {
+      const resource = this.db
+        .query("SELECT id FROM resources WHERE id=?")
+        .get(input.resourceId);
+      if (resource === null) {
+        throw new CliError(
+          "resource_not_found",
+          `Resource ${input.resourceId} not found`,
+        );
+      }
+    }
+    const content = input.artifactStore.readUtf8(
+      artifact.content_hash,
+      input.maxBytes,
+    );
+    const result = this.upsertDocument({
+      sourceType: input.sourceType ?? "artifact",
+      sourceUri: input.sourceUri ?? `artifact:sha256:${artifact.content_hash}`,
+      title: input.title,
+      tags: input.tags,
+      notes: input.notes,
+      content,
+      force: true,
+    });
+    if (input.resourceId !== undefined) {
+      const update = this.db
+        .query("UPDATE resources SET document_id=?, updated_at=? WHERE id=?")
+        .run(result.document_id, nowIso(), input.resourceId);
+      if (update.changes === 0) {
+        throw new CliError(
+          "resource_update_failed",
+          `Resource ${input.resourceId} could not attach rebuilt content`,
+        );
+      }
+    }
+    return result;
   }
 
   // ---- Durable ingestion job lifecycle (ADR 0004) ----
@@ -1491,6 +1981,7 @@ export class ResearchStore {
         if (version < 2) this.db.exec(MIGRATION_V2);
         if (version < 3) this.db.exec(MIGRATION_V3);
         if (version < 4) this.db.exec(MIGRATION_V4);
+        if (version < 5) this.db.exec(MIGRATION_V5);
       })
       .immediate();
   }

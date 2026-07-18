@@ -6,7 +6,7 @@ import {
   validateCompletedLinkPayload,
 } from "./completed-link-input";
 import { DEFAULT_MAX_BYTES } from "./extract";
-import { sanitizeExternalError } from "./sanitize";
+import { sanitizeArtifactError, sanitizeExternalError } from "./sanitize";
 import { type ScrapeProvider, scrapeWithScrapectl } from "./scrapectl";
 import type {
   DocumentLinkResult,
@@ -359,7 +359,7 @@ export async function ingestPrescrapedLink(
       writer(path, payload.markdown);
       artifact = path;
     } catch (error) {
-      artifactError = sanitizeExternalError(error);
+      artifactError = sanitizeArtifactError(error, [path, dirname(path)]);
     }
   }
 
