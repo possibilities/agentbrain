@@ -1,31 +1,47 @@
 {
   "audit_policy": {
     "flagged_task_ids": [
-      "fn-5-execute-approved-corpus-import.1"
+      "fn-5-execute-approved-corpus-import.2"
     ],
     "reason": null,
     "status": "applied"
   },
   "cells": [
     {
+      "confidence": 0.94,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Live authoritative-state mutation with exact isolation, privacy, rollback, and reconciliation invariants makes this correctness-critical long-horizon execution.",
+      "task_id": "fn-5-execute-approved-corpus-import.1",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.98,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Transactional claim races, fail-closed authorization, lease fencing, and cross-cutting schema, worker, CLI, and test changes create subtle security and correctness invariants.",
+      "task_id": "fn-5-execute-approved-corpus-import.2",
+      "tier": "max"
+    },
+    {
       "confidence": 0.96,
       "label_source": "heuristic-guided",
       "model": "opus",
-      "rationale": "Authoritative live-state mutation requires subtle correctness, privacy, offline-isolation, exact-reconciliation, and rollback invariants across a long destructive workflow.",
-      "task_id": "fn-5-execute-approved-corpus-import.1",
-      "tier": "max"
+      "rationale": "Irreversible egress must remain bound to exactly two immutable approvals while preserving retry, fencing, privacy, and reconciliation guarantees.",
+      "task_id": "fn-5-execute-approved-corpus-import.3",
+      "tier": "xhigh"
     }
   ],
   "config_hash": "3537a88634e79a3ab85b1440da7d1b1be09c92bd75b69d3a0a1354c88e0b97ef",
-  "created_at": "2026-07-18T21:31:55.610000Z",
+  "created_at": "2026-07-18T23:46:04.296000Z",
   "epic_id": "fn-5-execute-approved-corpus-import",
-  "input_hash": "1892bad6001912dfe20276c3097bf3a1055f3da0b4b1b4c5692ea32e42495c3a",
+  "input_hash": "17d646a38189605e39303f0879bbebe63dee514647768f0145ebad26cae8376c",
   "outcome": "completed",
   "schema_version": 1,
   "selector": {
     "harness": "subagent",
     "model": "plan:model-selector"
   },
-  "shuffle_seed": 412269270,
-  "verdict_raw": "{\"cells\":[{\"task_id\":\"fn-5-execute-approved-corpus-import.1\",\"tier\":\"max\",\"model\":\"opus\",\"rationale\":\"Authoritative live-state mutation requires subtle correctness, privacy, offline-isolation, exact-reconciliation, and rollback invariants across a long destructive workflow.\",\"confidence\":0.96}]}"
+  "shuffle_seed": 399918755,
+  "verdict_raw": "{\"cells\":[{\"task_id\":\"fn-5-execute-approved-corpus-import.1\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Live authoritative-state mutation with exact isolation, privacy, rollback, and reconciliation invariants makes this correctness-critical long-horizon execution.\",\"confidence\":0.94},{\"task_id\":\"fn-5-execute-approved-corpus-import.2\",\"tier\":\"max\",\"model\":\"opus\",\"rationale\":\"Transactional claim races, fail-closed authorization, lease fencing, and cross-cutting schema, worker, CLI, and test changes create subtle security and correctness invariants.\",\"confidence\":0.98},{\"task_id\":\"fn-5-execute-approved-corpus-import.3\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Irreversible egress must remain bound to exactly two immutable approvals while preserving retry, fencing, privacy, and reconciliation guarantees.\",\"confidence\":0.96}]}"
 }
