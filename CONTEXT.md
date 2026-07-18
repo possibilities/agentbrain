@@ -14,6 +14,7 @@
 - **Artifact store** — The content-addressed filesystem that holds immutable artifact bytes while SQLite records their typed metadata and references.
 - **Source** — A recurring producer or discovery definition, such as a blog feed, X account, or filesystem root. Avoid using *source* for ingress or a legacy provenance label.
 - **Collection** — A many-to-many curation and policy grouping independent of how its resources were discovered.
+- **Sensitivity** — Inherited handling policy for a resource and every derived artifact, document, chunk, preview, export, or later embedding. It is not a search tag.
 - **Observation** — Evidence that a source or ingress encountered a resource during a run or job.
 - **Suppressed observation** — A discovered item intentionally not admitted as a child job, with a durable policy or limit reason rather than silent omission.
 - **Checkpoint** — A source-specific high-water mark committed only after the corresponding discovered intents are durable; it is distinct from an in-progress pagination cursor.
