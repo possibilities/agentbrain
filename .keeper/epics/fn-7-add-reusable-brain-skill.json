@@ -6,7 +6,8 @@
     "fn-1-build-durable-ingestion-core",
     "fn-2-integrate-queued-url-extraction",
     "fn-3-cut-over-agentbot-ingestion",
-    "fn-6-operate-recurring-knowledge-sources"
+    "fn-6-operate-recurring-knowledge-sources",
+    "fn-1354-own-pi-skill-shorthands"
   ],
   "id": "fn-7-add-reusable-brain-skill",
   "last_validated_at": null,
@@ -18,5 +19,5 @@
     "/Users/mike/code/arthack",
     "/Users/mike/code/keeper"
   ],
-  "updated_at": "2026-07-18T22:03:36.581000Z"
+  "updated_at": "2026-07-18T22:04:57.279000Z"
 }
