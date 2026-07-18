@@ -1,0 +1,63 @@
+{
+  "audit_policy": {
+    "flagged_task_ids": [
+      "fn-6-operate-recurring-knowledge-sources.5"
+    ],
+    "reason": null,
+    "status": "applied"
+  },
+  "cells": [
+    {
+      "confidence": 0.91,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "New discovery contracts combine hostile URL handling, stable identity, bounded traversal, and honest partial-result invariants.",
+      "task_id": "fn-6-operate-recurring-knowledge-sources.1",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.94,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "The durable registry introduces a cross-cutting state architecture with checkpoint, audit, scheduling, and idempotency invariants.",
+      "task_id": "fn-6-operate-recurring-knowledge-sources.2",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.97,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Crash-safe fanout and checkpoint advancement require subtle transactional correctness across worker, store, and provider boundaries.",
+      "task_id": "fn-6-operate-recurring-knowledge-sources.3",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.88,
+      "label_source": "heuristic-guided",
+      "model": "gpt-5.5",
+      "rationale": "This is substantial but well-specified configuration and integration work following contracts established by preceding tasks.",
+      "task_id": "fn-6-operate-recurring-knowledge-sources.4",
+      "tier": "high"
+    },
+    {
+      "confidence": 0.9,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Live provider validation and reversible production activation demand long-horizon judgment under uncertain failures and privacy constraints.",
+      "task_id": "fn-6-operate-recurring-knowledge-sources.5",
+      "tier": "max"
+    }
+  ],
+  "config_hash": "3537a88634e79a3ab85b1440da7d1b1be09c92bd75b69d3a0a1354c88e0b97ef",
+  "created_at": "2026-07-18T21:31:56.368000Z",
+  "epic_id": "fn-6-operate-recurring-knowledge-sources",
+  "input_hash": "63207716ba01c90875621c4fa61f86f126b7cf5469e51fc0bfe8004d0558acde",
+  "outcome": "completed",
+  "schema_version": 1,
+  "selector": {
+    "harness": "subagent",
+    "model": "plan:model-selector"
+  },
+  "shuffle_seed": 1663072022,
+  "verdict_raw": "{\"cells\":[{\"task_id\":\"fn-6-operate-recurring-knowledge-sources.1\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"New discovery contracts combine hostile URL handling, stable identity, bounded traversal, and honest partial-result invariants.\",\"confidence\":0.91},{\"task_id\":\"fn-6-operate-recurring-knowledge-sources.2\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"The durable registry introduces a cross-cutting state architecture with checkpoint, audit, scheduling, and idempotency invariants.\",\"confidence\":0.94},{\"task_id\":\"fn-6-operate-recurring-knowledge-sources.3\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Crash-safe fanout and checkpoint advancement require subtle transactional correctness across worker, store, and provider boundaries.\",\"confidence\":0.97},{\"task_id\":\"fn-6-operate-recurring-knowledge-sources.4\",\"tier\":\"high\",\"model\":\"gpt-5.5\",\"rationale\":\"This is substantial but well-specified configuration and integration work following contracts established by preceding tasks.\",\"confidence\":0.88},{\"task_id\":\"fn-6-operate-recurring-knowledge-sources.5\",\"tier\":\"max\",\"model\":\"opus\",\"rationale\":\"Live provider validation and reversible production activation demand long-horizon judgment under uncertain failures and privacy constraints.\",\"confidence\":0.9}]}"
+}
