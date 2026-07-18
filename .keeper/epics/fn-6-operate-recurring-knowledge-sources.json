@@ -6,7 +6,7 @@
     "fn-5-execute-approved-corpus-import"
   ],
   "id": "fn-6-operate-recurring-knowledge-sources",
-  "last_validated_at": null,
+  "last_validated_at": "2026-07-18T21:32:12.736000Z",
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -15,5 +15,5 @@
     "/Users/mike/code/agentbrain",
     "/Users/mike/code/arthack"
   ],
-  "updated_at": "2026-07-18T21:31:56.491000Z"
+  "updated_at": "2026-07-18T21:32:12.736000Z"
 }
