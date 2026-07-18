@@ -1,0 +1,37 @@
+{
+  "audit_policy": {
+    "flagged_task_ids": [],
+    "reason": null,
+    "status": "applied"
+  },
+  "cells": [
+    {
+      "confidence": 0.91,
+      "label_source": "heuristic-guided",
+      "model": "sonnet",
+      "rationale": "The skill requires judgment-heavy trigger wording, authority routing, and careful in-repo idiom matching, but its bounded three-file shape does not justify opus.",
+      "task_id": "fn-7-add-reusable-brain-skill.1",
+      "tier": "high"
+    },
+    {
+      "confidence": 0.9,
+      "label_source": "heuristic-guided",
+      "model": "gpt-5.6-terra",
+      "rationale": "The installer change is well specified and follows existing helpers across two files, with explicit idempotency and never-clobber tests.",
+      "task_id": "fn-7-add-reusable-brain-skill.2",
+      "tier": "high"
+    }
+  ],
+  "config_hash": "3537a88634e79a3ab85b1440da7d1b1be09c92bd75b69d3a0a1354c88e0b97ef",
+  "created_at": "2026-07-18T22:05:31.523000Z",
+  "epic_id": "fn-7-add-reusable-brain-skill",
+  "input_hash": "47bf2836a4cccf9624a2661fef9197fd95aa454f237dc18f458880c2fb2f3ffe",
+  "outcome": "completed",
+  "schema_version": 1,
+  "selector": {
+    "harness": "subagent",
+    "model": "plan:model-selector"
+  },
+  "shuffle_seed": 1203710006,
+  "verdict_raw": "{\"cells\":[{\"task_id\":\"fn-7-add-reusable-brain-skill.1\",\"tier\":\"high\",\"model\":\"sonnet\",\"rationale\":\"The skill requires judgment-heavy trigger wording, authority routing, and careful in-repo idiom matching, but its bounded three-file shape does not justify opus.\",\"confidence\":0.91},{\"task_id\":\"fn-7-add-reusable-brain-skill.2\",\"tier\":\"high\",\"model\":\"gpt-5.6-terra\",\"rationale\":\"The installer change is well specified and follows existing helpers across two files, with explicit idempotency and never-clobber tests.\",\"confidence\":0.9}]}"
+}
