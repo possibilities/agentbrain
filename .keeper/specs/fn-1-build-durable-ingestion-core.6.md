@@ -54,5 +54,5 @@ Keep embeddings out of scope and validate against the existing lexical suite plu
 - [ ] Existing unfiltered FTS behavior and exact-token queries remain compatible.
 
 ## Done summary
-
+Added typed retrieval filters (collection, source, resource-kind, sensitivity, date, local-path) to search and context assembly, resource-level dedup with best-score context, and safe provenance/relation rendering without linked-content concatenation.
 ## Evidence
