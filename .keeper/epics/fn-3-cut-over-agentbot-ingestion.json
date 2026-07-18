@@ -6,7 +6,7 @@
     "fn-2-integrate-queued-url-extraction"
   ],
   "id": "fn-3-cut-over-agentbot-ingestion",
-  "last_validated_at": null,
+  "last_validated_at": "2026-07-18T21:32:11.325000Z",
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -17,5 +17,5 @@
     "/Users/mike/code/arthack",
     "/Users/mike/code/hermes-greybird"
   ],
-  "updated_at": "2026-07-18T21:30:20.100000Z"
+  "updated_at": "2026-07-18T21:32:11.325000Z"
 }
