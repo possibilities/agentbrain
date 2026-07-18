@@ -263,7 +263,7 @@ test("failed relation retries in place, shared targets survive delete as null li
   store.close();
 });
 
-test("immediate write transactions serialize concurrent duplicate upserts", async () => {
+test("immediate write transactions serialize concurrent equivalent admissions", async () => {
   const path = tempDb();
   const initialized = new ResearchStore(path);
   initialized.close();
@@ -283,6 +283,7 @@ test("immediate write transactions serialize concurrent duplicate upserts", asyn
         path,
       ],
       cwd: repo,
+      env: { ...process.env, XDG_DATA_HOME: join(dirname(path), "data") },
       stdout: "pipe",
       stderr: "pipe",
     }),
@@ -298,11 +299,17 @@ test("immediate write transactions serialize concurrent duplicate upserts", asyn
   const statuses = results.map(
     (result) => JSON.parse(result.stdout).data.status,
   );
-  expect(statuses.filter((status) => status === "created")).toHaveLength(1);
-  expect(statuses.filter((status) => status === "unchanged")).toHaveLength(3);
+  expect(statuses.filter((status) => status === "queued")).toHaveLength(1);
+  expect(statuses.filter((status) => status === "duplicate")).toHaveLength(3);
   const db = new Database(path, { readonly: true });
-  expect(db.query("SELECT COUNT(*) AS count FROM documents").get()).toEqual({
+  expect(db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({
     count: 1,
+  });
+  expect(db.query("SELECT COUNT(*) AS count FROM artifacts").get()).toEqual({
+    count: 1,
+  });
+  expect(db.query("SELECT COUNT(*) AS count FROM documents").get()).toEqual({
+    count: 0,
   });
   db.close();
 });

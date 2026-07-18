@@ -19,8 +19,12 @@ export const COMMANDS = [
     summary: "Return bounded citation-ready context for a query",
   },
   {
+    name: "submit",
+    summary: "Durably queue a text, file, directory, or URL intent",
+  },
+  {
     name: "ingest",
-    summary: "Index text, a file/directory, or a URL via Scrapectl",
+    summary: "Compatibility alias for durable queued admission",
   },
   {
     name: "ingest-link",
@@ -71,9 +75,8 @@ Agent defaults:
   4. Cite document_id, chunk_id when present, title, source_uri, and relation provenance when relevant.
 
 Search/get/stats/tags/sources/context use structurally read-only SQLite connections.
-Mutations use a separate writable schema-v2 store. Linkctl owns link admission and duplicate policy;
-Scrapectl owns URL fetching, browser/session behavior, backend hardening/retries, and extraction;
-Agentbrain retries only transient provider-command availability, indexes completed markdown, and never falls back to direct HTTP.
+Agentbrain submit is the durable admission boundary. Accepted intents are queued before any
+extraction or indexing; Scrapectl remains the sole URL extraction and network boundary.
 Use --help on any command for command-specific options.
 `;
 
@@ -151,36 +154,44 @@ Options:
 The JSON data.hits objects include document_id, chunk_id, title, source_uri,
 citation, content, offsets, tags, score, and per-hit truncation.
 `,
-  ingest: `agentbrain ingest — index a generic source
+  submit: `agentbrain submit — durable ingestion admission
+
+Usage:
+  agentbrain submit <source> [options]
+
+Options:
+  --intent-version <n> Versioned intent contract (default: 1)
+  --kind <kind>        auto | url | file | directory | text (default: auto)
+  --ingress <name>     Submitting actor/interface (default: cli)
+  --collection <slug> Request collection membership; repeatable
+  --idempotency-key <key> Explicit replay identity
+  --title <text>       Requested title
+  --tag <tag>          Add a tag; repeatable
+  --tags <tags>        Add comma/hash-separated tags; repeatable
+  --notes <text>       Store requested notes
+  --recursive=<bool>   Recurse through directories (default: true)
+  --max-files <n>      Directory snapshot cap (default: 300; max: 5000)
+  --max-bytes <n>      Text or per-file snapshot cap (default: 5000000)
+  --force              Request rematerialization
+  --skip-secrets=<b>   Skip sensitive files/path components (default: true)
+  --wait               Observe the admitted job without bypassing the worker
+  --wait-timeout-ms <n> Stop observing after this duration (default: 30000)
+  --json               Emit a versioned success or error envelope
+
+A new intent exits 0 with status queued. An equivalent intent exits 0 with status
+duplicate and the same job_id. Reusing an explicit idempotency key for different intent
+fails. Local bytes are snapshotted into the Artifact store before acknowledgement. URL
+admission performs no network work. A wait timeout leaves the job queued and recoverable.
+`,
+  ingest: `agentbrain ingest — queued compatibility alias
 
 Usage:
   agentbrain ingest <source> [options]
 
-Options:
-  --source-type <t>   auto | url | file | directory | text (default: auto)
-  --title <text>      Override title
-  --tag <tag>         Add a tag; repeatable
-  --tags <tags>       Add comma/hash-separated tags; repeatable
-  --notes <text>      Store notes
-  --recursive=<bool>  Recurse through directories (default: true)
-  --max-files <n>     Directory success cap (default: 300; max: 5000)
-  --max-bytes <n>     Per-file or extracted-URL markdown cap (default: 5000000)
-  --force             Rewrite chunks even if content and metadata are unchanged
-  --skip-secrets=<b>  Skip sensitive files/path components (default: true)
-  --json              Emit the normal Agentbrain envelope with read_only=false
-
-Directory traversal streams entries and caps traversal at 20000 entries / 10000
-supported candidates in addition to --max-files. URL ingestion validates HTTP(S) syntax,
-then invokes PATH-resolved \`scrapectl fetch-markdown --markdown URL\` without a shell.
-Scrapectl selects extraction presets and emits final Markdown; Agentbrain does not render
-provider schemas. \`--max-bytes\` caps accepted Markdown. The normalized requested URL is
-the stable identity, and title comes from --title or Markdown. Scrapectl owns all URL
-fetching, browser/session behavior, DNS/redirect/backend security/retries, and extraction.
-Agentbrain retries only transient CLI/backend availability with bounded exponential
-backoff (default 1s..30s; env AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS and
-AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS accept 100..3600000ms, otherwise defaults). Auth,
-invalid input, empty output, and oversized
-content stop without retry. Local PDF extraction requires pdftotext on PATH.
+This command accepts the same options and returns the same acknowledgement as
+\`agentbrain submit\`. It never extracts, parses, or writes a document directly.
+Prefer \`agentbrain submit\` for new integrations. \`--source-type\` remains an alias for
+\`--kind\` during cutover.
 `,
   "ingest-link": `agentbrain ingest-link — index a completed scraped link
 

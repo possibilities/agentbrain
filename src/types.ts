@@ -2,6 +2,8 @@ export const SCHEMA_VERSION = 1;
 
 export type OutputFormat = "human" | "json" | "jsonl";
 export type SearchMode = "any" | "all" | "raw";
+export type AdmissionStatus = "queued" | "duplicate";
+export type AdmissionWaitStatus = "terminal" | "timeout";
 
 export interface GlobalOptions {
   dbPath: string;

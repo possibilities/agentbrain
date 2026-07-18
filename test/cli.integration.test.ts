@@ -235,12 +235,17 @@ function makeTempDb(name: string, withLinks: boolean): string {
   return path;
 }
 
-function runCli(args: string[], dbPath?: string) {
+function runCli(
+  args: string[],
+  dbPath?: string,
+  env: Record<string, string> = {},
+) {
   return Bun.spawnSync({
     cmd: ["bun", "run", "src/cli.ts", ...args],
     cwd: REPO,
     env: {
       ...process.env,
+      ...env,
       ...(dbPath !== undefined ? { AGENTBRAIN_DB: dbPath } : {}),
     },
     stdout: "pipe",
@@ -350,4 +355,113 @@ test("fts search and get work against the fixture DB", () => {
   expect(get.exitCode).toBe(0);
   const getPayload = JSON.parse(decode(get.stdout).trim());
   expect(getPayload.data.content).toContain("Agent memory systems");
+});
+
+test("submit emits stable human and JSON queued and duplicate acknowledgements", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-submit-cli-"));
+  tempDirs.push(dir);
+  const dbPath = join(dir, "research.db");
+  const env = { XDG_DATA_HOME: join(dir, "data") };
+  const args = [
+    "submit",
+    "https://Example.com/article#fragment",
+    "--kind",
+    "url",
+    "--idempotency-key",
+    "cli-url",
+  ];
+  const human = runCli(args, dbPath, env);
+  expect(human.exitCode).toBe(0);
+  expect(decode(human.stdout)).toBe(
+    "queued: ingestion job 1\nidempotency_key: cli-url\nstate: queued\n",
+  );
+  expect(decode(human.stderr)).toBe("");
+
+  const duplicate = runCli([...args, "--json"], dbPath, env);
+  expect(duplicate.exitCode).toBe(0);
+  expect(JSON.parse(decode(duplicate.stdout))).toMatchObject({
+    schema_version: 1,
+    ok: true,
+    command: "submit",
+    data: {
+      version: 1,
+      status: "duplicate",
+      job_id: 1,
+      idempotency_key: "cli-url",
+      intent_hash:
+        "e6cc973d1d4644587c85856379900d4390cc660dc7e331bb05b2d8d345fce3b0",
+      state: "queued",
+    },
+    meta: { read_only: false },
+  });
+});
+
+test("legacy ingest queues text without writing documents and wait timeout preserves it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-ingest-alias-"));
+  tempDirs.push(dir);
+  const dbPath = join(dir, "research.db");
+  const proc = runCli(
+    [
+      "ingest",
+      "durable text",
+      "--source-type",
+      "text",
+      "--wait",
+      "--wait-timeout-ms",
+      "0",
+      "--json",
+    ],
+    dbPath,
+    { XDG_DATA_HOME: join(dir, "data") },
+  );
+  expect(proc.exitCode).toBe(0);
+  expect(JSON.parse(decode(proc.stdout))).toMatchObject({
+    ok: true,
+    command: "ingest",
+    data: {
+      version: 1,
+      status: "queued",
+      job_id: 1,
+      state: "queued",
+      wait_status: "timeout",
+    },
+    meta: { read_only: false },
+  });
+  const db = new Database(dbPath, { readonly: true });
+  expect(db.query("SELECT id, state FROM jobs").all()).toEqual([
+    { id: 1, state: "queued" },
+  ]);
+  expect(db.query("SELECT COUNT(*) AS count FROM documents").get()).toEqual({
+    count: 0,
+  });
+  db.close();
+});
+
+test("invalid submission fails before creating a job or Artifact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-invalid-submit-"));
+  tempDirs.push(dir);
+  const dbPath = join(dir, "research.db");
+  const proc = runCli(
+    ["submit", "hello", "--intent-version", "2", "--json"],
+    dbPath,
+    { XDG_DATA_HOME: join(dir, "data") },
+  );
+  expect(proc.exitCode).toBe(2);
+  expect(JSON.parse(decode(proc.stdout))).toMatchObject({
+    schema_version: 1,
+    ok: false,
+    command: "submit",
+    error: {
+      code: "unsupported_submission_version",
+      message: "submission version must be 1",
+    },
+  });
+  const db = new Database(dbPath, { readonly: true });
+  expect(db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({
+    count: 0,
+  });
+  expect(db.query("SELECT COUNT(*) AS count FROM artifacts").get()).toEqual({
+    count: 0,
+  });
+  db.close();
 });

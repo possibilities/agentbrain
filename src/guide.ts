@@ -2,19 +2,18 @@ export function buildGuide(): unknown {
   return {
     name: "agentbrain",
     purpose:
-      "Sole schema-v2 reader/writer for Mike's local research index, exposed as an agent-friendly CLI.",
+      "Sole durable ingestion authority and reader/writer for Mike's local research index, exposed as an agent-friendly CLI.",
     default_db: "~/.hermes/research-cache/research.db",
     architecture: {
       agentbot: "Human-facing saved-link ingress.",
-      linkctl: "Link admission and duplicate policy.",
-      scrapectl:
-        "Queue ownership plus all URL fetching, browser/session behavior, backend hardening/retries, and extraction.",
       agentbrain:
-        "Index schema, migrations, local ingestion, Scrapectl-provider URL ingestion, completed-link writes, search, retrieval, context, and deletion.",
+        "Durable admission, ingestion jobs and attempts, Artifact storage, index schema, search, retrieval, context, and deletion.",
+      scrapectl:
+        "All URL fetching, browser/session behavior, backend hardening, and extraction invoked by the Agentbrain worker.",
       boundary:
-        "Agentbrain has no link queue, browser implementation, direct HTTP fallback, DNS/redirect policy, or network scraper. URL ingestion and every one-hop child discovered from a completed X root call Scrapectl as the sole URL extractor/backend; Agentbrain retries only transient provider-command availability and indexes completed markdown.",
+        "Every public ingestion intent is durable before materialization. Admission performs no network work, and URL workers delegate extraction to Scrapectl without direct HTTP fallback.",
       decision_record:
-        "docs/adr/0001-agentbrain-owns-research-index.md and docs/adr/0002-scrapectl-owns-url-extraction.md",
+        "docs/adr/0003-agentbrain-owns-durable-ingestion.md and docs/adr/0005-public-ingestion-admission-contract.md",
       glossary: "CONTEXT.md",
     },
     source_types: {
@@ -55,7 +54,14 @@ export function buildGuide(): unknown {
         "tags",
         "sources",
       ],
-      mutation_commands: ["ingest", "ingest-link", "delete"],
+      mutation_commands: ["submit", "ingest", "ingest-link", "delete"],
+      submission_contract: {
+        version: 1,
+        new_status: "queued",
+        replay_status: "duplicate",
+        success_exit: 0,
+        wait_timeout_preserves_job: true,
+      },
       citation_fields: ["document_id", "chunk_id", "source_uri", "title"],
       legacy_adapter:
         "research-ingest-link emits bare Scrapectl-compatible JSON, not the Agentbrain envelope.",
@@ -86,8 +92,8 @@ export function buildGuide(): unknown {
       },
       exit_codes: {
         "0": "success",
-        "1": "runtime, validation, root-ingest, not-found, or database failure",
-        "2": "argument error; for native ingest-link and research-ingest-link, root committed with child or optional artifact failures",
+        "1": "runtime, root-ingest, not-found, or database failure",
+        "2": "argument or pre-admission validation error; for ingest-link adapters, root committed with child or optional artifact failures",
       },
     },
     recommended_workflow: [
@@ -95,7 +101,7 @@ export function buildGuide(): unknown {
       'Or run `agentbrain search "your query" --json`, then fetch selected evidence with `agentbrain get --chunk-id ID --json`.',
       "Inspect stats/tags/sources when discovery is poor and retry alternate terms before inferring absence.",
       "Cite document_id, chunk_id when applicable, title, source_uri, and relevant relation provenance.",
-      "Use `agentbrain ingest` for explicit generic sources. Send admitted links through Linkctl and let Scrapectl produce the completed payload.",
+      "Use `agentbrain submit` for every text, file, directory, or URL intent. Treat queued and duplicate as successful durable acknowledgements.",
     ],
     commands: {
       stats:
@@ -104,8 +110,10 @@ export function buildGuide(): unknown {
         "FTS5 chunks; data.results include ids, title, source_uri, snippet, tags, score, and offsets.",
       get: "Evidence retrieval by document id, chunk id, or source URI.",
       context: "Bounded compact citation-ready hits for shell-enabled agents.",
+      submit:
+        "Validate and durably admit versioned text, file, directory, or URL intent; local bytes are snapshotted and URL admission performs no network work.",
       ingest:
-        "Index text, files/directories, local PDF/DOCX/EPUB, and URL markdown extracted by Scrapectl.",
+        "Queued compatibility alias for submit; it cannot write documents directly.",
       "ingest-link":
         "Read one bounded already-scraped root from stdin; generic roots do not fan out, while every child discovered from an X root uses the same Scrapectl provider adapter and traversal stops after one hop.",
       delete: "Delete exactly one selected document with --confirm delete.",
@@ -117,15 +125,16 @@ export function buildGuide(): unknown {
       read_connections:
         "Read commands open SQLite with mode=ro/readonly and never initialize or migrate.",
       writes:
-        "Only the separate ResearchStore creates/migrates schema-v2 or mutates documents, chunks, FTS, and relations.",
-      urls: "Agentbrain validates only HTTP(S) URL syntax and invokes `scrapectl fetch-markdown --markdown URL` without a shell. Scrapectl selects presets, owns URL fetching/browser/session/DNS/redirect/backend security and retries, and emits final Markdown; Agentbrain does not render provider schemas. The requested URL is the stable identity. Agentbrain retries only classified transient provider-command unavailability with bounded exponential backoff; permanent provider/input/content failures stop, and there is no direct HTTP fallback.",
+        "Submit and its ingest alias write only durable jobs and required Artifact snapshots; materialization is restricted to the fenced worker path.",
+      urls: "Admission validates HTTP(S) syntax and queues normalized intent without network work. The worker delegates all URL extraction and network policy to Scrapectl.",
       local_documents:
-        "Text/file/directory/PDF/DOCX/EPUB parsing remains local Agentbrain ingestion, with pdftotext required for local PDFs.",
+        "Text, file, and directory bytes are captured as immutable Artifacts before acknowledgement and parsed only after a worker leases the job.",
       directories:
         "Traversal streams entries, caps at 20000 entries/10000 supported candidates, and skips sensitive path components by default.",
       deletion: "Requires exactly one selector and literal --confirm delete.",
       no_raw_sql: true,
-      no_owned_queue_or_browser_implementation: true,
+      owns_durable_ingestion_ledger: true,
+      no_browser_or_network_implementation: true,
     },
   };
 }
@@ -141,6 +150,7 @@ Inspect:
   agentbrain context --help
   agentbrain search --help
   agentbrain get --help
+  agentbrain submit --help
   agentbrain ingest --help
   agentbrain ingest-link --help
   agentbrain delete --help
@@ -153,8 +163,8 @@ Document:
 2. Exact --json examples and the citation fields.
 3. Zero-result recovery through alternate terms, tags, and sources.
 4. Generic explicit ingestion and guarded deletion.
-5. The ownership boundary: Agentbot is human ingress, Linkctl admits/deduplicates, Scrapectl owns queue and all URL extraction/network/backend behavior, and Agentbrain solely owns index reads/writes; Agentbrain has no queue/browser/network scraper.
-6. Completed-link stdin ingestion and the temporary research-ingest-link compatibility adapter.
+5. The ownership boundary: Agentbrain owns durable admission, ingestion jobs, Artifact snapshots, and index writes; Scrapectl owns URL extraction/network/backend behavior.
+6. Queued and duplicate submission acknowledgements, explicit idempotency conflicts, --wait observation, and the temporary completed-link compatibility adapter.
 7. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.hermes/research-cache/research.db.
 
 Keep it short enough for an AGENTS.md / CLAUDE.md / harness instruction file.`;
