@@ -13,5 +13,6 @@
   "target_repo": "/Users/mike/code/agentbrain",
   "tier": "xhigh",
   "title": "Build immutable artifact store",
-  "updated_at": "2026-07-18T21:30:19.133000Z"
+  "updated_at": "2026-07-18T22:22:21.210000Z",
+  "worker_done_at": "2026-07-18T22:22:21.210000Z"
 }

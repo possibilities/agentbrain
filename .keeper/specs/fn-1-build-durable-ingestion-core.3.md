@@ -54,5 +54,5 @@ Default to a temporary artifact root in tests; do not touch live XDG state.
 - [ ] Normalized artifacts can rebuild indexed content without source files or network access.
 
 ## Done summary
-
+Implemented SHA-256-addressed artifact staging, verification, atomic promotion, typed metadata/derivation registration, immutable local-file snapshots, strict 0700/0600 permissions, and staging/orphan reconciliation with offline index rebuild support.
 ## Evidence
