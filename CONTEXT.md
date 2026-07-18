@@ -6,6 +6,7 @@
 - **Ingestion job** — One immutable, durable intent to ingest or reconcile an item. A retry does not replace the job; it adds an attempt.
 - **Attempt** — One leased execution of an ingestion job, including its timing, outcome, and failure classification. Avoid using *run* for a job attempt.
 - **Run** — A source synchronization or import batch that groups jobs and owns batch-level progress or checkpoints.
+- **Frozen recovery generation** — An immutable, hash-bound set of recovery inputs, candidate evidence rows, observations, dispositions, summaries, and inventories. It authorizes and identifies what an import run may admit but is not itself a run.
 - **Resource** — One logical item with a stable identity independent of its current content, discovery path, or indexed representation.
 - **Resource key** — A typed, stable identity derived from a trustworthy provider identifier or conservative local normalization. Avoid using artifact digests, titles, or historical list positions as resource keys.
 - **Alias** — An observed alternate locator for a resource, carrying its role and evidence without independently proving that two resources should merge.
@@ -27,6 +28,7 @@
 - **Candidate evidence row** — One exact recovered locator plus its independent disposition and provenance accounting. It is neither an observation, a logical resource, an ingestion job, nor proof of fetch approval.
 - **Comparison URI** — A derived normalization for possible reconciliation matches. It never collapses candidate evidence rows or proves resource identity.
 - **Backfill** — Queued admission of historical evidence or approved historical content through the ingestion ledger. It never means direct index mutation; URL discovery alone does not authorize fetching.
+- **Controlled online backfill** — A separate run over an immutable allowlist of approved candidate evidence rows after offline recovery gates pass. It never means resuming every runnable queue item or substituting unlisted candidates.
 - **Private provenance** — Sensitive context about how evidence was observed, such as message bodies, chat/session identifiers, or credentials. Provenance sensitivity does not automatically taint an otherwise public submitted URL unless the URL, imported content, or explicit policy is itself sensitive.
 - **Ingestion ledger** — Agentbrain's durable record of jobs, attempts, runs, state transitions, and operator dispositions. Its runnable jobs form the ingestion queue.
 - **Worker** — The Agentbrain process that leases jobs, delegates materialization, and commits fenced outcomes. A worker is an executor, not a source or ingress.
