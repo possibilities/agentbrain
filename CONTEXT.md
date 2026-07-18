@@ -1,6 +1,7 @@
 # Agentbrain ingestion glossary
 
 - **Ingress** — The actor or interface that submits ingestion intent, such as Agentbot, a CLI user, an importer, or a source run. Avoid using *source* for the submitter.
+- **Admission** — The synchronous boundary that validates intent and either rejects it or durably creates or identifies an ingestion job. Accepted admission does not imply extraction or indexing success.
 - **Ingestion** — The durable lifecycle from submitted intent through materialization and indexing or an inspectable terminal disposition. Extraction is one possible stage of ingestion, not a synonym for it.
 - **Ingestion job** — One immutable, durable intent to ingest or reconcile an item. A retry does not replace the job; it adds an attempt.
 - **Attempt** — One leased execution of an ingestion job, including its timing, outcome, and failure classification. Avoid using *run* for a job attempt.
