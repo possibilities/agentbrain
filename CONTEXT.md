@@ -11,6 +11,7 @@
 - **Alias** — An observed alternate locator for a resource, carrying its role and evidence without independently proving that two resources should merge.
 - **Document** — The current searchable representation of a resource in Agentbrain's index.
 - **Artifact** — An immutable captured or derived representation observed at a particular time, such as imported Markdown or extracted content. A content digest identifies artifact bytes, not the resource itself.
+- **Artifact store** — The content-addressed filesystem that holds immutable artifact bytes while SQLite records their typed metadata and references.
 - **Source** — A recurring producer or discovery definition, such as a blog feed, X account, or filesystem root. Avoid using *source* for ingress or a legacy provenance label.
 - **Collection** — A many-to-many curation and policy grouping independent of how its resources were discovered.
 - **Observation** — Evidence that a source or ingress encountered a resource during a run or job.
