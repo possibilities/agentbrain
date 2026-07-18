@@ -6,7 +6,7 @@
     "fn-3-cut-over-agentbot-ingestion"
   ],
   "id": "fn-4-prepare-legacy-corpus-recovery",
-  "last_validated_at": "2026-07-18T21:32:11.852000Z",
+  "last_validated_at": null,
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -15,5 +15,5 @@
     "/Users/mike/code/agentbrain",
     "/Users/mike/code/dotfiles"
   ],
-  "updated_at": "2026-07-18T21:32:11.853000Z"
+  "updated_at": "2026-07-18T22:32:56.871000Z"
 }
