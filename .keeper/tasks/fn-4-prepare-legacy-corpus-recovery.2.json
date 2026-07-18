@@ -1,4 +1,5 @@
 {
+  "audit_required": false,
   "bundles": [],
   "created_at": "2026-07-18T21:25:05.187000Z",
   "depends_on": [
@@ -10,7 +11,7 @@
   "priority": null,
   "snippets": [],
   "target_repo": "/Users/mike/code/dotfiles",
-  "tier": "xhigh",
+  "tier": "high",
   "title": "Extend encrypted backup coverage",
-  "updated_at": "2026-07-18T21:25:05.187000Z"
+  "updated_at": "2026-07-18T21:30:20.733000Z"
 }
