@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { CliError } from "./errors";
+import { sanitizeExternalError } from "./sanitize";
 import {
   chunkText,
   cleanText,
@@ -9,8 +10,61 @@ import {
   normalizeTags,
   sha256Text,
 } from "./text";
+import type {
+  Attempt,
+  CancelResult,
+  ClaimResult,
+  CompleteResult,
+  FailResult,
+  FailureClass,
+  HeartbeatResult,
+  Job,
+  JobState,
+  LifecyclePolicy,
+  RecoveredLease,
+} from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 3;
+export const RESEARCH_SCHEMA_VERSION = 4;
+
+/**
+ * Default lease and retry policy. Durations are policy, not identity: callers
+ * may override any field per invocation without altering persisted job
+ * semantics or idempotency keys (ADR 0004).
+ */
+export const DEFAULT_LIFECYCLE_POLICY: LifecyclePolicy = {
+  leaseMs: 60_000,
+  maxItemRetries: 5,
+  infraBaseMs: 5_000,
+  infraCapMs: 300_000,
+  itemBaseMs: 2_000,
+  itemCapMs: 120_000,
+  jitterRatio: 0.1,
+};
+
+/**
+ * The accepted job state machine (ADR 0004). Every state change routes through
+ * assertTransition so an illegal transition is rejected rather than silently
+ * corrupting queue state. Sensitive-inspection audit is a self-loop recorded
+ * outside this map because it never changes state.
+ */
+const LEGAL_JOB_TRANSITIONS: Record<JobState, readonly JobState[]> = {
+  queued: ["running", "cancelled", "excluded"],
+  running: ["completed", "retry_wait", "blocked", "failed", "cancelled"],
+  retry_wait: ["running", "queued", "cancelled", "excluded"],
+  blocked: ["queued", "cancelled", "excluded"],
+  failed: ["queued", "cancelled", "excluded"],
+  completed: [],
+  excluded: ["queued"],
+  cancelled: ["queued"],
+};
+
+interface LifecycleOptions {
+  now?: Date;
+  /** Lease duration for this claim/heartbeat; falls back to policy.leaseMs. */
+  leaseMs?: number;
+  policy?: Partial<LifecyclePolicy>;
+  random?: () => number;
+}
 
 interface Row {
   [key: string]: unknown;
@@ -285,8 +339,106 @@ const MIGRATION_V3 = `
   UPDATE meta SET value='3' WHERE key='schema_version';
 `;
 
+// Additive durable ingestion ledger (ADR 0004). Jobs hold one immutable intent
+// and a mutable disposition; attempts are append-only leased executions whose
+// autoincrement id doubles as a globally monotonic fencing token; transitions
+// are an append-only audit of every disposition change and operator action.
+// current_attempt_id is the job's live fencing token (a logical reference, not
+// an enforced FK, to avoid a jobs<->attempts cycle). No legacy table is touched.
+const MIGRATION_V4 = `
+  CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    intent TEXT,
+    resource_id INTEGER REFERENCES resources(id) ON DELETE SET NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN (
+      'queued', 'running', 'retry_wait', 'blocked',
+      'failed', 'completed', 'excluded', 'cancelled'
+    )),
+    sensitivity TEXT NOT NULL DEFAULT 'normal' REFERENCES sensitivity_levels(level),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    item_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (item_retry_count >= 0),
+    current_attempt_id INTEGER,
+    run_at TEXT NOT NULL,
+    block_reason TEXT,
+    failure_class TEXT,
+    failure_summary TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_jobs_runnable ON jobs(state, run_at, id);
+  CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS attempts (
+    id INTEGER PRIMARY KEY,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+    worker TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'leased' CHECK (state IN (
+      'leased', 'succeeded', 'failed', 'stale', 'cancelled'
+    )),
+    lease_expires_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    failure_class TEXT,
+    failure_summary TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    UNIQUE(job_id, attempt_number)
+  );
+  CREATE INDEX IF NOT EXISTS idx_attempts_job ON attempts(job_id, attempt_number);
+  CREATE INDEX IF NOT EXISTS idx_attempts_lease ON attempts(state, lease_expires_at);
+
+  CREATE TABLE IF NOT EXISTS job_transitions (
+    id INTEGER PRIMARY KEY,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    attempt_id INTEGER REFERENCES attempts(id) ON DELETE SET NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT,
+    detail TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_job_transitions_job
+    ON job_transitions(job_id, id);
+
+  UPDATE meta SET value='4' WHERE key='schema_version';
+`;
+
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+const JOB_COLUMNS = `id, idempotency_key, kind, intent, resource_id, source_id,
+  run_id, state, sensitivity, attempt_count, item_retry_count,
+  current_attempt_id, run_at, block_reason, failure_class, failure_summary,
+  created_at, updated_at`;
+
+const ATTEMPT_COLUMNS = `id, job_id, attempt_number, worker, state,
+  lease_expires_at, heartbeat_at, failure_class, failure_summary, started_at,
+  finished_at`;
+
+function backoffMs(
+  attempt: number,
+  baseMs: number,
+  capMs: number,
+  jitterRatio: number,
+  random: () => number,
+): number {
+  const exponential = Math.min(capMs, baseMs * 2 ** Math.max(0, attempt - 1));
+  const jitter = exponential * jitterRatio * random();
+  return Math.round(exponential + jitter);
+}
+
+function isoAfter(now: Date, deltaMs: number): string {
+  return new Date(now.getTime() + deltaMs).toISOString();
+}
+
+function isExpired(leaseExpiresAt: string, now: Date): boolean {
+  return Date.parse(leaseExpiresAt) <= now.getTime();
 }
 
 function pythonStyleTagJson(tags: string[]): string {
@@ -604,6 +756,692 @@ export class ResearchStore {
     return transaction.immediate();
   }
 
+  // ---- Durable ingestion job lifecycle (ADR 0004) ----
+
+  /**
+   * Admission: create or identify a durable job for one intent. Idempotent on
+   * `idempotencyKey`, so replayed submissions return the existing job instead
+   * of forking a second lifecycle. Returns whether the job was newly created.
+   */
+  enqueueJob(input: {
+    idempotencyKey: string;
+    kind: string;
+    intent?: unknown;
+    sensitivity?: string;
+    resourceId?: number | null;
+    sourceId?: number | null;
+    runId?: number | null;
+    now?: Date;
+  }): { job: Job; created: boolean } {
+    const idempotencyKey = String(input.idempotencyKey || "").trim();
+    if (idempotencyKey.length === 0) {
+      throw new CliError("bad_intent", "idempotency_key is required");
+    }
+    const kind = String(input.kind || "").trim();
+    if (kind.length === 0) throw new CliError("bad_intent", "kind is required");
+    const intent =
+      input.intent === undefined || input.intent === null
+        ? null
+        : typeof input.intent === "string"
+          ? input.intent
+          : JSON.stringify(input.intent);
+    const sensitivity = input.sensitivity ?? "normal";
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+
+    const transaction = this.db.transaction(
+      (): { job: Job; created: boolean } => {
+        const existing = this.loadJobByKey(idempotencyKey);
+        if (existing !== null) return { job: existing, created: false };
+        const inserted = this.db
+          .query(
+            `INSERT INTO jobs(
+             idempotency_key, kind, intent, resource_id, source_id, run_id,
+             state, sensitivity, run_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+          )
+          .run(
+            idempotencyKey,
+            kind,
+            intent,
+            input.resourceId ?? null,
+            input.sourceId ?? null,
+            input.runId ?? null,
+            sensitivity,
+            timestamp,
+            timestamp,
+            timestamp,
+          );
+        const jobId = Number(inserted.lastInsertRowid);
+        this.recordTransition(
+          jobId,
+          null,
+          null,
+          "queued",
+          "system",
+          "admitted",
+          null,
+          timestamp,
+        );
+        return { job: this.requireJob(jobId), created: true };
+      },
+    );
+    return transaction.immediate();
+  }
+
+  /**
+   * Atomically claim the next runnable job and open a fresh leased attempt.
+   * The immediate transaction takes the write lock at BEGIN, and the runnable
+   * predicate excludes any already-running job, so two concurrent claimers can
+   * never obtain the same active lease. The new attempt id is the fencing token.
+   */
+  claimJob(input: { worker: string } & LifecycleOptions): ClaimResult {
+    const worker = String(input.worker || "").trim();
+    if (worker.length === 0)
+      throw new CliError("bad_claim", "worker is required");
+    const now = input.now ?? new Date();
+    const policy = { ...DEFAULT_LIFECYCLE_POLICY, ...input.policy };
+    const timestamp = now.toISOString();
+    const leaseExpiresAt = isoAfter(now, input.leaseMs ?? policy.leaseMs);
+
+    const transaction = this.db.transaction((): ClaimResult => {
+      const candidate = this.db
+        .query(
+          `SELECT ${JOB_COLUMNS} FROM jobs
+           WHERE state IN ('queued', 'retry_wait') AND run_at <= ?
+           ORDER BY run_at ASC, id ASC LIMIT 1`,
+        )
+        .get(timestamp) as Job | null;
+      if (candidate === null) return { claimed: false };
+
+      const attemptNumber = candidate.attempt_count + 1;
+      const inserted = this.db
+        .query(
+          `INSERT INTO attempts(
+             job_id, attempt_number, worker, state, lease_expires_at,
+             heartbeat_at, started_at
+           ) VALUES (?, ?, ?, 'leased', ?, ?, ?)`,
+        )
+        .run(
+          candidate.id,
+          attemptNumber,
+          worker,
+          leaseExpiresAt,
+          timestamp,
+          timestamp,
+        );
+      const attemptId = Number(inserted.lastInsertRowid);
+      this.assertTransition(candidate.state, "running");
+      this.db
+        .query(
+          `UPDATE jobs SET state='running', attempt_count=?, current_attempt_id=?,
+             updated_at=? WHERE id=?`,
+        )
+        .run(attemptNumber, attemptId, timestamp, candidate.id);
+      this.recordTransition(
+        candidate.id,
+        attemptId,
+        candidate.state,
+        "running",
+        worker,
+        "claimed",
+        null,
+        timestamp,
+      );
+      return {
+        claimed: true,
+        job: this.requireJob(candidate.id),
+        attempt: this.requireAttempt(attemptId),
+        fencing_token: attemptId,
+      };
+    });
+    return transaction.immediate();
+  }
+
+  /** Extend a live lease. Rejects an expired (stale) or fenced token. */
+  heartbeat(
+    input: { fencingToken: number } & LifecycleOptions,
+  ): HeartbeatResult {
+    const now = input.now ?? new Date();
+    const policy = { ...DEFAULT_LIFECYCLE_POLICY, ...input.policy };
+    const timestamp = now.toISOString();
+    const leaseExpiresAt = isoAfter(now, input.leaseMs ?? policy.leaseMs);
+
+    const transaction = this.db.transaction((): HeartbeatResult => {
+      const guard = this.guardActiveToken(input.fencingToken, now);
+      if (guard.ok === false) return guard;
+      this.db
+        .query(
+          "UPDATE attempts SET lease_expires_at=?, heartbeat_at=? WHERE id=?",
+        )
+        .run(leaseExpiresAt, timestamp, input.fencingToken);
+      return {
+        ok: true,
+        job: this.requireJob(guard.job.id),
+        attempt: this.requireAttempt(input.fencingToken),
+      };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Fenced, idempotent success. `apply` runs the resource/provenance/index
+   * effects inside the same transaction that finalizes the attempt and job, so
+   * they commit together. A replayed completion of an already-completed job is
+   * a no-op (`idempotent: true`) that never re-runs `apply`, so at-least-once
+   * execution cannot duplicate resource, provenance, or terminal job effects.
+   */
+  completeJob(
+    input: {
+      fencingToken: number;
+      resourceId?: number | null;
+      apply?: (db: Database) => void;
+    } & LifecycleOptions,
+  ): CompleteResult {
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+
+    const transaction = this.db.transaction((): CompleteResult => {
+      const attempt = this.requireAttempt(input.fencingToken);
+      const job = this.requireJob(attempt.job_id);
+      if (job.state === "completed" && attempt.state === "succeeded") {
+        return { ok: true, idempotent: true, job };
+      }
+      const guard = this.guardActiveToken(input.fencingToken, now);
+      if (guard.ok === false) return guard;
+
+      if (input.apply !== undefined) input.apply(this.db);
+      this.db
+        .query(
+          "UPDATE attempts SET state='succeeded', finished_at=? WHERE id=?",
+        )
+        .run(timestamp, input.fencingToken);
+      this.assertTransition(guard.job.state, "completed");
+      this.db
+        .query(
+          `UPDATE jobs SET state='completed', resource_id=COALESCE(?, resource_id),
+             updated_at=? WHERE id=?`,
+        )
+        .run(input.resourceId ?? null, timestamp, guard.job.id);
+      this.recordTransition(
+        guard.job.id,
+        input.fencingToken,
+        guard.job.state,
+        "completed",
+        guard.job_worker,
+        "completed",
+        null,
+        timestamp,
+      );
+      return {
+        ok: true,
+        idempotent: false,
+        job: this.requireJob(guard.job.id),
+      };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Fenced failure classification. Infrastructure failure retries indefinitely
+   * in retry_wait; item-transient failure consumes a bounded budget and blocks
+   * once exhausted; permanent failure fails terminally; auth/config blocks.
+   */
+  failAttempt(
+    input: {
+      fencingToken: number;
+      failureClass: FailureClass;
+      summary?: unknown;
+    } & LifecycleOptions,
+  ): FailResult {
+    const now = input.now ?? new Date();
+    const policy = { ...DEFAULT_LIFECYCLE_POLICY, ...input.policy };
+    const random = input.random ?? Math.random;
+    const timestamp = now.toISOString();
+    const summary =
+      input.summary === undefined ? null : sanitizeExternalError(input.summary);
+
+    const transaction = this.db.transaction((): FailResult => {
+      const guard = this.guardActiveToken(input.fencingToken, now);
+      if (guard.ok === false) return guard;
+      const job = guard.job;
+      this.db
+        .query(
+          `UPDATE attempts SET state='failed', failure_class=?, failure_summary=?,
+             finished_at=? WHERE id=?`,
+        )
+        .run(input.failureClass, summary, timestamp, input.fencingToken);
+
+      let toState: JobState;
+      let runAt = job.run_at;
+      let itemRetryCount = job.item_retry_count;
+      let blockReason: string | null = null;
+      let reason: string;
+      if (input.failureClass === "infra") {
+        toState = "retry_wait";
+        runAt = isoAfter(
+          now,
+          backoffMs(
+            job.attempt_count,
+            policy.infraBaseMs,
+            policy.infraCapMs,
+            policy.jitterRatio,
+            random,
+          ),
+        );
+        reason = "infra_retry";
+      } else if (input.failureClass === "item_transient") {
+        itemRetryCount = job.item_retry_count + 1;
+        if (itemRetryCount >= policy.maxItemRetries) {
+          toState = "blocked";
+          blockReason = "item_retry_exhausted";
+          reason = "item_retry_exhausted";
+        } else {
+          toState = "retry_wait";
+          runAt = isoAfter(
+            now,
+            backoffMs(
+              itemRetryCount,
+              policy.itemBaseMs,
+              policy.itemCapMs,
+              policy.jitterRatio,
+              random,
+            ),
+          );
+          reason = "item_retry";
+        }
+      } else if (input.failureClass === "auth_config") {
+        toState = "blocked";
+        blockReason = "auth_config";
+        reason = "auth_config";
+      } else {
+        toState = "failed";
+        reason = "permanent";
+      }
+
+      this.assertTransition(job.state, toState);
+      this.db
+        .query(
+          `UPDATE jobs SET state=?, item_retry_count=?, run_at=?, block_reason=?,
+             failure_class=?, failure_summary=?, current_attempt_id=NULL,
+             updated_at=? WHERE id=?`,
+        )
+        .run(
+          toState,
+          itemRetryCount,
+          runAt,
+          blockReason,
+          input.failureClass,
+          summary,
+          timestamp,
+          job.id,
+        );
+      this.recordTransition(
+        job.id,
+        input.fencingToken,
+        job.state,
+        toState,
+        guard.job_worker,
+        reason,
+        summary,
+        timestamp,
+      );
+      return {
+        ok: true,
+        job: this.requireJob(job.id),
+        attempt: this.requireAttempt(input.fencingToken),
+        disposition: toState,
+      };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Reconcile leases whose worker crashed or stalled: mark each expired leased
+   * attempt stale and return its job to retry_wait with infra backoff. A crash
+   * is not attributable to the item, so it never consumes the item budget.
+   */
+  recoverExpiredLeases(input: LifecycleOptions = {}): RecoveredLease[] {
+    const now = input.now ?? new Date();
+    const policy = { ...DEFAULT_LIFECYCLE_POLICY, ...input.policy };
+    const random = input.random ?? Math.random;
+    const timestamp = now.toISOString();
+
+    const transaction = this.db.transaction((): RecoveredLease[] => {
+      const expired = this.db
+        .query(
+          `SELECT a.id AS attempt_id, a.job_id AS job_id, j.state AS state,
+                  j.attempt_count AS attempt_count
+           FROM attempts a JOIN jobs j ON j.id = a.job_id
+           WHERE a.state='leased' AND a.lease_expires_at <= ? AND j.state='running'
+           ORDER BY a.id ASC`,
+        )
+        .all(timestamp) as Array<{
+        attempt_id: number;
+        job_id: number;
+        state: JobState;
+        attempt_count: number;
+      }>;
+      const recovered: RecoveredLease[] = [];
+      for (const row of expired) {
+        this.db
+          .query("UPDATE attempts SET state='stale', finished_at=? WHERE id=?")
+          .run(timestamp, row.attempt_id);
+        const runAt = isoAfter(
+          now,
+          backoffMs(
+            row.attempt_count,
+            policy.infraBaseMs,
+            policy.infraCapMs,
+            policy.jitterRatio,
+            random,
+          ),
+        );
+        this.assertTransition(row.state, "retry_wait");
+        this.db
+          .query(
+            `UPDATE jobs SET state='retry_wait', run_at=?, current_attempt_id=NULL,
+               updated_at=? WHERE id=?`,
+          )
+          .run(runAt, timestamp, row.job_id);
+        this.recordTransition(
+          row.job_id,
+          row.attempt_id,
+          row.state,
+          "retry_wait",
+          "system",
+          "lease_expired",
+          null,
+          timestamp,
+        );
+        recovered.push({
+          job_id: row.job_id,
+          attempt_id: row.attempt_id,
+          disposition: "retry_wait",
+        });
+      }
+      return recovered;
+    });
+    return transaction.immediate();
+  }
+
+  /** Operator manual retry: requeue the same job, preserving prior attempts. */
+  retryJob(input: {
+    jobId: number;
+    actor?: string;
+    reason?: string;
+    now?: Date;
+  }): Job {
+    return this.operatorTransition(
+      input.jobId,
+      "queued",
+      input.actor ?? "operator",
+      input.reason ?? "manual_retry",
+      null,
+      input.now,
+      true,
+    );
+  }
+
+  /** Operator reopen of a terminal disposition back to the runnable queue. */
+  reopenJob(input: {
+    jobId: number;
+    actor?: string;
+    reason?: string;
+    now?: Date;
+  }): Job {
+    return this.operatorTransition(
+      input.jobId,
+      "queued",
+      input.actor ?? "operator",
+      input.reason ?? "reopened",
+      null,
+      input.now,
+      true,
+    );
+  }
+
+  /** Operator exclusion: durably remove a job from processing with a reason. */
+  excludeJob(input: {
+    jobId: number;
+    actor?: string;
+    reason: string;
+    now?: Date;
+  }): Job {
+    const reason = String(input.reason || "").trim();
+    if (reason.length === 0)
+      throw new CliError("bad_exclude", "exclusion requires a reason");
+    return this.operatorTransition(
+      input.jobId,
+      "excluded",
+      input.actor ?? "operator",
+      reason,
+      reason,
+      input.now,
+      false,
+    );
+  }
+
+  /**
+   * Operator cancellation, fenced by a compare-and-swap: a job that already
+   * committed a completion wins the race and cancellation is refused; otherwise
+   * the job is cancelled and any live attempt is marked cancelled so a late
+   * worker cannot commit.
+   */
+  cancelJob(input: {
+    jobId: number;
+    actor?: string;
+    reason?: string;
+    now?: Date;
+  }): CancelResult {
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+    const actor = input.actor ?? "operator";
+    const reason = input.reason ?? "cancelled";
+
+    const transaction = this.db.transaction((): CancelResult => {
+      const job = this.requireJob(input.jobId);
+      if (job.state === "completed") {
+        return { ok: false, reason: "already_completed", job };
+      }
+      if (job.state === "cancelled") return { ok: true, job };
+      this.assertTransition(job.state, "cancelled");
+      if (job.current_attempt_id !== null) {
+        this.db
+          .query(
+            "UPDATE attempts SET state='cancelled', finished_at=? WHERE id=? AND state='leased'",
+          )
+          .run(timestamp, job.current_attempt_id);
+      }
+      this.db
+        .query(
+          "UPDATE jobs SET state='cancelled', current_attempt_id=NULL, updated_at=? WHERE id=?",
+        )
+        .run(timestamp, input.jobId);
+      this.recordTransition(
+        input.jobId,
+        job.current_attempt_id,
+        job.state,
+        "cancelled",
+        actor,
+        reason,
+        null,
+        timestamp,
+      );
+      return { ok: true, job: this.requireJob(input.jobId) };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Append durable audit evidence without changing the job's state, e.g. an
+   * operator inspecting a sensitive job. This is a self-loop, so it deliberately
+   * bypasses the state-transition table.
+   */
+  recordSensitiveInspection(input: {
+    jobId: number;
+    actor: string;
+    detail: string;
+    now?: Date;
+  }): Job {
+    const actor = String(input.actor || "").trim();
+    if (actor.length === 0)
+      throw new CliError("bad_audit", "an actor is required");
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+    const detail = sanitizeExternalError(input.detail);
+
+    const transaction = this.db.transaction((): Job => {
+      const job = this.requireJob(input.jobId);
+      this.recordTransition(
+        job.id,
+        job.current_attempt_id,
+        job.state,
+        job.state,
+        actor,
+        "sensitive_inspection",
+        detail,
+        timestamp,
+      );
+      return job;
+    });
+    return transaction.immediate();
+  }
+
+  private operatorTransition(
+    jobId: number,
+    toState: JobState,
+    actor: string,
+    reason: string,
+    blockReason: string | null,
+    nowInput: Date | undefined,
+    resetRunAt: boolean,
+  ): Job {
+    const now = nowInput ?? new Date();
+    const timestamp = now.toISOString();
+    const transaction = this.db.transaction((): Job => {
+      const job = this.requireJob(jobId);
+      this.assertTransition(job.state, toState);
+      if (job.current_attempt_id !== null) {
+        this.db
+          .query(
+            "UPDATE attempts SET state='stale', finished_at=? WHERE id=? AND state='leased'",
+          )
+          .run(timestamp, job.current_attempt_id);
+      }
+      this.db
+        .query(
+          `UPDATE jobs SET state=?, run_at=?, block_reason=?, current_attempt_id=NULL,
+             updated_at=? WHERE id=?`,
+        )
+        .run(
+          toState,
+          resetRunAt ? timestamp : job.run_at,
+          blockReason,
+          timestamp,
+          jobId,
+        );
+      this.recordTransition(
+        jobId,
+        job.current_attempt_id,
+        job.state,
+        toState,
+        actor,
+        reason,
+        null,
+        timestamp,
+      );
+      return this.requireJob(jobId);
+    });
+    return transaction.immediate();
+  }
+
+  private guardActiveToken(
+    token: number,
+    now: Date,
+  ):
+    | { ok: true; job: Job; job_worker: string }
+    | { ok: false; reason: "stale" | "fenced" | "terminal"; job: Job } {
+    const attempt = this.requireAttempt(token);
+    const job = this.requireJob(attempt.job_id);
+    const TERMINAL: readonly JobState[] = [
+      "completed",
+      "failed",
+      "excluded",
+      "cancelled",
+    ];
+    if (TERMINAL.includes(job.state))
+      return { ok: false, reason: "terminal", job };
+    if (job.current_attempt_id !== token)
+      return { ok: false, reason: "fenced", job };
+    if (attempt.state !== "leased") return { ok: false, reason: "stale", job };
+    if (isExpired(attempt.lease_expires_at, now))
+      return { ok: false, reason: "stale", job };
+    return { ok: true, job, job_worker: attempt.worker };
+  }
+
+  private assertTransition(from: JobState, to: JobState): void {
+    if (!LEGAL_JOB_TRANSITIONS[from].includes(to)) {
+      throw new CliError(
+        "illegal_transition",
+        `illegal job transition ${from} -> ${to}`,
+      );
+    }
+  }
+
+  private recordTransition(
+    jobId: number,
+    attemptId: number | null,
+    fromState: JobState | null,
+    toState: JobState,
+    actor: string,
+    reason: string | null,
+    detail: string | null,
+    timestamp: string,
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO job_transitions(
+           job_id, attempt_id, from_state, to_state, actor, reason, detail, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        jobId,
+        attemptId,
+        fromState,
+        toState,
+        actor,
+        reason,
+        detail,
+        timestamp,
+      );
+  }
+
+  private loadJobByKey(idempotencyKey: string): Job | null {
+    return this.db
+      .query(`SELECT ${JOB_COLUMNS} FROM jobs WHERE idempotency_key=?`)
+      .get(idempotencyKey) as Job | null;
+  }
+
+  private requireJob(jobId: number): Job {
+    const job = this.db
+      .query(`SELECT ${JOB_COLUMNS} FROM jobs WHERE id=?`)
+      .get(jobId) as Job | null;
+    if (job === null)
+      throw new CliError("job_not_found", `job ${jobId} not found`);
+    return job;
+  }
+
+  private requireAttempt(attemptId: number): Attempt {
+    const attempt = this.db
+      .query(`SELECT ${ATTEMPT_COLUMNS} FROM attempts WHERE id=?`)
+      .get(attemptId) as Attempt | null;
+    if (attempt === null) {
+      throw new CliError("attempt_not_found", `attempt ${attemptId} not found`);
+    }
+    return attempt;
+  }
+
   private rejectUnsupportedExistingSchema(): void {
     const hasMeta = this.db
       .query(
@@ -652,6 +1490,7 @@ export class ResearchStore {
         }
         if (version < 2) this.db.exec(MIGRATION_V2);
         if (version < 3) this.db.exec(MIGRATION_V3);
+        if (version < 4) this.db.exec(MIGRATION_V4);
       })
       .immediate();
   }

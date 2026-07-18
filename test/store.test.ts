@@ -1,11 +1,12 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ResearchCache } from "../src/db";
 import { ResearchStore } from "../src/store";
 import { chunkText } from "../src/text";
+import type { ClaimResult } from "../src/types";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -103,7 +104,7 @@ test("writable store migrates v1 additively and preserves IDs and FTS", () => {
   expect(
     db.query("SELECT value FROM meta WHERE key='schema_version'").get(),
   ).toEqual({
-    value: "3",
+    value: "4",
   });
   expect(db.query("SELECT id FROM documents").get()).toEqual({ id: 7 });
   expect(
@@ -310,7 +311,7 @@ test("newer schema versions are rejected", () => {
   const path = tempDb();
   const db = new Database(path);
   db.exec(
-    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version','4')",
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version','5')",
   );
   db.close();
   expect(() => new ResearchStore(path)).toThrow("newer than supported");
@@ -493,4 +494,609 @@ test("domain constraints enforce cardinality, uniqueness, and sensitivity", () =
       .run(collection, r2, now),
   ).toThrow();
   store.close();
+});
+
+// ---- Durable ingestion job lifecycle (ADR 0004) ----
+
+const T0 = new Date("2026-05-01T00:00:00.000Z");
+const at = (ms: number): Date => new Date(T0.getTime() + ms);
+// jitterRatio 0 alone still multiplies by random(); force a fully deterministic
+// backoff so run_at math is exact under a fake clock.
+const NO_JITTER = { jitterRatio: 0 } as const;
+const noRandom = (): number => 0;
+
+function mustClaim(
+  store: ResearchStore,
+  opts: Parameters<ResearchStore["claimJob"]>[0],
+): Extract<ClaimResult, { claimed: true }> {
+  const result = store.claimJob(opts);
+  if (!result.claimed)
+    throw new Error("expected a claim but the queue was empty");
+  return result;
+}
+
+test("admission creates or identifies a durable job idempotently", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+  const first = store.enqueueJob({
+    idempotencyKey: "text:hello",
+    kind: "text",
+    intent: { text: "durable hello" },
+    now: T0,
+  });
+  expect(first.created).toBe(true);
+  expect(first.job.state).toBe("queued");
+  expect(first.job.intent).toBe(JSON.stringify({ text: "durable hello" }));
+
+  const replay = store.enqueueJob({
+    idempotencyKey: "text:hello",
+    kind: "text",
+    intent: { text: "durable hello" },
+    now: at(1000),
+  });
+  expect(replay.created).toBe(false);
+  expect(replay.job.id).toBe(first.job.id);
+  expect(store.db.query("SELECT COUNT(*) AS c FROM jobs").get()).toEqual({
+    c: 1,
+  });
+
+  const transitions = store.db
+    .query(
+      "SELECT from_state, to_state, actor, reason FROM job_transitions WHERE job_id=?",
+    )
+    .all(first.job.id);
+  expect(transitions).toEqual([
+    {
+      from_state: null,
+      to_state: "queued",
+      actor: "system",
+      reason: "admitted",
+    },
+  ]);
+  store.close();
+});
+
+test("concurrent claimers cannot obtain the same active lease", async () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+  store.enqueueJob({ idempotencyKey: "race", kind: "url" });
+  store.close();
+
+  const scriptPath = join(dirname(path), "race-claim.ts");
+  const storeModule = join(import.meta.dir, "..", "src", "store.ts");
+  writeFileSync(
+    scriptPath,
+    `import { ResearchStore } from ${JSON.stringify(storeModule)};
+const store = new ResearchStore(process.argv[2]);
+try {
+  const result = store.claimJob({ worker: "pid-" + process.pid });
+  process.stdout.write(
+    JSON.stringify(
+      result.claimed
+        ? { claimed: true, token: result.fencing_token }
+        : { claimed: false },
+    ),
+  );
+} finally {
+  store.close();
+}
+`,
+  );
+
+  const processes = Array.from({ length: 6 }, () =>
+    Bun.spawn({
+      cmd: ["bun", "run", scriptPath, path],
+      stdout: "pipe",
+      stderr: "pipe",
+    }),
+  );
+  const results = await Promise.all(
+    processes.map(async (process) => ({
+      exitCode: await process.exited,
+      stdout: await new Response(process.stdout).text(),
+      stderr: await new Response(process.stderr).text(),
+    })),
+  );
+  expect(results.map((result) => result.exitCode)).toEqual([0, 0, 0, 0, 0, 0]);
+
+  const claims = results.map((result) => JSON.parse(result.stdout));
+  expect(claims.filter((claim) => claim.claimed)).toHaveLength(1);
+
+  const db = new Database(path, { readonly: true });
+  // Exactly one leased attempt exists and the job is running: no double-claim.
+  expect(db.query("SELECT COUNT(*) AS c FROM attempts").get()).toEqual({
+    c: 1,
+  });
+  expect(
+    db.query("SELECT state FROM jobs WHERE idempotency_key='race'").get(),
+  ).toEqual({ state: "running" });
+  db.close();
+});
+
+test("expired leases go stale, recover, and fence late workers by token", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+  const { job } = store.enqueueJob({
+    idempotencyKey: "fence",
+    kind: "url",
+    now: T0,
+  });
+
+  const first = mustClaim(store, { worker: "w1", now: at(0), leaseMs: 1000 });
+  expect(first.job.state).toBe("running");
+
+  // A heartbeat inside the lease extends it to now+leaseMs.
+  const beat = store.heartbeat({
+    fencingToken: first.fencing_token,
+    now: at(500),
+    leaseMs: 1000,
+  });
+  expect(beat.ok).toBe(true);
+
+  // Past the extended lease the token is stale: no heartbeat, no completion.
+  const staleBeat = store.heartbeat({
+    fencingToken: first.fencing_token,
+    now: at(2000),
+    leaseMs: 1000,
+  });
+  expect(staleBeat.ok).toBe(false);
+  if (!staleBeat.ok) expect(staleBeat.reason).toBe("stale");
+  const staleComplete = store.completeJob({
+    fencingToken: first.fencing_token,
+    now: at(2000),
+  });
+  expect(staleComplete.ok).toBe(false);
+  if (!staleComplete.ok) expect(staleComplete.reason).toBe("stale");
+
+  // Recovery marks the crashed attempt stale and schedules an infra retry that
+  // does not consume the bounded item budget.
+  const recovered = store.recoverExpiredLeases({
+    now: at(2000),
+    policy: { infraBaseMs: 1000, infraCapMs: 4000, ...NO_JITTER },
+    random: noRandom,
+  });
+  expect(recovered).toEqual([
+    {
+      job_id: job.id,
+      attempt_id: first.fencing_token,
+      disposition: "retry_wait",
+    },
+  ]);
+  expect(
+    store.db
+      .query("SELECT state, run_at, item_retry_count FROM jobs WHERE id=?")
+      .get(job.id),
+  ).toEqual({
+    state: "retry_wait",
+    run_at: at(3000).toISOString(),
+    item_retry_count: 0,
+  });
+  expect(
+    store.db
+      .query("SELECT state FROM attempts WHERE id=?")
+      .get(first.fencing_token),
+  ).toEqual({ state: "stale" });
+
+  // A second claim mints a strictly higher fencing token.
+  const second = mustClaim(store, {
+    worker: "w2",
+    now: at(3000),
+    leaseMs: 1000,
+  });
+  expect(second.fencing_token).toBeGreaterThan(first.fencing_token);
+
+  // The late first worker is now fenced by the newer token.
+  const fenced = store.completeJob({
+    fencingToken: first.fencing_token,
+    now: at(3000),
+  });
+  expect(fenced.ok).toBe(false);
+  if (!fenced.ok) expect(fenced.reason).toBe("fenced");
+
+  const done = store.completeJob({
+    fencingToken: second.fencing_token,
+    now: at(3000),
+  });
+  expect(done.ok).toBe(true);
+  if (done.ok) expect(done.idempotent).toBe(false);
+  expect(store.db.query("SELECT COUNT(*) AS c FROM attempts").get()).toEqual({
+    c: 2,
+  });
+  store.close();
+});
+
+test("infrastructure failures retry indefinitely while item retries exhaust to blocked", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+
+  // Infrastructure failures never exhaust: ten cycles stay in retry_wait with
+  // the item budget untouched.
+  const infra = store.enqueueJob({
+    idempotencyKey: "infra",
+    kind: "url",
+    now: T0,
+  });
+  let now = T0;
+  for (let cycle = 0; cycle < 10; cycle++) {
+    const claim = mustClaim(store, { worker: "w", now, leaseMs: 1000 });
+    const failed = store.failAttempt({
+      fencingToken: claim.fencing_token,
+      failureClass: "infra",
+      summary: "scrapectl unavailable",
+      now,
+      policy: { infraBaseMs: 1000, infraCapMs: 8000, ...NO_JITTER },
+      random: noRandom,
+    });
+    if (!failed.ok) throw new Error("expected an infra retry");
+    expect(failed.disposition).toBe("retry_wait");
+    now = new Date(Date.parse(failed.job.run_at));
+  }
+  expect(
+    store.db
+      .query(
+        "SELECT state, attempt_count, item_retry_count FROM jobs WHERE id=?",
+      )
+      .get(infra.job.id),
+  ).toEqual({ state: "retry_wait", attempt_count: 10, item_retry_count: 0 });
+
+  // Item-specific transient failures consume a bounded budget, then block for a
+  // human instead of churning forever.
+  const item = store.enqueueJob({
+    idempotencyKey: "item",
+    kind: "url",
+    now: T0,
+  });
+  const policy = {
+    maxItemRetries: 3,
+    itemBaseMs: 1000,
+    itemCapMs: 8000,
+    ...NO_JITTER,
+  };
+  now = T0;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const claim = mustClaim(store, { worker: "w", now, leaseMs: 1000 });
+    const failed = store.failAttempt({
+      fencingToken: claim.fencing_token,
+      failureClass: "item_transient",
+      summary: "429 throttled",
+      now,
+      policy,
+      random: noRandom,
+    });
+    expect(failed.ok).toBe(true);
+    if (failed.ok) {
+      expect(failed.disposition).toBe(attempt < 3 ? "retry_wait" : "blocked");
+      now = new Date(Date.parse(failed.job.run_at));
+    }
+  }
+  expect(
+    store.db
+      .query(
+        "SELECT state, block_reason, item_retry_count FROM jobs WHERE id=?",
+      )
+      .get(item.job.id),
+  ).toEqual({
+    state: "blocked",
+    block_reason: "item_retry_exhausted",
+    item_retry_count: 3,
+  });
+  store.close();
+});
+
+test("manual retry preserves the job and prior attempts", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+  const { job } = store.enqueueJob({
+    idempotencyKey: "retry",
+    kind: "url",
+    now: T0,
+  });
+
+  const first = mustClaim(store, { worker: "w1", now: at(0), leaseMs: 1000 });
+  const failed = store.failAttempt({
+    fencingToken: first.fencing_token,
+    failureClass: "permanent",
+    summary: "unsupported content",
+    now: at(10),
+  });
+  expect(failed.ok).toBe(true);
+  if (failed.ok) expect(failed.disposition).toBe("failed");
+
+  const requeued = store.retryJob({
+    jobId: job.id,
+    actor: "operator",
+    now: at(20),
+  });
+  expect(requeued.state).toBe("queued");
+  // The original job id and its prior attempt survive the requeue untouched.
+  expect(requeued.id).toBe(job.id);
+  expect(requeued.attempt_count).toBe(1);
+  expect(
+    store.db
+      .query("SELECT COUNT(*) AS c FROM attempts WHERE job_id=?")
+      .get(job.id),
+  ).toEqual({ c: 1 });
+  expect(
+    store.db
+      .query(
+        "SELECT COUNT(*) AS c FROM job_transitions WHERE job_id=? AND actor='operator' AND reason='manual_retry'",
+      )
+      .get(job.id),
+  ).toEqual({ c: 1 });
+
+  // The next claim appends a second attempt rather than rewriting the first.
+  const second = mustClaim(store, { worker: "w2", now: at(30), leaseMs: 1000 });
+  expect(second.attempt.attempt_number).toBe(2);
+  expect(
+    store.db
+      .query("SELECT COUNT(*) AS c FROM attempts WHERE job_id=?")
+      .get(job.id),
+  ).toEqual({ c: 2 });
+  store.close();
+});
+
+test("cancel, exclude, reopen, and sensitive inspection append audited transitions", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+
+  // Sensitive inspection appends audit evidence without changing state, and the
+  // recorded detail is sanitized of credentials.
+  const sensitive = store.enqueueJob({
+    idempotencyKey: "sensitive",
+    kind: "file",
+    sensitivity: "sensitive",
+    now: T0,
+  });
+  store.recordSensitiveInspection({
+    jobId: sensitive.job.id,
+    actor: "mike",
+    detail: "previewed payload authorization: bearer sk-secret-123",
+    now: at(1),
+  });
+  const audit = store.db
+    .query(
+      "SELECT from_state, to_state, actor, reason, detail FROM job_transitions WHERE job_id=? AND reason='sensitive_inspection'",
+    )
+    .get(sensitive.job.id) as {
+    from_state: string;
+    to_state: string;
+    actor: string;
+    reason: string;
+    detail: string;
+  };
+  expect(audit.from_state).toBe("queued");
+  expect(audit.to_state).toBe("queued");
+  expect(audit.actor).toBe("mike");
+  expect(audit.detail).toContain("[REDACTED]");
+  expect(audit.detail).not.toContain("sk-secret-123");
+  expect(
+    store.db.query("SELECT state FROM jobs WHERE id=?").get(sensitive.job.id),
+  ).toEqual({ state: "queued" });
+
+  // Cancel then reopen: both are durable audited transitions.
+  const cancelled = store.cancelJob({
+    jobId: sensitive.job.id,
+    actor: "operator",
+    reason: "user withdrew",
+    now: at(2),
+  });
+  expect(cancelled.ok).toBe(true);
+  const reopened = store.reopenJob({ jobId: sensitive.job.id, now: at(3) });
+  expect(reopened.state).toBe("queued");
+
+  // Exclude then reopen.
+  const excluded = store.excludeJob({
+    jobId: sensitive.job.id,
+    reason: "duplicate corpus",
+    now: at(4),
+  });
+  expect(excluded.state).toBe("excluded");
+  expect(excluded.block_reason).toBe("duplicate corpus");
+  const reopenedAgain = store.reopenJob({
+    jobId: sensitive.job.id,
+    now: at(5),
+  });
+  expect(reopenedAgain.state).toBe("queued");
+
+  const reasons = store.db
+    .query("SELECT reason FROM job_transitions WHERE job_id=? ORDER BY id ASC")
+    .all(sensitive.job.id)
+    .map((row) => (row as { reason: string }).reason);
+  expect(reasons).toEqual([
+    "admitted",
+    "sensitive_inspection",
+    "user withdrew",
+    "reopened",
+    "duplicate corpus",
+    "reopened",
+  ]);
+  store.close();
+});
+
+test("cancellation is a fenced compare-and-swap against completion", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+
+  // Cancel loses to an already-committed completion.
+  const winner = store.enqueueJob({
+    idempotencyKey: "win",
+    kind: "url",
+    now: T0,
+  });
+  const claimW = mustClaim(store, { worker: "w", now: at(0), leaseMs: 1000 });
+  expect(
+    store.completeJob({ fencingToken: claimW.fencing_token, now: at(1) }).ok,
+  ).toBe(true);
+  const lateCancel = store.cancelJob({ jobId: winner.job.id, now: at(2) });
+  expect(lateCancel.ok).toBe(false);
+  if (!lateCancel.ok) expect(lateCancel.reason).toBe("already_completed");
+
+  // Cancel wins over a still-running worker, which is then fenced and cannot
+  // commit any resource effects.
+  const loser = store.enqueueJob({
+    idempotencyKey: "lose",
+    kind: "url",
+    now: T0,
+  });
+  const claimL = mustClaim(store, { worker: "w", now: at(0), leaseMs: 1000 });
+  const cancel = store.cancelJob({ jobId: loser.job.id, now: at(1) });
+  expect(cancel.ok).toBe(true);
+  expect(
+    store.db
+      .query("SELECT state FROM attempts WHERE id=?")
+      .get(claimL.fencing_token),
+  ).toEqual({ state: "cancelled" });
+  const fencedComplete = store.completeJob({
+    fencingToken: claimL.fencing_token,
+    now: at(2),
+    apply: (db) => {
+      db.query(
+        "INSERT INTO resources(key_type, key_value, kind, created_at, updated_at) VALUES ('url', 'must-not-exist', 'url', '2026-05-01', '2026-05-01')",
+      ).run();
+    },
+  });
+  expect(fencedComplete.ok).toBe(false);
+  if (!fencedComplete.ok) expect(fencedComplete.reason).toBe("terminal");
+  expect(store.db.query("SELECT COUNT(*) AS c FROM resources").get()).toEqual({
+    c: 0,
+  });
+  store.close();
+});
+
+test("idempotent completion cannot duplicate resource or provenance effects", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+  const { job } = store.enqueueJob({
+    idempotencyKey: "once",
+    kind: "url",
+    now: T0,
+  });
+  const claim = mustClaim(store, { worker: "w", now: at(0), leaseMs: 1000 });
+
+  const apply = (db: Database): void => {
+    const resourceId = Number(
+      db
+        .query(
+          "INSERT INTO resources(key_type, key_value, kind, created_at, updated_at) VALUES ('url', 'once', 'url', '2026-05-01', '2026-05-01')",
+        )
+        .run().lastInsertRowid,
+    );
+    db.query(
+      "INSERT INTO provenance(resource_id, evidence_type, ingress, observed_at) VALUES (?, 'admitted', 'cli', '2026-05-01')",
+    ).run(resourceId);
+  };
+
+  const first = store.completeJob({
+    fencingToken: claim.fencing_token,
+    resourceId: 1,
+    apply,
+    now: at(1),
+  });
+  expect(first.ok).toBe(true);
+  if (first.ok) expect(first.idempotent).toBe(false);
+
+  // Replaying completion with the same token is a no-op: apply never re-runs.
+  const replay = store.completeJob({
+    fencingToken: claim.fencing_token,
+    resourceId: 1,
+    apply,
+    now: at(2),
+  });
+  expect(replay.ok).toBe(true);
+  if (replay.ok) expect(replay.idempotent).toBe(true);
+
+  expect(store.db.query("SELECT COUNT(*) AS c FROM resources").get()).toEqual({
+    c: 1,
+  });
+  expect(store.db.query("SELECT COUNT(*) AS c FROM provenance").get()).toEqual({
+    c: 1,
+  });
+  expect(
+    store.db
+      .query(
+        "SELECT COUNT(*) AS c FROM job_transitions WHERE job_id=? AND to_state='completed'",
+      )
+      .get(job.id),
+  ).toEqual({ c: 1 });
+  store.close();
+});
+
+test("illegal job transitions are rejected", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+
+  const running = store.enqueueJob({
+    idempotencyKey: "run",
+    kind: "url",
+    now: T0,
+  });
+  mustClaim(store, { worker: "w", now: at(0), leaseMs: 1000 });
+  // A running job cannot be excluded; it must be cancelled instead.
+  expect(() =>
+    store.excludeJob({ jobId: running.job.id, reason: "x" }),
+  ).toThrow("illegal job transition running -> excluded");
+
+  const done = store.enqueueJob({
+    idempotencyKey: "fin",
+    kind: "url",
+    now: T0,
+  });
+  const claim = mustClaim(store, { worker: "w", now: at(0), leaseMs: 1000 });
+  store.completeJob({ fencingToken: claim.fencing_token, now: at(1) });
+  // A completed job is terminal: it cannot be retried.
+  expect(() => store.retryJob({ jobId: done.job.id })).toThrow(
+    "illegal job transition completed -> queued",
+  );
+
+  const queued = store.enqueueJob({
+    idempotencyKey: "q",
+    kind: "url",
+    now: T0,
+  });
+  // A queued job is already runnable: reopening it is not a legal transition.
+  expect(() => store.reopenJob({ jobId: queued.job.id })).toThrow(
+    "illegal job transition queued -> queued",
+  );
+  store.close();
+});
+
+test("read-only cache observes the job lifecycle without mutating it", () => {
+  const path = tempDb();
+  const store = new ResearchStore(path);
+  const { job } = store.enqueueJob({
+    idempotencyKey: "observe",
+    kind: "url",
+    now: T0,
+  });
+  const claim = mustClaim(store, { worker: "w", now: at(0), leaseMs: 1000 });
+  store.completeJob({ fencingToken: claim.fencing_token, now: at(1) });
+  store.close();
+
+  const cache = new ResearchCache(path);
+  const record = cache.job(job.id);
+  expect(record?.state).toBe("completed");
+  expect(record?.attempts.map((attempt) => attempt.state)).toEqual([
+    "succeeded",
+  ]);
+  expect(record?.transitions.map((transition) => transition.to_state)).toEqual([
+    "queued",
+    "running",
+    "completed",
+  ]);
+  expect(cache.jobs({ state: "completed" })).toHaveLength(1);
+  expect(cache.jobs({ state: "queued" })).toHaveLength(0);
+
+  // The read connection cannot mutate durable ingestion state.
+  expect(() =>
+    cache.db.query("UPDATE jobs SET state='queued' WHERE id=?").run(job.id),
+  ).toThrow();
+  cache.close();
+
+  // On a pre-lifecycle database the read path returns empty rather than failing.
+  const legacyPath = tempDb();
+  createV2(legacyPath);
+  const legacy = new ResearchCache(legacyPath);
+  expect(legacy.job(1)).toBeNull();
+  expect(legacy.jobs()).toEqual([]);
+  legacy.close();
 });

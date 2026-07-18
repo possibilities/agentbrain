@@ -11,9 +11,14 @@ import {
 } from "./query";
 import { RESEARCH_SCHEMA_VERSION } from "./store";
 import type {
+  Attempt,
   ChunkData,
   ContextData,
   DocumentData,
+  Job,
+  JobRecord,
+  JobState,
+  JobTransition,
   ResourceAlias,
   ResourceRecord,
   SearchData,
@@ -430,6 +435,45 @@ export class ResearchCache {
       [row.id],
     );
     return { ...row, aliases };
+  }
+
+  /**
+   * Read-only view of one durable ingestion job with its append-only attempts
+   * and audited transitions. Returns null on pre-lifecycle databases; this path
+   * only ever reads, so it can never mutate queue, schema, or index state.
+   */
+  job(jobId: number): JobRecord | null {
+    if (!this.tableExists("jobs")) return null;
+    const row = this.oneOrNull<Job & Row>("SELECT * FROM jobs WHERE id = ?", [
+      jobId,
+    ]);
+    if (row === null) return null;
+    const attempts = this.all<Attempt & Row>(
+      "SELECT * FROM attempts WHERE job_id = ? ORDER BY attempt_number ASC",
+      [jobId],
+    );
+    const transitions = this.all<JobTransition & Row>(
+      "SELECT * FROM job_transitions WHERE job_id = ? ORDER BY id ASC",
+      [jobId],
+    );
+    return { ...row, attempts, transitions };
+  }
+
+  /**
+   * Read-only listing of durable ingestion jobs, optionally by state. The
+   * runnable jobs among these form the ingestion queue.
+   */
+  jobs(filter: { state?: JobState } = {}): Job[] {
+    if (!this.tableExists("jobs")) return [];
+    if (filter.state !== undefined) {
+      return this.all<Job & Row>(
+        "SELECT * FROM jobs WHERE state = ? ORDER BY run_at ASC, id ASC",
+        [filter.state],
+      );
+    }
+    return this.all<Job & Row>(
+      "SELECT * FROM jobs ORDER BY run_at ASC, id ASC",
+    );
   }
 
   private documentLinks(

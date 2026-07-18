@@ -273,3 +273,135 @@ export interface Provenance {
   raw_metadata: string | null;
   observed_at: string;
 }
+
+/**
+ * Durable ingestion job lifecycle (schema v4). A job is one immutable intent;
+ * every leased execution appends an immutable attempt; state changes append an
+ * audited transition. See ADR 0004.
+ */
+export type JobState =
+  | "queued"
+  | "running"
+  | "retry_wait"
+  | "blocked"
+  | "failed"
+  | "completed"
+  | "excluded"
+  | "cancelled";
+
+export type AttemptState =
+  | "leased"
+  | "succeeded"
+  | "failed"
+  | "stale"
+  | "cancelled";
+
+/**
+ * How an attempt failed, which decides routing: infrastructure is retried
+ * indefinitely, item-specific transient failure has a bounded budget before it
+ * blocks, permanent failure stops, and auth/config failure blocks.
+ */
+export type FailureClass =
+  | "infra"
+  | "item_transient"
+  | "permanent"
+  | "auth_config";
+
+export interface Job {
+  id: number;
+  idempotency_key: string;
+  kind: string;
+  intent: string | null;
+  resource_id: number | null;
+  source_id: number | null;
+  run_id: number | null;
+  state: JobState;
+  sensitivity: Sensitivity;
+  attempt_count: number;
+  item_retry_count: number;
+  current_attempt_id: number | null;
+  run_at: string;
+  block_reason: string | null;
+  failure_class: FailureClass | null;
+  failure_summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Attempt {
+  id: number;
+  job_id: number;
+  attempt_number: number;
+  worker: string;
+  state: AttemptState;
+  lease_expires_at: string;
+  heartbeat_at: string;
+  failure_class: FailureClass | null;
+  failure_summary: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface JobTransition {
+  id: number;
+  job_id: number;
+  attempt_id: number | null;
+  from_state: JobState | null;
+  to_state: JobState;
+  actor: string;
+  reason: string | null;
+  detail: string | null;
+  created_at: string;
+}
+
+export interface JobRecord extends Job {
+  attempts: Attempt[];
+  transitions: JobTransition[];
+}
+
+/**
+ * Retry and lease durations are policy, not identity: defaults are configurable
+ * and testable without changing persisted job semantics or idempotency keys.
+ */
+export interface LifecyclePolicy {
+  leaseMs: number;
+  maxItemRetries: number;
+  infraBaseMs: number;
+  infraCapMs: number;
+  itemBaseMs: number;
+  itemCapMs: number;
+  jitterRatio: number;
+}
+
+/** Outcome of a fenced heartbeat/completion/failure that lost its claim. */
+export interface FencedResult {
+  ok: false;
+  reason: "stale" | "fenced" | "terminal";
+  job: Job;
+}
+
+export type ClaimResult =
+  | { claimed: false }
+  | { claimed: true; job: Job; attempt: Attempt; fencing_token: number };
+
+export type HeartbeatResult =
+  | { ok: true; job: Job; attempt: Attempt }
+  | FencedResult;
+
+export type CompleteResult =
+  | { ok: true; idempotent: boolean; job: Job }
+  | FencedResult;
+
+export type FailResult =
+  | { ok: true; job: Job; attempt: Attempt; disposition: JobState }
+  | FencedResult;
+
+export type CancelResult =
+  | { ok: true; job: Job }
+  | { ok: false; reason: "already_completed"; job: Job };
+
+export interface RecoveredLease {
+  job_id: number;
+  attempt_id: number;
+  disposition: JobState;
+}
