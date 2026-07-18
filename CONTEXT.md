@@ -7,6 +7,8 @@
 - **Attempt** — One leased execution of an ingestion job, including its timing, outcome, and failure classification. Avoid using *run* for a job attempt.
 - **Run** — A source synchronization or import batch that groups jobs and owns batch-level progress or checkpoints.
 - **Resource** — One logical item with a stable identity independent of its current content, discovery path, or indexed representation.
+- **Resource key** — A typed, stable identity derived from a trustworthy provider identifier or conservative local normalization. Avoid using artifact digests, titles, or historical list positions as resource keys.
+- **Alias** — An observed alternate locator for a resource, carrying its role and evidence without independently proving that two resources should merge.
 - **Document** — The current searchable representation of a resource in Agentbrain's index.
 - **Artifact** — An immutable captured or derived representation observed at a particular time, such as imported Markdown or extracted content. A content digest identifies artifact bytes, not the resource itself.
 - **Source** — A recurring producer or discovery definition, such as a blog feed, X account, or filesystem root. Avoid using *source* for ingress or a legacy provenance label.
