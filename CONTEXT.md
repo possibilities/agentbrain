@@ -19,6 +19,7 @@
 - **Saved link** — A resource submitted through human ingress for membership in the saved-links collection; it is not a separate resource type.
 - **Ingestion ledger** — Agentbrain's durable record of jobs, attempts, runs, state transitions, and operator dispositions. Its runnable jobs form the ingestion queue.
 - **URL extractor/backend** — The component that turns a URL into bounded extracted output and owns fetching, browser/session behavior, network security, redirects, and provider-specific parsing. Scrapectl is the only URL extractor/backend.
+- **Extraction envelope** — A versioned, provider-neutral result or classified failure returned by an extractor to an ingestion worker. Avoid persisting provider-specific response schemas as Agentbrain domain data.
 - **Index owner** — The only component authorized to create or migrate the schema and mutate resources, documents, chunks, FTS rows, ingestion state, and provenance. Agentbrain is the index owner.
 
 The current ownership decision is recorded in [ADR 0003](docs/adr/0003-agentbrain-owns-durable-ingestion.md). [ADR 0002](docs/adr/0002-scrapectl-owns-url-extraction.md) records the retained URL-extraction boundary; the original consolidation decision is preserved under [superseded ADR 0001](docs/adr/superseded/0001-agentbrain-owns-research-index.md).
