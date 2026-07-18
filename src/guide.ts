@@ -53,8 +53,18 @@ export function buildGuide(): unknown {
         "context",
         "tags",
         "sources",
+        "jobs list/show/stats",
+        "doctor",
       ],
-      mutation_commands: ["submit", "ingest", "ingest-link", "delete"],
+      mutation_commands: [
+        "submit",
+        "ingest",
+        "worker",
+        "jobs retry/cancel/exclude",
+        "jobs show --reveal-content",
+        "ingest-link",
+        "delete",
+      ],
       submission_contract: {
         version: 1,
         new_status: "queued",
@@ -100,6 +110,7 @@ export function buildGuide(): unknown {
       'Use `agentbrain context "your query" --json` for one bounded search-and-evidence call.',
       'Or run `agentbrain search "your query" --json`, then fetch selected evidence with `agentbrain get --chunk-id ID --json`.',
       "Inspect stats/tags/sources when discovery is poor and retry alternate terms before inferring absence.",
+      "Use jobs list/show/stats and doctor for content-safe operations; pass --reveal-content only when Artifact bodies are required and an audit record is appropriate.",
       "Cite document_id, chunk_id when applicable, title, source_uri, and relevant relation provenance.",
       "Use `agentbrain submit` for every text, file, directory, or URL intent. Treat queued and duplicate as successful durable acknowledgements.",
     ],
@@ -114,6 +125,11 @@ export function buildGuide(): unknown {
         "Validate and durably admit versioned text, file, directory, or URL intent; local bytes are snapshotted and URL admission performs no network work.",
       ingest:
         "Queued compatibility alias for submit; it cannot write documents directly.",
+      worker:
+        "Lease due jobs, materialize outside write transactions, heartbeat, and commit fenced outcomes; --once drains work due now.",
+      jobs: "Content-safe ingestion ledger listing, detail, statistics, retry, cancellation, exclusion, and explicit audited Artifact reveal.",
+      doctor:
+        "Read-only database, Artifact-reference, lease, schema, and provider health checks.",
       "ingest-link":
         "Read one bounded already-scraped root from stdin; generic roots do not fan out, while every child discovered from an X root uses the same Scrapectl provider adapter and traversal stops after one hop.",
       delete: "Delete exactly one selected document with --confirm delete.",
@@ -125,7 +141,7 @@ export function buildGuide(): unknown {
       read_connections:
         "Read commands open SQLite with mode=ro/readonly and never initialize or migrate.",
       writes:
-        "Submit and its ingest alias write only durable jobs and required Artifact snapshots; materialization is restricted to the fenced worker path.",
+        "Submit and its ingest alias write only durable jobs and required Artifact snapshots; materialization is restricted to the fenced worker path. Operator transitions and explicit content reveal are audited.",
       urls: "Admission validates HTTP(S) syntax and queues normalized intent without network work. The worker delegates all URL extraction and network policy to Scrapectl.",
       local_documents:
         "Text, file, and directory bytes are captured as immutable Artifacts before acknowledgement and parsed only after a worker leases the job.",
@@ -152,6 +168,9 @@ Inspect:
   agentbrain get --help
   agentbrain submit --help
   agentbrain ingest --help
+  agentbrain worker --help
+  agentbrain jobs --help
+  agentbrain doctor --help
   agentbrain ingest-link --help
   agentbrain delete --help
   agentbrain stats --help

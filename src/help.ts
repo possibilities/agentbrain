@@ -27,6 +27,18 @@ export const COMMANDS = [
     summary: "Compatibility alias for durable queued admission",
   },
   {
+    name: "worker",
+    summary: "Lease and materialize durable ingestion jobs",
+  },
+  {
+    name: "jobs",
+    summary: "Safely inspect and operate on the ingestion ledger",
+  },
+  {
+    name: "doctor",
+    summary: "Check database, Artifact, lease, and provider health",
+  },
+  {
     name: "ingest-link",
     summary: "Index one completed Scrapectl payload from stdin",
   },
@@ -77,7 +89,8 @@ Agent defaults:
 Search/get/stats/tags/sources/context use structurally read-only SQLite connections.
 Agentbrain submit is the durable admission boundary. Accepted intents are queued before any
 extraction or indexing; Scrapectl remains the sole URL extraction and network boundary.
-Use --help on any command for command-specific options.
+Use --help on any command for command-specific options. Job inspection omits durable
+intent bodies and URLs unless jobs show is given the audited --reveal-content option.
 `;
 
 export const HELP: Record<string, string> = {
@@ -192,6 +205,47 @@ This command accepts the same options and returns the same acknowledgement as
 \`agentbrain submit\`. It never extracts, parses, or writes a document directly.
 Prefer \`agentbrain submit\` for new integrations. \`--source-type\` remains an alias for
 \`--kind\` during cutover.
+`,
+  worker: `agentbrain worker — execute durable ingestion jobs
+
+Usage:
+  agentbrain worker [--once] [options]
+
+Options:
+  --once                    Recover stale leases, drain work due now, and exit
+  --worker-id <id>          Diagnostic worker identity
+  --poll-ms <n>             Idle polling interval (default: 1000)
+  --lease-ms <n>            Attempt lease duration (default: 60000)
+  --heartbeat-ms <n>        Active lease heartbeat interval (default: 20000)
+  --shutdown-grace-ms <n>   Bounded completion grace after a signal (default: 10000)
+
+Materialization happens outside SQLite write transactions. Completion and failure are
+fenced by the attempt token. Signal shutdown stops new claims and leaves unfinished work
+recoverable through lease expiry.
+`,
+  jobs: `agentbrain jobs — inspect and operate on ingestion jobs
+
+Usage:
+  agentbrain jobs list [--state STATE] [--limit N] [--json]
+  agentbrain jobs show JOB_ID [--reveal-content] [--actor NAME] [--json]
+  agentbrain jobs retry JOB_ID [--reason TEXT] [--actor NAME] [--json]
+  agentbrain jobs cancel JOB_ID [--reason TEXT] [--actor NAME] [--json]
+  agentbrain jobs exclude JOB_ID --reason TEXT [--actor NAME] [--json]
+  agentbrain jobs stats [--json]
+
+List, ordinary show, and stats are structurally read-only and omit durable intent,
+Artifact bodies, raw URLs, query values, worker names, and detailed diagnostics.
+--reveal-content explicitly reads Artifact bodies and appends a sensitive-inspection
+audit record. Retry, cancel, and exclude append transitions and preserve all attempts.
+`,
+  doctor: `agentbrain doctor — operational health checks
+
+Usage:
+  agentbrain doctor [--json]
+
+Uses a structurally read-only database connection. Reports safe status/count data for
+SQLite integrity, schema, Artifact references, leases, and Scrapectl availability.
+Exits 1 when a required check fails.
 `,
   "ingest-link": `agentbrain ingest-link — index a completed scraped link
 
