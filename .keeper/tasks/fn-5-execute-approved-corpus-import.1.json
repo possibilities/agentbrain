@@ -1,0 +1,14 @@
+{
+  "bundles": [],
+  "created_at": "2026-07-18T21:25:44.050000Z",
+  "depends_on": [],
+  "epic": "fn-5-execute-approved-corpus-import",
+  "id": "fn-5-execute-approved-corpus-import.1",
+  "model": "opus",
+  "priority": null,
+  "snippets": [],
+  "target_repo": "/Users/mike/code/agentbrain",
+  "tier": "xhigh",
+  "title": "Import approved legacy corpus",
+  "updated_at": "2026-07-18T21:25:44.050000Z"
+}
