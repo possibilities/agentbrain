@@ -1,4 +1,5 @@
 {
+  "audit_required": false,
   "bundles": [],
   "created_at": "2026-07-18T21:22:54.210000Z",
   "depends_on": [
@@ -7,11 +8,11 @@
   ],
   "epic": "fn-3-cut-over-agentbot-ingestion",
   "id": "fn-3-cut-over-agentbot-ingestion.5",
-  "model": "opus",
+  "model": "sonnet",
   "priority": null,
   "snippets": [],
   "target_repo": "/Users/mike/code/hermes-greybird",
-  "tier": "xhigh",
+  "tier": "high",
   "title": "Update retired Hermes boundaries",
-  "updated_at": "2026-07-18T21:22:54.210000Z"
+  "updated_at": "2026-07-18T21:30:20.029000Z"
 }

@@ -1,4 +1,5 @@
 {
+  "audit_required": false,
   "bundles": [],
   "created_at": "2026-07-18T21:22:54.210000Z",
   "depends_on": [
@@ -12,5 +13,5 @@
   "target_repo": "/Users/mike/code/arthack",
   "tier": "xhigh",
   "title": "Delete Linkctl application",
-  "updated_at": "2026-07-18T21:22:54.210000Z"
+  "updated_at": "2026-07-18T21:30:20.029000Z"
 }

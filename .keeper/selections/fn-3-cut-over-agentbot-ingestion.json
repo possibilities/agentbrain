@@ -1,0 +1,61 @@
+{
+  "audit_policy": {
+    "flagged_task_ids": [],
+    "reason": null,
+    "status": "applied"
+  },
+  "cells": [
+    {
+      "confidence": 0.91,
+      "label_source": "heuristic-guided",
+      "model": "gpt-5.5",
+      "rationale": "The explicit versioned CLI contract and broad edge-case matrix make this substantial, well-specified multi-file work.",
+      "task_id": "fn-3-cut-over-agentbot-ingestion.1",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.95,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Resumable migration without duplicate acquisition or premature evidence deletion presents a subtle correctness invariant.",
+      "task_id": "fn-3-cut-over-agentbot-ingestion.2",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.93,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Separating retained worker internals from retired public contracts is a cross-cutting architectural cascade with correctness-sensitive write boundaries.",
+      "task_id": "fn-3-cut-over-agentbot-ingestion.3",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.94,
+      "label_source": "heuristic-guided",
+      "model": "opus",
+      "rationale": "Destructive removal must preserve exact corpus and unrelated configuration bytes, creating a correctness-critical cleanup invariant.",
+      "task_id": "fn-3-cut-over-agentbot-ingestion.4",
+      "tier": "xhigh"
+    },
+    {
+      "confidence": 0.9,
+      "label_source": "heuristic-guided",
+      "model": "sonnet",
+      "rationale": "Reconciling nuanced architectural wording and boundary tests needs judgment and idiom matching but follows a bounded known direction.",
+      "task_id": "fn-3-cut-over-agentbot-ingestion.5",
+      "tier": "high"
+    }
+  ],
+  "config_hash": "3537a88634e79a3ab85b1440da7d1b1be09c92bd75b69d3a0a1354c88e0b97ef",
+  "created_at": "2026-07-18T21:30:20.029000Z",
+  "epic_id": "fn-3-cut-over-agentbot-ingestion",
+  "input_hash": "d5e63645bb40bfd39bccdf255557a2030b8653284542637268b8a708c7fd0a03",
+  "outcome": "completed",
+  "schema_version": 1,
+  "selector": {
+    "harness": "subagent",
+    "model": "plan:model-selector"
+  },
+  "shuffle_seed": 3588634181,
+  "verdict_raw": "{\"cells\":[{\"task_id\":\"fn-3-cut-over-agentbot-ingestion.1\",\"tier\":\"xhigh\",\"model\":\"gpt-5.5\",\"rationale\":\"The explicit versioned CLI contract and broad edge-case matrix make this substantial, well-specified multi-file work.\",\"confidence\":0.91},{\"task_id\":\"fn-3-cut-over-agentbot-ingestion.2\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Resumable migration without duplicate acquisition or premature evidence deletion presents a subtle correctness invariant.\",\"confidence\":0.95},{\"task_id\":\"fn-3-cut-over-agentbot-ingestion.3\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Separating retained worker internals from retired public contracts is a cross-cutting architectural cascade with correctness-sensitive write boundaries.\",\"confidence\":0.93},{\"task_id\":\"fn-3-cut-over-agentbot-ingestion.4\",\"tier\":\"xhigh\",\"model\":\"opus\",\"rationale\":\"Destructive removal must preserve exact corpus and unrelated configuration bytes, creating a correctness-critical cleanup invariant.\",\"confidence\":0.94},{\"task_id\":\"fn-3-cut-over-agentbot-ingestion.5\",\"tier\":\"high\",\"model\":\"sonnet\",\"rationale\":\"Reconciling nuanced architectural wording and boundary tests needs judgment and idiom matching but follows a bounded known direction.\",\"confidence\":0.9}]}"
+}
