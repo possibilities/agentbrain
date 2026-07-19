@@ -13,5 +13,6 @@
   "target_repo": "/Users/mike/code/arthack",
   "tier": "xhigh",
   "title": "Migrate legacy Scrapectl jobs",
-  "updated_at": "2026-07-18T21:30:20.029000Z"
+  "updated_at": "2026-07-19T09:28:44.176000Z",
+  "worker_done_at": "2026-07-19T09:28:44.176000Z"
 }

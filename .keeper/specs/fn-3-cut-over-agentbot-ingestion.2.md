@@ -55,5 +55,5 @@ Run dry-run inventory first; execute live migration only during the epic cutover
 - [ ] Migration tests use temporary HOME and fake Agentbrain commands only.
 
 ## Done summary
-
+Added scrapectl reconcile-queue to inventory and durably import/disposition frozen pending/failed Agentbrain YAML records via redacted, resumable, offline-tested submissions, and froze new Agentbrain-targeted enqueue paths in submit_scrape_job/process-queue so only standalone scrape jobs can enter the queue.
 ## Evidence
