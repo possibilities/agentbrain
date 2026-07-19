@@ -55,5 +55,5 @@ Delete only after Task 2 reconciliation reports no unresolved supported handoff 
 - [ ] Agentbrain docs/help contain no instruction to use retired adapters.
 
 ## Done summary
-
+Retired research-ingest-link and public synchronous ingest-link admission (bare-JSON/exit-2 compat), moved completion logic behind worker-only internals, cleaned installer ownership of retired links, and preserved legacy Linkctl provenance fixtures as readable historical data.
 ## Evidence
