@@ -639,6 +639,17 @@ export class ResearchStore {
     this.db.close();
   }
 
+  /**
+   * Create a transactionally consistent, standalone SQLite image. VACUUM INTO
+   * takes its own read snapshot, so committed WAL state is included while
+   * concurrent readers and the Index owner's later writes may continue.
+   * The caller must provide a new path and is responsible for atomic
+   * publication of the completed image.
+   */
+  createConsistentSnapshot(destinationPath: string): void {
+    this.db.query("VACUUM main INTO ?").run(destinationPath);
+  }
+
   upsertDocument(input: UpsertDocumentInput): UpsertDocumentResult {
     const content = cleanText(input.content);
     if (content.length === 0) throw new Error("no extractable text content");

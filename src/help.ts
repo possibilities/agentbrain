@@ -39,6 +39,10 @@ export const COMMANDS = [
     summary: "Check database, Artifact, lease, and provider health",
   },
   {
+    name: "backup",
+    summary: "Create and verify private SQLite recovery snapshots",
+  },
+  {
     name: "delete",
     summary: "Delete one selected document with explicit confirmation",
   },
@@ -85,6 +89,7 @@ Agent defaults:
 Search/get/stats/tags/sources/context use structurally read-only SQLite connections.
 Agentbrain submit is the durable admission boundary. Accepted intents are queued before any
 extraction or indexing; Scrapectl remains the sole URL extraction and network boundary.
+Backup creation uses a SQLite-consistent snapshot and never copies a live WAL file.
 Use --help on any command for command-specific options. Job inspection omits durable
 intent bodies and URLs unless jobs show is given the audited --reveal-content option.
 `;
@@ -254,6 +259,36 @@ List, ordinary show, and stats are structurally read-only and omit durable inten
 Artifact bodies, raw URLs, query values, worker names, and detailed diagnostics.
 --reveal-content explicitly reads Artifact bodies and appends a sensitive-inspection
 audit record. Retry, cancel, and exclude append transitions and preserve all attempts.
+`,
+  backup: `agentbrain backup — create and verify recovery snapshots
+
+Usage:
+  agentbrain backup create <backup-path> [--artifact-root PATH] [--json]
+  agentbrain backup create --output <backup-path> [--artifact-root PATH] [--json]
+  agentbrain backup verify <backup-path> [--artifact-root PATH] [--json]
+  agentbrain backup verify --backup <backup-path> [--artifact-root PATH] [--json]
+
+Subcommands:
+  create              Publish a private, SQLite-consistent backup bundle
+  verify              Restore into isolation and run all recovery checks
+
+Options:
+  --output <path>      Backup destination for create; it must not already exist
+  --backup <path>      Backup bundle to verify
+  --artifact-root <p>  Artifact store to check (default: configured local store on
+                       create; source path recorded in the manifest on verify)
+
+The bundle contains database.sqlite and a body-free manifest with schema, timestamps,
+source paths, configuration, and required Artifact digests/references. Creation uses
+SQLite VACUUM INTO through the Index owner's writable store, so committed WAL state is
+captured without stopping the Worker permanently. Publication is atomic and never
+replaces an existing backup.
+
+Verification never opens or migrates the source database. It copies snapshot bytes into
+a private temporary restore, runs SQLite integrity and schema checks, reconciles the
+Artifact reference manifest, verifies each required Artifact digest, and proves that FTS
+can be rebuilt from retained indexed content. The temporary restore is always removed.
+Verification exits 1 if any check fails.
 `,
   doctor: `agentbrain doctor — operational health checks
 

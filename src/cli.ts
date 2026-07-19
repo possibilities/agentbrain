@@ -15,6 +15,8 @@ import {
   parseOptions,
   parseTopLevel,
 } from "./args";
+import { defaultArtifactRoot } from "./artifacts";
+import { createBackup, verifyBackup } from "./backup";
 import { ResearchCache } from "./db";
 import { CliError } from "./errors";
 import { errorEnvelope, formatList, writeByFormat, writeJson } from "./format";
@@ -149,6 +151,11 @@ async function runParsed(
 
   if (command === "jobs") {
     await runJobs(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);
+    return;
+  }
+
+  if (command === "backup") {
+    runBackup(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);
     return;
   }
 
@@ -612,6 +619,90 @@ async function runJobs(
   } finally {
     store.close();
   }
+}
+
+function runBackup(
+  dbPath: string,
+  argv: string[],
+  globals: GlobalOptions,
+): void {
+  const subcommand = argv[0];
+  if (subcommand !== "create" && subcommand !== "verify") {
+    throw new CliError(
+      "bad_backup_command",
+      "backup requires a create or verify subcommand",
+      { exitCode: 2, hint: "Run `agentbrain help backup` for usage." },
+    );
+  }
+  const opts = parseOptions(argv.slice(1), {
+    output: { type: "string" },
+    backup: { type: "string" },
+    "artifact-root": { type: "string" },
+  });
+  const namedTarget =
+    subcommand === "create"
+      ? optString(opts, "output")
+      : optString(opts, "backup");
+  const wrongNamedTarget =
+    subcommand === "create"
+      ? optString(opts, "backup")
+      : optString(opts, "output");
+  if (
+    wrongNamedTarget !== undefined ||
+    (namedTarget === undefined && opts._.length !== 1) ||
+    (namedTarget !== undefined && opts._.length !== 0)
+  ) {
+    throw new CliError(
+      "bad_backup_path",
+      `backup ${subcommand} requires exactly one backup path`,
+      { exitCode: 2 },
+    );
+  }
+  const target = namedTarget ?? opts._[0];
+  const artifactRoot = optString(opts, "artifact-root");
+
+  if (subcommand === "create") {
+    if (!existsSync(dbPath)) {
+      throw new CliError(
+        "db_not_found",
+        `research cache DB not found: ${dbPath}`,
+        {
+          hint: "Pass --db PATH or set AGENTBRAIN_DB.",
+        },
+      );
+    }
+    const store = new ResearchStore(dbPath);
+    try {
+      const data = createBackup(store, target, {
+        artifactRoot: artifactRoot ?? defaultArtifactRoot(),
+      });
+      writeByFormat(
+        "backup create",
+        data,
+        globals,
+        (value) =>
+          [
+            `backup created: ${value.backup_path}`,
+            `schema_version: ${value.schema_version}`,
+            `required_artifacts: ${value.artifact_count}`,
+            "",
+          ].join("\n"),
+        { readOnly: false },
+      );
+    } finally {
+      store.close();
+    }
+    return;
+  }
+
+  const data = verifyBackup(target, { artifactRoot });
+  writeByFormat("backup verify", data, globals, (value) => {
+    const lines = value.checks.map(
+      (check) => `${check.status.padEnd(6)} ${check.name}: ${check.detail}`,
+    );
+    return `${value.verified ? "verified" : "verification failed"}\n${lines.join("\n")}\n`;
+  });
+  if (!data.verified) process.exitCode = 1;
 }
 
 function runDoctor(
