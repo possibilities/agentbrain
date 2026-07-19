@@ -5,6 +5,58 @@ export type SearchMode = "any" | "all" | "raw";
 export type AdmissionStatus = "queued" | "duplicate";
 export type AdmissionWaitStatus = "terminal" | "timeout";
 
+export type RecoveryDisposition =
+  | "approved_online_backfill_telegram_human"
+  | "exclude_infrastructure"
+  | "exclude_probable_test"
+  | "import_offline"
+  | "review"
+  | "review_discord"
+  | "review_fetch"
+  | "review_retry"
+  | "review_telegram_bot_generated";
+
+export interface RecoveryImportCounts {
+  candidate_rows: number;
+  baseline_candidate_rows: number;
+  appended_candidate_rows: number;
+  telegram_candidate_rows: number;
+  telegram_observations: number;
+  telegram_provenance_merges: number;
+  catalog_memberships: number;
+  approved_offline_artifacts: number;
+  approved_online_jobs: number;
+  blocked_review_jobs: number;
+  excluded_candidates: number;
+  evidence_only_candidates: number;
+}
+
+export interface RecoveryImportReport {
+  schema_version: 1;
+  status: "verified" | "queued";
+  dry_run: boolean;
+  generation_id: string;
+  counts: RecoveryImportCounts;
+  dispositions: Record<RecoveryDisposition, number>;
+  jobs: {
+    queued: number;
+    blocked: number;
+    excluded: number;
+    evidence_only: number;
+    created: number;
+    existing: number;
+  };
+  effects: {
+    candidate_outcomes_created: number;
+    candidate_outcomes_existing: number;
+    observations_created: number;
+    observations_existing: number;
+    artifacts_created: number;
+    artifacts_existing: number;
+  };
+  run: { id: number | null; state: "verified" | "pending" };
+}
+
 export interface GlobalOptions {
   dbPath: string;
   format: OutputFormat;

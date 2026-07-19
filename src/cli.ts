@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import {
   type AdmissionResult,
+  admitRecoveryGeneration,
   admitSubmission,
   DEFAULT_WAIT_TIMEOUT_MS,
   SUBMISSION_VERSION,
@@ -15,7 +16,7 @@ import {
   parseOptions,
   parseTopLevel,
 } from "./args";
-import { defaultArtifactRoot } from "./artifacts";
+import { ArtifactStore, defaultArtifactRoot } from "./artifacts";
 import { createBackup, verifyBackup } from "./backup";
 import { ResearchCache } from "./db";
 import { CliError } from "./errors";
@@ -32,6 +33,7 @@ import {
   safeJobView,
   showJob,
 } from "./jobs";
+import { readRecoveryGeneration } from "./recovery";
 import {
   humanChunk,
   humanContext,
@@ -156,6 +158,11 @@ async function runParsed(
 
   if (command === "backup") {
     runBackup(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);
+    return;
+  }
+
+  if (command === "recovery") {
+    runRecovery(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);
     return;
   }
 
@@ -703,6 +710,79 @@ function runBackup(
     return `${value.verified ? "verified" : "verification failed"}\n${lines.join("\n")}\n`;
   });
   if (!data.verified) process.exitCode = 1;
+}
+
+function runRecovery(
+  dbPath: string,
+  argv: string[],
+  globals: GlobalOptions,
+): void {
+  const subcommand = argv[0];
+  if (subcommand !== "import") {
+    throw new CliError(
+      "bad_recovery_command",
+      "recovery requires the import subcommand",
+      { exitCode: 2, hint: "Run `agentbrain help recovery` for usage." },
+    );
+  }
+  const opts = parseOptions(argv.slice(1), {
+    "manifest-generation": { type: "string" },
+    "artifact-root": { type: "string", multiple: true },
+    "artifact-store": { type: "string" },
+    "dry-run": { type: "boolean", default: false },
+  });
+  const named = optString(opts, "manifest-generation");
+  if (
+    (named === undefined && opts._.length !== 1) ||
+    (named !== undefined && opts._.length !== 0)
+  ) {
+    throw new CliError(
+      "bad_recovery_manifest",
+      "recovery import requires exactly one frozen generation descriptor",
+      { exitCode: 2 },
+    );
+  }
+  const dryRun = optBoolean(opts, "dry-run");
+  const generation = readRecoveryGeneration(named ?? opts._[0], {
+    artifactRoots: optStrings(opts, "artifact-root"),
+  });
+  if (dryRun) {
+    const data = admitRecoveryGeneration(null, generation, { dryRun: true });
+    writeByFormat("recovery import", data, globals, (value) =>
+      [
+        "frozen recovery generation verified",
+        `candidate_rows: ${value.counts.candidate_rows}`,
+        `telegram_observations: ${value.counts.telegram_observations}`,
+        `approved_offline_artifacts: ${value.counts.approved_offline_artifacts}`,
+        "state_written: false",
+        "",
+      ].join("\n"),
+    );
+    return;
+  }
+  const store = new ResearchStore(dbPath);
+  try {
+    const artifactStore = new ArtifactStore(
+      optString(opts, "artifact-store") ?? defaultArtifactRoot(),
+    );
+    const data = admitRecoveryGeneration(store, generation, { artifactStore });
+    writeByFormat(
+      "recovery import",
+      data,
+      globals,
+      (value) =>
+        [
+          `queued frozen recovery run ${value.run.id}`,
+          `candidate_rows: ${value.counts.candidate_rows}`,
+          `jobs_created: ${value.jobs.created}`,
+          `jobs_existing: ${value.jobs.existing}`,
+          "",
+        ].join("\n"),
+      { readOnly: false },
+    );
+  } finally {
+    store.close();
+  }
 }
 
 function runDoctor(

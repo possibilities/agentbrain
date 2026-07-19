@@ -1,0 +1,587 @@
+import type { Database } from "bun:sqlite";
+import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { admitRecoveryGeneration } from "../src/admission";
+import { ArtifactStore } from "../src/artifacts";
+import { readRecoveryGeneration } from "../src/recovery";
+import { ResearchStore } from "../src/store";
+import { runWorker } from "../src/worker";
+
+const REPO = join(import.meta.dir, "..");
+const roots: string[] = [];
+const originalPath = process.env.PATH;
+
+const DISPOSITIONS = [
+  ["import_offline", 581],
+  ["exclude_infrastructure", 25],
+  ["exclude_probable_test", 12],
+  ["review", 98],
+  ["review_discord", 356],
+  ["review_fetch", 4],
+  ["review_retry", 5],
+  ["approved_online_backfill_telegram_human", 2],
+  ["review_telegram_bot_generated", 5],
+] as const;
+
+interface Fixture {
+  root: string;
+  artifactRoot: string;
+  manifestsRoot: string;
+  generationRoot: string;
+  descriptor: string;
+  artifactPaths: string[];
+}
+
+interface FixtureOptions {
+  mutateRows?: (rows: Array<Record<string, unknown>>, root: string) => void;
+  malformedArtifact?: boolean;
+}
+
+function digest(value: string | Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function stable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stable);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, stable(item)]),
+    );
+  }
+  return value;
+}
+
+function canonical(value: unknown): string {
+  return `${JSON.stringify(stable(value))}\n`;
+}
+
+function pretty(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function dispositionFor(index: number): string {
+  let offset = 0;
+  for (const [name, count] of DISPOSITIONS) {
+    if (index < offset + count) return name;
+    offset += count;
+  }
+  throw new Error("fixture disposition overflow");
+}
+
+function makeFixture(options: FixtureOptions = {}): Fixture {
+  const root = mkdtempSync(join(tmpdir(), "agentbrain-recovery-test-"));
+  roots.push(root);
+  const artifactRoot = join(root, "legacy-artifacts");
+  const manifestsRoot = join(root, "manifests");
+  mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
+  mkdirSync(manifestsRoot, { recursive: true, mode: 0o700 });
+
+  const rows: Array<Record<string, unknown>> = [];
+  const artifactPaths: string[] = [];
+  for (let index = 0; index < 1088; index += 1) {
+    const sourceUri = `https://candidate.test/item/${index + 1}?v=${index + 1}`;
+    const candidateId = digest(sourceUri).slice(0, 16);
+    const disposition = dispositionFor(index);
+    const catalogPosition = index < 584 ? index + 1 : null;
+    const provenance: Record<string, unknown> = {
+      botctl_messages: [],
+      catalog_positions: catalogPosition === null ? [] : [catalogPosition],
+      discord_cache_messages: [],
+      historical_document_ids: [],
+      save_link_pipelines: [],
+    };
+    const reconciliation: Record<string, unknown> = {
+      in_catalog: catalogPosition !== null,
+    };
+    if (disposition === "import_offline") {
+      const path = join(
+        artifactRoot,
+        `link-${String(index + 1).padStart(5, "0")}.md`,
+      );
+      const markdown =
+        options.malformedArtifact && index === 0
+          ? `url: ${JSON.stringify(sourceUri)}\nsummary: broken\nbody\n`
+          : [
+              "---",
+              `url: ${JSON.stringify(sourceUri)}`,
+              `summary: ${JSON.stringify(`Independent summary ${index + 1}`)}`,
+              "---",
+              `Searchable legacy body ${index + 1}`,
+              "",
+            ].join("\n");
+      writeFileSync(path, markdown, { mode: 0o600 });
+      artifactPaths.push(path);
+      reconciliation.artifact = {
+        path,
+        sha256: digest(markdown),
+        size_bytes: Buffer.byteLength(markdown),
+        status: "present",
+      };
+    }
+    rows.push({
+      candidate_id: candidateId,
+      normalized_uri: index < 2 ? "https://comparison.test/shared" : sourceUri,
+      provenance,
+      reconciliation,
+      recovery: {
+        confidence: "synthetic_fixture",
+        disposition,
+        reasons: [`fixture_${disposition}`],
+      },
+      schema_version: 1,
+      source_type: "url",
+      source_uri: sourceUri,
+    });
+  }
+
+  const secretaryIndexes = [
+    ...Array.from({ length: 118 }, (_, index) => index),
+    ...Array.from({ length: 6 }, (_, index) => 606 + index),
+    1081,
+    1082,
+    1083,
+    1084,
+    1085,
+    1086,
+    1087,
+  ];
+  const privateRows: Array<Record<string, unknown>> = [];
+  let observationSequence = 0;
+  for (const [secretaryIndex, candidateIndex] of secretaryIndexes.entries()) {
+    const row = rows[candidateIndex];
+    const count = secretaryIndex < 32 ? 3 : 2;
+    const observations = Array.from({ length: count }, () => {
+      observationSequence += 1;
+      return {
+        fields: ["entity_url"],
+        observation_id: digest(`observation:${observationSequence}`).slice(
+          0,
+          24,
+        ),
+        observed_in: ["agentbot_db"],
+        sender_kind: candidateIndex >= 1081 ? "human" : "unknown",
+        soft_deleted_provenance: false,
+      };
+    });
+    (row.provenance as Record<string, unknown>).agentbot_secretary = {
+      observation_count: observations.length,
+      observation_ids: observations.map((item) => item.observation_id),
+      private_reconciliation: "private-reconciliation.jsonl",
+    };
+    privateRows.push({
+      candidate_disposition: (row.recovery as Record<string, unknown>)
+        .disposition,
+      candidate_evidence_row_id: row.candidate_id,
+      comparison_candidate_evidence_row_ids: [],
+      comparison_uri: row.normalized_uri,
+      exact_uri: row.source_uri,
+      observations,
+      reconciliation_action:
+        secretaryIndex < 118
+          ? "merge_existing_provenance"
+          : "append_exact_candidate",
+      resource_sensitivity: "normal",
+      schema_version: 1,
+    });
+  }
+  expect(observationSequence).toBe(294);
+  options.mutateRows?.(rows, root);
+
+  const manifest = `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
+  const privateReconciliation = `${privateRows
+    .map((row) => JSON.stringify(row))
+    .join("\n")}\n`;
+  const summary = pretty({
+    candidate_outcomes: {
+      appended_exact_candidates: 13,
+      baseline_candidate_ids_preserved: 1075,
+      comparison_new_urls: 8,
+      final_candidates: 1088,
+    },
+    controlled_online_backfill: {
+      approved_human_candidate_evidence_rows: 2,
+      network_fetches_performed: 0,
+    },
+    live_capture: {
+      credential_session_copies_retained: 0,
+      fixed_upper_cutoff: true,
+      hard_cap_duration_ms: 600000,
+      hard_cap_messages: 20000,
+      history_exhausted: true,
+      visible_messages: 119,
+    },
+    privacy: {
+      exact_urls_in_summary: 0,
+      private_locators_in_summary: 0,
+      transport_privacy_alone_marks_resource_sensitive: false,
+    },
+    reconciliation: {
+      exact_urls: 131,
+      live_only_urls: 1,
+      message_level_url_observations: 294,
+      provenance_merges: 118,
+    },
+    schema_version: 1,
+    secretary_additions: {
+      approved_controlled_online_human_submissions: 2,
+      bot_output_review_candidates: 5,
+      probable_test_exclusions: 6,
+    },
+  });
+  const onlineIds = rows
+    .filter(
+      (row) =>
+        (row.recovery as Record<string, unknown>).disposition ===
+        "approved_online_backfill_telegram_human",
+    )
+    .map((row) => row.candidate_id as string)
+    .sort();
+  const binding = {
+    bound_checksum_inventory: {
+      "candidate-manifest.jsonl": digest(manifest),
+      "private-reconciliation.jsonl": digest(privateReconciliation),
+      "public-summary.json": digest(summary),
+    },
+    candidate_counts: { baseline: 1075, final: 1088 },
+    controlled_online_backfill_candidate_evidence_row_ids: onlineIds,
+    cutoff_metadata: {
+      completed_at: "2026-07-18T00:00:01.000Z",
+      hard_caps: { duration_ms: 600000, messages: 20000 },
+      message_count: 119,
+      started_at: "2026-07-18T00:00:00.000Z",
+      termination: "history_exhausted",
+      upper_cutoff_message_id: "7215",
+    },
+    schema_versions: {
+      candidate_manifest: 1,
+      frozen_recovery_generation: 1,
+      public_summary: 1,
+    },
+    tool_version: "synthetic-test-1",
+  };
+  const generationId = `sha256-${digest(canonical(binding))}`;
+  const generation = pretty({
+    binding,
+    generation_id: generationId,
+    schema_version: 1,
+  });
+  const allowlist = pretty({
+    candidate_evidence_row_ids: onlineIds,
+    entry_count: 2,
+    generation_digest: generationId.slice(7),
+    generation_id: generationId,
+    schema_version: 1,
+  });
+  const files: Record<string, string> = {
+    "candidate-manifest.jsonl": manifest,
+    "generation.json": generation,
+    "online-allowlist.json": allowlist,
+    "private-reconciliation.jsonl": privateReconciliation,
+    "public-summary.json": summary,
+  };
+  const checksums = `${Object.entries(files)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, content]) => `${digest(content)}  ${name}`)
+    .join("\n")}\n`;
+  const generationRoot = join(manifestsRoot, generationId);
+  mkdirSync(generationRoot, { mode: 0o700 });
+  for (const [name, content] of Object.entries({
+    ...files,
+    SHA256SUMS: checksums,
+  })) {
+    writeFileSync(join(generationRoot, name), content, { mode: 0o600 });
+  }
+  const descriptor = join(manifestsRoot, "current.json");
+  writeFileSync(
+    descriptor,
+    pretty({ generation_id: generationId, schema_version: 1 }),
+    { mode: 0o600 },
+  );
+  return {
+    root,
+    artifactRoot,
+    manifestsRoot,
+    generationRoot,
+    descriptor,
+    artifactPaths,
+  };
+}
+
+function count(db: Database, sql: string): number {
+  return (db.query(sql).get() as { count: number }).count;
+}
+
+function decoded(value: Uint8Array | string): string {
+  return typeof value === "string" ? value : new TextDecoder().decode(value);
+}
+
+afterEach(() => {
+  process.env.PATH = originalPath;
+  for (const root of roots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dry-run verifies the complete locked generation without state or network", () => {
+  const fixture = makeFixture();
+  const bin = join(fixture.root, "bin");
+  const invoked = join(fixture.root, "scrapectl-invoked");
+  mkdirSync(bin);
+  const scrapectl = join(bin, "scrapectl");
+  writeFileSync(
+    scrapectl,
+    `#!/bin/sh\ntouch ${JSON.stringify(invoked)}\nexit 97\n`,
+  );
+  chmodSync(scrapectl, 0o755);
+  const dbPath = join(fixture.root, "dry-run.db");
+  const artifactStore = join(fixture.root, "dry-run-artifacts");
+  const proc = Bun.spawnSync({
+    cmd: [
+      "bun",
+      "run",
+      "src/cli.ts",
+      "recovery",
+      "import",
+      "--manifest-generation",
+      fixture.descriptor,
+      "--artifact-root",
+      fixture.artifactRoot,
+      "--artifact-store",
+      artifactStore,
+      "--dry-run",
+      "--db",
+      dbPath,
+      "--json",
+    ],
+    cwd: REPO,
+    env: { ...process.env, PATH: `${bin}:${originalPath}` },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(proc.exitCode, decoded(proc.stderr)).toBe(0);
+  const output = JSON.parse(decoded(proc.stdout));
+  expect(output.data).toMatchObject({
+    status: "verified",
+    dry_run: true,
+    counts: {
+      candidate_rows: 1088,
+      telegram_observations: 294,
+      approved_offline_artifacts: 581,
+      catalog_memberships: 584,
+    },
+    dispositions: Object.fromEntries(DISPOSITIONS),
+    jobs: { queued: 581, blocked: 11, excluded: 37, evidence_only: 459 },
+    run: { id: null, state: "verified" },
+  });
+  expect(existsSync(dbPath)).toBe(false);
+  expect(existsSync(artifactStore)).toBe(false);
+  expect(existsSync(invoked)).toBe(false);
+  expect(decoded(proc.stdout)).not.toContain("https://candidate.test");
+  expect(decoded(proc.stderr)).not.toContain("https://candidate.test");
+});
+
+test("admission is offline, idempotent, and preserves every exact candidate outcome", async () => {
+  const fixture = makeFixture();
+  const generation = readRecoveryGeneration(fixture.descriptor, {
+    artifactRoots: [fixture.artifactRoot],
+  });
+  const dbPath = join(fixture.root, "research.db");
+  const artifactRoot = join(fixture.root, "artifact-store");
+  const store = new ResearchStore(dbPath);
+  store.upsertDocument({
+    sourceType: "text",
+    sourceUri: "fixture:existing",
+    content: "pre-existing non-empty database",
+  });
+  const artifacts = new ArtifactStore(artifactRoot);
+  const first = admitRecoveryGeneration(store, generation, {
+    artifactStore: artifacts,
+    now: new Date("2026-07-19T00:00:00.000Z"),
+  });
+  expect(first.jobs).toMatchObject({
+    queued: 581,
+    blocked: 11,
+    excluded: 37,
+    evidence_only: 459,
+    created: 629,
+    existing: 0,
+  });
+  expect(first.effects).toMatchObject({
+    candidate_outcomes_created: 1088,
+    observations_created: 294,
+  });
+  expect(count(store.db, "SELECT COUNT(*) AS count FROM runs")).toBe(1);
+  expect(count(store.db, "SELECT COUNT(*) AS count FROM jobs")).toBe(629);
+  expect(
+    count(store.db, "SELECT COUNT(*) AS count FROM jobs WHERE state='queued'"),
+  ).toBe(581);
+  expect(
+    count(store.db, "SELECT COUNT(*) AS count FROM jobs WHERE state='blocked'"),
+  ).toBe(11);
+  expect(
+    count(
+      store.db,
+      "SELECT COUNT(*) AS count FROM jobs WHERE state='excluded'",
+    ),
+  ).toBe(37);
+  expect(
+    count(
+      store.db,
+      "SELECT COUNT(*) AS count FROM provenance WHERE evidence_type='recovery_candidate_outcome'",
+    ),
+  ).toBe(1088);
+  expect(count(store.db, "SELECT COUNT(*) AS count FROM observations")).toBe(
+    294,
+  );
+  expect(
+    count(store.db, "SELECT COUNT(*) AS count FROM collection_memberships"),
+  ).toBe(584);
+  expect(
+    count(
+      store.db,
+      "SELECT COUNT(DISTINCT resource_id) AS count FROM provenance WHERE evidence_type='recovery_candidate_outcome'",
+    ),
+  ).toBe(1088);
+  expect(
+    count(
+      store.db,
+      "SELECT COUNT(*) AS count FROM resource_aliases WHERE alias_type='comparison_uri' AND locator='https://comparison.test/shared'",
+    ),
+  ).toBe(2);
+
+  const artifact = store.db
+    .query(
+      "SELECT content_hash FROM artifacts WHERE artifact_role='imported_markdown' ORDER BY id LIMIT 1",
+    )
+    .get() as { content_hash: string };
+  const body = artifacts.readUtf8(artifact.content_hash);
+  expect(body.startsWith("---")).toBe(false);
+  expect(body).not.toContain("url:");
+  expect(body).toContain("Searchable legacy body");
+
+  let networkCalls = 0;
+  const worker = await runWorker(store, {
+    once: true,
+    artifactStore: artifacts,
+    installSignalHandlers: false,
+    extract: async () => {
+      networkCalls += 1;
+      throw new Error("forbidden network extraction");
+    },
+  });
+  expect(worker).toMatchObject({ claimed: 581, completed: 581, failed: 0 });
+  expect(networkCalls).toBe(0);
+  expect(count(store.db, "SELECT COUNT(*) AS count FROM documents")).toBe(582);
+  expect(
+    count(
+      store.db,
+      "SELECT COUNT(*) AS count FROM resources WHERE document_id IS NOT NULL",
+    ),
+  ).toBe(581);
+  expect(
+    count(
+      store.db,
+      "SELECT COUNT(*) AS count FROM documents WHERE source_uri LIKE 'https://candidate.test/%'",
+    ),
+  ).toBe(581);
+
+  const second = admitRecoveryGeneration(store, generation, {
+    artifactStore: artifacts,
+    now: new Date("2026-07-19T01:00:00.000Z"),
+  });
+  expect(second.jobs).toMatchObject({ created: 0, existing: 629 });
+  expect(second.effects).toMatchObject({
+    candidate_outcomes_created: 0,
+    candidate_outcomes_existing: 1088,
+    observations_created: 0,
+    observations_existing: 294,
+  });
+  expect(count(store.db, "SELECT COUNT(*) AS count FROM runs")).toBe(1);
+  expect(count(store.db, "SELECT COUNT(*) AS count FROM jobs")).toBe(629);
+  expect(
+    count(
+      store.db,
+      "SELECT COUNT(*) AS count FROM provenance WHERE evidence_type='recovery_candidate_outcome'",
+    ),
+  ).toBe(1088);
+  store.close();
+}, 30_000);
+
+test("generation validation fails closed for identity, paths, hashes, and private data", () => {
+  const duplicate = makeFixture({
+    mutateRows(rows) {
+      rows[1].candidate_id = rows[0].candidate_id;
+      rows[1].source_uri = rows[0].source_uri;
+      rows[1].normalized_uri = rows[0].normalized_uri;
+    },
+  });
+  expect(() =>
+    readRecoveryGeneration(duplicate.descriptor, {
+      artifactRoots: [duplicate.artifactRoot],
+    }),
+  ).toThrow("duplicate exact outcomes");
+
+  const changed = makeFixture();
+  writeFileSync(changed.artifactPaths[0], "changed bytes");
+  expect(() =>
+    readRecoveryGeneration(changed.descriptor, {
+      artifactRoots: [changed.artifactRoot],
+    }),
+  ).toThrow("does not match frozen evidence");
+
+  const malformed = makeFixture({ malformedArtifact: true });
+  expect(() =>
+    readRecoveryGeneration(malformed.descriptor, {
+      artifactRoots: [malformed.artifactRoot],
+    }),
+  ).toThrow("missing Linkctl frontmatter");
+
+  const linked = makeFixture();
+  unlinkSync(linked.artifactPaths[0]);
+  symlinkSync(linked.artifactPaths[1], linked.artifactPaths[0]);
+  expect(() =>
+    readRecoveryGeneration(linked.descriptor, {
+      artifactRoots: [linked.artifactRoot],
+    }),
+  ).toThrow("non-symlink file");
+
+  const unsafe = makeFixture({
+    mutateRows(rows, root) {
+      const artifact = (rows[0].reconciliation as Record<string, unknown>)
+        .artifact as Record<string, unknown>;
+      artifact.path = join(root, "outside.md");
+    },
+  });
+  expect(() =>
+    readRecoveryGeneration(unsafe.descriptor, {
+      artifactRoots: [unsafe.artifactRoot],
+    }),
+  ).toThrow("outside declared roots");
+
+  const privateData = makeFixture({
+    mutateRows(rows) {
+      const secretary = (rows[0].provenance as Record<string, unknown>)
+        .agentbot_secretary as Record<string, unknown>;
+      secretary.message_body = "PRIVATE MESSAGE BODY";
+    },
+  });
+  expect(() =>
+    readRecoveryGeneration(privateData.descriptor, {
+      artifactRoots: [privateData.artifactRoot],
+    }),
+  ).toThrow("forbidden private field");
+});

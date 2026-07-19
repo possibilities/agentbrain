@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import type { DurableSubmissionIntent } from "./admission";
+import { type DurableSubmissionIntent, RECOVERY_JOB_PREFIX } from "./admission";
 import {
   ArtifactStore,
   ArtifactStoreError,
@@ -546,49 +546,80 @@ function applyDocuments(
   let firstResourceId: number | null = null;
   const timestamp = observedAt.toISOString();
   for (const [index, document] of documents.entries()) {
+    const recoveryJob =
+      intent.ingress === "legacy-recovery" &&
+      job.idempotency_key.startsWith(RECOVERY_JOB_PREFIX);
+    const recoveryResource =
+      recoveryJob && job.resource_id !== null
+        ? (store.db
+            .query(
+              `SELECT r.id, r.kind, r.sensitivity, ra.locator
+               FROM resources r
+               JOIN resource_aliases ra ON ra.resource_id=r.id
+                 AND ra.alias_type='legacy_exact_url'
+               WHERE r.id=?`,
+            )
+            .get(job.resource_id) as {
+            id: number;
+            kind: string;
+            sensitivity: Sensitivity;
+            locator: string;
+          } | null)
+        : null;
+    if (recoveryJob && recoveryResource === null) {
+      throw new Error("legacy recovery job has no exact Resource identity");
+    }
     const indexed = store.upsertDocument({
-      sourceType: document.sourceType,
-      sourceUri: document.sourceUri,
+      sourceType: recoveryResource?.kind ?? document.sourceType,
+      sourceUri: recoveryResource?.locator ?? document.sourceUri,
       title: document.title,
       content: document.content,
       tags: document.tags,
       notes: document.notes,
       force: intent.options.force,
     });
-    const resourceKey = document.resourceKey ?? {
-      type: "ingestion_job_item",
-      value: `${job.id}:${index + 1}`,
-    };
-    store.db
-      .query(
-        `INSERT INTO resources(
-           key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(key_type, key_value) DO UPDATE SET
-           document_id=excluded.document_id,
-           sensitivity=CASE
-             WHEN (SELECT rank FROM sensitivity_levels WHERE level=excluded.sensitivity) >
-                  (SELECT rank FROM sensitivity_levels WHERE level=resources.sensitivity)
-             THEN excluded.sensitivity ELSE resources.sensitivity END,
-           updated_at=excluded.updated_at`,
-      )
-      .run(
-        resourceKey.type,
-        resourceKey.value,
-        job.kind,
-        job.sensitivity,
-        indexed.document_id,
-        timestamp,
-        timestamp,
-      );
-    const resource = store.db
-      .query(
-        "SELECT id, sensitivity FROM resources WHERE key_type=? AND key_value=?",
-      )
-      .get(resourceKey.type, resourceKey.value) as {
-      id: number;
-      sensitivity: Sensitivity;
-    };
+    let resource: { id: number; sensitivity: Sensitivity };
+    if (recoveryResource !== null) {
+      store.db
+        .query("UPDATE resources SET document_id=?, updated_at=? WHERE id=?")
+        .run(indexed.document_id, timestamp, recoveryResource.id);
+      resource = recoveryResource;
+    } else {
+      const resourceKey = document.resourceKey ?? {
+        type: "ingestion_job_item",
+        value: `${job.id}:${index + 1}`,
+      };
+      store.db
+        .query(
+          `INSERT INTO resources(
+             key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(key_type, key_value) DO UPDATE SET
+             document_id=excluded.document_id,
+             sensitivity=CASE
+               WHEN (SELECT rank FROM sensitivity_levels WHERE level=excluded.sensitivity) >
+                    (SELECT rank FROM sensitivity_levels WHERE level=resources.sensitivity)
+               THEN excluded.sensitivity ELSE resources.sensitivity END,
+             updated_at=excluded.updated_at`,
+        )
+        .run(
+          resourceKey.type,
+          resourceKey.value,
+          job.kind,
+          job.sensitivity,
+          indexed.document_id,
+          timestamp,
+          timestamp,
+        );
+      resource = store.db
+        .query(
+          "SELECT id, sensitivity FROM resources WHERE key_type=? AND key_value=?",
+        )
+        .get(resourceKey.type, resourceKey.value) as {
+        id: number;
+        sensitivity: Sensitivity;
+      };
+    }
     if (firstResourceId === null) firstResourceId = resource.id;
     const aliases = [
       {
