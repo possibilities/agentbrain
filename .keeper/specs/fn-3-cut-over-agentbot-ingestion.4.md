@@ -55,5 +55,5 @@ Remove the installed command only after Agentbot switch and queue reconciliation
 - [ ] The protected Arthack alias file remains byte-for-byte unchanged with its recorded SHA-256.
 
 ## Done summary
-
+Deleted Linkctl app, workspace/lockfile entries, install/stow wiring, and installed symlink/config; scrubbed remaining live linkctl references in Scrapectl reconciliation code and tests while preserving the saved-link corpus and protected alias file byte-for-byte.
 ## Evidence
