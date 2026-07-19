@@ -1,11 +1,19 @@
 ## Description
 
 **Size:** M
-**Files:** scripts/rehearse-recovery-import.sh, test/recovery.integration.test.ts, README.md
+**Files:** scripts/rehearse-recovery-import.sh, test/recovery.integration.test.ts, README.md, test/backup.test.ts, src/types.ts
 
 ### Approach
 
 Run the frozen 1,088-candidate generation and local artifacts through dry-run and temporary-database import, with fake/forbidden Scrapectl, then validate exact candidate/observation outcomes, catalog ordering, artifacts, FTS, citations, duplicate replay, failure isolation, backup restore, and rollback. Emit only bounded aggregate metadata and opaque safe IDs.
+
+### Fan-in composition notes
+
+The lane fan-in from the structural-chunking task conflicts on two settled points — both decided; apply, do not re-litigate:
+- `src/types.ts`: compose BOTH additive hunks verbatim (recovery-import reporting types + chunk-provenance types; same anchor, zero symbol overlap; the composition typechecks — resolver-verified).
+- `test/backup.test.ts`: the manifest assertion must reference `RESEARCH_SCHEMA_VERSION`, never a hardcoded schema number — the literal pin breaks on every ladder bump and asserts nothing.
+- Posture (human-decided): backups MIGRATE across schema bumps; the integrity manifest's `required_artifact_digests` stays artifact-only (derived data — chunk provenance, revision digests — is rebuildable and does not enter the manifest).
+Perform the fan-in merge and verification atomically in one shell invocation while the lane-hold epic is not yet landed.
 
 ### Investigation targets
 
@@ -54,6 +62,7 @@ Publish only counts, opaque IDs, hashes, and sanitized failures needed for the f
 - [ ] Hash mismatch, mixed generation, parser failure, and interrupted replay isolate only affected jobs and remain resumable.
 - [ ] FTS, collection filters, citations, provenance, and representative X/generic resources work after restore and idempotent replay.
 - [ ] A verified pre-import snapshot restores the temporary database, artifact references, and generation identity exactly.
+- [ ] The fan-in lands with both types.ts hunks composed and the backup manifest test referencing the schema constant; the full suite is green.
 
 ## Done summary
 

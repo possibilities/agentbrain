@@ -1,0 +1,14 @@
+{
+  "bundles": [],
+  "created_at": "2026-07-19T22:44:05.887000Z",
+  "depends_on": [],
+  "epic": "fn-4-prepare-legacy-corpus-recovery",
+  "id": "fn-4-prepare-legacy-corpus-recovery.7",
+  "model": "opus",
+  "priority": null,
+  "snippets": [],
+  "target_repo": "/Users/mike/code/agentbrain",
+  "tier": "xhigh",
+  "title": "Diagnose jobs cli test pollution",
+  "updated_at": "2026-07-19T22:44:05.887000Z"
+}
