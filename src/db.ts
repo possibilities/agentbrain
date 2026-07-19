@@ -228,6 +228,7 @@ export class ResearchCache {
 
     const where = filters.length === 0 ? "" : ` AND ${filters.join(" AND ")}`;
     params.push(limit + 1, offset);
+    // Relies on SQLite's single-MIN/MAX aggregate bare-column rule to select chunk_id/chunk_index/start_char/end_char from the min-rank row; a second aggregate or another bare-column select would make chunk selection (and its snippet/citation) indeterminate.
     const rows = this.all<{
       document_id: number;
       resource_id: number | null;
