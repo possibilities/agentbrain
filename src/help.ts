@@ -238,9 +238,11 @@ Options:
   --heartbeat-ms <n>        Active lease heartbeat interval (default: 20000)
   --shutdown-grace-ms <n>   Bounded completion grace after a signal (default: 10000)
 
-Materialization happens outside SQLite write transactions. Completion and failure are
-fenced by the attempt token. Signal shutdown stops new claims and leaves unfinished work
-recoverable through lease expiry.
+Materialization happens outside SQLite write transactions. URL jobs delegate a versioned
+extraction envelope to Scrapectl; unknown envelope versions are protocol defects rather
+than provider-schema fallbacks. Completion and failure are fenced by the attempt token.
+Signal shutdown stops new claims and leaves unfinished work recoverable through lease
+expiry.
 `,
   jobs: `agentbrain jobs — inspect and operate on ingestion jobs
 
@@ -276,21 +278,20 @@ source, title, category, tags, summary, notes, preset, and save_markdown_copy. R
 is capped at 10000000 bytes; markdown is capped at 5000000 UTF-8 bytes and 5000000
 Unicode code points. Invalid/oversize input is rejected before the database is opened.
 
-Every completed root is indexed without re-scraping it. Generic roots do not fan out.
-Every discovered one-hop child from an X root (external and X alike) is extracted through
-the same Scrapectl provider adapter.
-Agentbrain performs no DNS/network checks, direct HTTP fallback, or X-specific extraction
-route. Transient provider-command availability retries automatically; permanent failure is
-recorded as a child failure. There is never a second child hop.
+Every completed root is indexed without re-scraping it. The adapter never extracts
+child URLs, parses Markdown links for fanout, or enqueues child jobs. Use queued
+agentbrain submit plus worker execution for new URL ingestion and durable child fanout.
+Agentbrain performs no DNS/network checks, direct HTTP fallback, browser behavior, or
+X-specific extraction route.
 
 Optional artifacts are written below XDG_DATA_HOME/agentbrain/scraped (default
 ~/.local/share/agentbrain/scraped). Artifact failure leaves the root committed and is a
 partial result. Exit 0 means complete; exit 1 means invalid/root failure; exit 2 means
-a root-success child/artifact partial. The separate research-ingest-link adapter uses
-the same limits/exits but emits temporary legacy bare JSON.
+a root-success artifact partial. The separate research-ingest-link adapter uses the same
+limits/exits but emits temporary legacy bare JSON.
 
-Linkctl owns admission/duplicates. Scrapectl owns queueing and URL extraction.
-Agentbrain owns the research index.
+Agentbrain owns Admission, the ingestion ledger, Artifact storage, and index writes.
+Scrapectl owns URL extraction and backend behavior before this compatibility handoff.
 `,
   delete: `agentbrain delete — delete one indexed document
 

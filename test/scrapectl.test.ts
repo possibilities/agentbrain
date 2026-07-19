@@ -15,6 +15,7 @@ import {
   extractWithScrapectl,
   ScrapectlExtractionError,
   scrapeWithScrapectl,
+  validateExtractionEnvelope,
 } from "../src/scrapectl";
 
 const dirs: string[] = [];
@@ -114,6 +115,97 @@ function extractionEnvelope(
 function shellLiteral(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
+
+const SCRAPECTL_CONTRACT_FIXTURE =
+  process.env.SCRAPECTL_CONTRACT_FIXTURE ??
+  "/Users/mike/code/arthack/apps/scrapectl/tests/fixtures/extraction-generic.expected.json";
+
+function assertCompatibleFixture(
+  label: string,
+  path: string,
+  expectedUrl: string,
+): void {
+  if (!existsSync(path)) {
+    throw new Error(`${label} contract fixture is missing: ${path}`);
+  }
+  const payload = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  try {
+    const envelope = validateExtractionEnvelope(payload, expectedUrl);
+    expect(envelope.status).toBe("success");
+  } catch (error) {
+    throw new Error(
+      `${label} contract fixture is incompatible with Agentbrain: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+test("recorded Scrapectl extraction fixtures match Agentbrain's envelope contract", () => {
+  assertCompatibleFixture(
+    "Scrapectl generic",
+    SCRAPECTL_CONTRACT_FIXTURE,
+    "https://example.com/start",
+  );
+  assertCompatibleFixture(
+    "Agentbrain X post",
+    join(import.meta.dir, "fixtures", "prescraped_x_tweet.json"),
+    "https://twitter.com/original_handle/status/123?ref=timeline",
+  );
+  assertCompatibleFixture(
+    "Agentbrain X article",
+    join(import.meta.dir, "fixtures", "prescraped_x_article.json"),
+    "https://twitter.com/writer/article/987?utm_source=timeline",
+  );
+});
+
+test("incompatible extraction envelope changes are protocol defects", () => {
+  const url = "https://example.com/contract";
+  const base = extractionEnvelope(url);
+  const missingFailure = { ...base };
+  delete (missingFailure as Record<string, unknown>).failure;
+  const cases: Array<[string, Record<string, unknown>, string]> = [
+    [
+      "schema version",
+      { ...base, schema_version: "2" },
+      "extraction schema version is unsupported",
+    ],
+    [
+      "provider fields",
+      { ...base, status_code: 200 },
+      "extraction envelope has unknown or missing fields",
+    ],
+    [
+      "extractor identity",
+      {
+        ...base,
+        extractor: {
+          ...(base.extractor as Record<string, unknown>),
+          name: "browserctl",
+        },
+      },
+      "extractor name is unsupported",
+    ],
+    [
+      "missing failure sentinel",
+      missingFailure,
+      "extraction envelope has unknown or missing fields",
+    ],
+  ];
+  for (const [label, payload, message] of cases) {
+    try {
+      expect(() => validateExtractionEnvelope(payload, url)).toThrow(
+        `scrapectl protocol defect: ${message}`,
+      );
+    } catch (error) {
+      throw new Error(
+        `${label} did not fail as a clear protocol defect: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+});
 
 test("versioned extraction uses explicit argv and validates the success envelope", async () => {
   const url = "https://example.com/article";
@@ -493,6 +585,57 @@ wait
   }
   expect(alive).toBe(false);
 });
+
+test("extraction abort kills detached Scrapectl descendants", async () => {
+  if (process.platform === "win32") return;
+  const { dir } = installScrapectl(`#!/bin/sh
+sh -c 'trap "" HUP INT TERM; exec sleep 30' &
+printf '%s' "$!" > "$CHILD_PID_FILE"
+wait
+`);
+  const pidFile = join(dir, "extraction-child.pid");
+  process.env.CHILD_PID_FILE = pidFile;
+  const controller = new AbortController();
+  const pending = extractWithScrapectl("https://example.com/cancel", {
+    signal: controller.signal,
+    timeoutMs: 30_000,
+  });
+
+  for (let attempt = 0; attempt < 1_000 && !existsSync(pidFile); attempt += 1) {
+    await Bun.sleep(10);
+  }
+  if (!existsSync(pidFile)) {
+    controller.abort();
+    await pending.catch(() => {});
+    throw new Error(
+      "provider fixture did not start for extraction cancellation",
+    );
+  }
+  const descendantPid = Number(readFileSync(pidFile, "utf8"));
+  controller.abort();
+  await expect(pending).rejects.toMatchObject({
+    disposition: "cancelled",
+    outcome: "cancellation",
+  });
+
+  let alive = true;
+  for (let attempt = 0; attempt < 20 && alive; attempt += 1) {
+    try {
+      process.kill(descendantPid, 0);
+      await Bun.sleep(10);
+    } catch {
+      alive = false;
+    }
+  }
+  if (alive) {
+    try {
+      process.kill(descendantPid, "SIGKILL");
+    } catch {
+      // It exited between the final probe and cleanup.
+    }
+  }
+  expect(alive).toBe(false);
+}, 10_000);
 
 test("parent cancellation kills detached Scrapectl descendants and preserves signal exits", async () => {
   if (process.platform === "win32") return;

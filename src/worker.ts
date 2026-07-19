@@ -21,8 +21,6 @@ import {
   extractWithScrapectl,
   SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
   ScrapectlExtractionError,
-  type ScrapeProvider,
-  scrapeWithScrapectl,
   validateExtractionEnvelope,
 } from "./scrapectl";
 import { DEFAULT_LIFECYCLE_POLICY, type ResearchStore } from "./store";
@@ -67,7 +65,6 @@ export interface MaterializedDocument {
 export interface MaterializerContext {
   artifactStore: ArtifactStore;
   signal: AbortSignal;
-  scrape: ScrapeProvider;
   extract: ExtractionProvider;
 }
 
@@ -86,7 +83,6 @@ export interface WorkerOptions {
   shutdownGraceMs?: number;
   artifactStore?: ArtifactStore;
   materialize?: JobMaterializer;
-  scrape?: ScrapeProvider;
   extract?: ExtractionProvider;
   now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -786,7 +782,6 @@ export async function runWorker(
   const sleep = options.sleep ?? defaultSleep;
   const artifactStore = options.artifactStore ?? new ArtifactStore();
   const materialize = options.materialize ?? defaultMaterializer;
-  const scrape = options.scrape ?? scrapeWithScrapectl;
   const extract = options.extract ?? extractWithScrapectl;
   if (
     !Number.isFinite(pollMs) ||
@@ -891,7 +886,6 @@ export async function runWorker(
         const documents = await materialize(claim.job, intent, {
           artifactStore,
           signal: controller.signal,
-          scrape,
           extract,
         });
         if (controller.signal.aborted || lostLease) {

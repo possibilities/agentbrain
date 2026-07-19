@@ -126,12 +126,12 @@ export function buildGuide(): unknown {
       ingest:
         "Queued compatibility alias for submit; it cannot write documents directly.",
       worker:
-        "Lease due jobs, materialize outside write transactions, heartbeat, and commit fenced outcomes; --once drains work due now.",
+        "Lease due jobs, delegate URL extraction through the versioned Scrapectl envelope, materialize outside write transactions, heartbeat, and commit fenced outcomes; --once drains work due now.",
       jobs: "Content-safe ingestion ledger listing, detail, statistics, retry, cancellation, exclusion, and explicit audited Artifact reveal.",
       doctor:
         "Read-only database, Artifact-reference, lease, schema, and provider health checks.",
       "ingest-link":
-        "Read one bounded already-scraped root from stdin; generic roots do not fan out, while every child discovered from an X root uses the same Scrapectl provider adapter and traversal stops after one hop.",
+        "Read one bounded already-scraped root from stdin for the temporary compatibility adapter; it never extracts child URLs, parses Markdown links for fanout, or enqueues child jobs.",
       delete: "Delete exactly one selected document with --confirm delete.",
       tags: "Tag discovery.",
       sources: "Source-type and domain discovery.",
@@ -142,7 +142,7 @@ export function buildGuide(): unknown {
         "Read commands open SQLite with mode=ro/readonly and never initialize or migrate.",
       writes:
         "Submit and its ingest alias write only durable jobs and required Artifact snapshots; materialization is restricted to the fenced worker path. Operator transitions and explicit content reveal are audited.",
-      urls: "Admission validates HTTP(S) syntax and queues normalized intent without network work. The worker delegates all URL extraction and network policy to Scrapectl.",
+      urls: "Admission validates HTTP(S) syntax and queues normalized intent without network work. The worker delegates all URL extraction and network policy to Scrapectl through a versioned envelope and rejects unknown envelope versions.",
       local_documents:
         "Text, file, and directory bytes are captured as immutable Artifacts before acknowledgement and parsed only after a worker leases the job.",
       directories:
@@ -151,6 +151,13 @@ export function buildGuide(): unknown {
       no_raw_sql: true,
       owns_durable_ingestion_ledger: true,
       no_browser_or_network_implementation: true,
+    },
+    opt_in_smoke: {
+      command: "./scripts/smoke-scrapectl-url-ingest.sh [url]",
+      normal_checks_are_offline: true,
+      temporary_state_only: true,
+      behavior:
+        "Submits a queued URL job into a temporary database, drains it with worker --once, verifies searchability, and preserves temporary evidence on failure.",
     },
   };
 }
@@ -184,6 +191,7 @@ Document:
 4. Generic explicit ingestion and guarded deletion.
 5. The ownership boundary: Agentbrain owns durable admission, ingestion jobs, Artifact snapshots, and index writes; Scrapectl owns URL extraction/network/backend behavior.
 6. Queued and duplicate submission acknowledgements, explicit idempotency conflicts, --wait observation, and the temporary completed-link compatibility adapter.
-7. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.hermes/research-cache/research.db.
+7. The opt-in real Scrapectl smoke: temporary database, queued URL Admission, worker --once, search verification, and preserved failed evidence.
+8. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.hermes/research-cache/research.db.
 
 Keep it short enough for an AGENTS.md / CLAUDE.md / harness instruction file.`;

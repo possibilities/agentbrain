@@ -123,8 +123,9 @@ test("identical completed-link replay is unchanged and does not churn chunks", a
   research.close();
 });
 
-test("artifact failure is root-success partial and adds metadata only on failure", async () => {
+test("artifact failure is root-success partial and adds sanitized metadata only on failure", async () => {
   const research = store();
+  let attemptedPath = "";
   const result = await ingestPrescrapedLink(
     research,
     {
@@ -133,8 +134,11 @@ test("artifact failure is root-success partial and adds metadata only on failure
       save_markdown_copy: true,
     },
     {
-      writeArtifact: () => {
-        throw new Error("artifact disk failed");
+      writeArtifact: (path) => {
+        attemptedPath = path;
+        throw new Error(
+          `artifact disk failed at ${path} token=artifact-secret`,
+        );
       },
     },
   );
@@ -142,8 +146,13 @@ test("artifact failure is root-success partial and adds metadata only on failure
     success: false,
     root_success: true,
     artifact_path: null,
-    artifact_error: "artifact disk failed",
   });
+  const artifactError = result.artifact_error ?? "";
+  expect(artifactError).toContain("artifact disk failed");
+  expect(artifactError).toContain("[PRIVATE_PATH]");
+  expect(artifactError).toContain("token=[REDACTED]");
+  expect(artifactError).not.toContain(attemptedPath);
+  expect(artifactError).not.toContain("artifact-secret");
   expect(
     research.db.query("SELECT COUNT(*) AS count FROM documents").get(),
   ).toEqual({
@@ -188,4 +197,20 @@ test("external error sanitizer redacts secrets before truncating hostile tails",
   expect(sanitized).not.toContain("hunter2");
   expect(sanitized).not.toContain("never");
   expect(sanitized.length).toBeLessThanOrEqual(601);
+});
+
+test("external error sanitizer removes unsafe URLs, paths, and control characters", () => {
+  const sanitized = sanitizeExternalError(
+    "GET https://user:pass@example.com/private?token=query-secret&ok=1\n" +
+      "/Users/mike/secrets/profile.json\u0000 Cookie: sessionid=private",
+  );
+  expect(sanitized).toContain(
+    "https://[REDACTED]@example.com/private?token=[REDACTED]&ok=1",
+  );
+  expect(sanitized).toContain("[PRIVATE_PATH]");
+  expect(sanitized).toContain("Cookie: [REDACTED]");
+  expect(sanitized).not.toContain("user:pass");
+  expect(sanitized).not.toContain("query-secret");
+  expect(sanitized).not.toContain("/Users/mike");
+  expect(sanitized).not.toContain("\u0000");
 });
