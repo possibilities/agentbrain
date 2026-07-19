@@ -55,5 +55,5 @@ Deploy only when `agentbrain submit` is installed; validate with fake CLI first 
 - [ ] Agentbot documentation contains no live Linkctl dependency.
 
 ## Done summary
-
+Cut agentbot save-links over to Agentbrain submit: explicit-argv agentbrain submit --kind url --ingress agentbot --collection saved-links per URL, versioned queued/duplicate envelope parsing, loud failure on invalid/incompatible/nonzero output, updated docs and CLI help text, expanded deterministic tests.
 ## Evidence
