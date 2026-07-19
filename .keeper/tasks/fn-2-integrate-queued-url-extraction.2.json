@@ -13,5 +13,6 @@
   "target_repo": "/Users/mike/code/agentbrain",
   "tier": "xhigh",
   "title": "Execute queued URL jobs",
-  "updated_at": "2026-07-18T21:30:19.546000Z"
+  "updated_at": "2026-07-19T07:54:58.285000Z",
+  "worker_done_at": "2026-07-19T07:54:58.285000Z"
 }

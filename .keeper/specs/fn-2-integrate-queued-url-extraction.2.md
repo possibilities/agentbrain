@@ -55,5 +55,5 @@ Keep execution behind the Agentbrain worker and temporary databases until protoc
 - [ ] Production Agentbrain source remains free of HTTP, DNS, socket, browser, and provider-schema implementation.
 
 ## Done summary
-
+Added the queued URL-job worker materializer: bounded explicit-argv Scrapectl subprocess invocation, versioned extraction-envelope validation, failure-class mapping into the durable job lifecycle, idempotent artifact reuse on retry, and fenced resource/document/provenance commit.
 ## Evidence
