@@ -7,7 +7,7 @@
     "fn-1-build-durable-ingestion-core"
   ],
   "id": "fn-8-document-fts-search-chunk-selection",
-  "last_validated_at": null,
+  "last_validated_at": "2026-07-19T00:10:57.610000Z",
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -15,5 +15,5 @@
   "touched_repos": [
     "/Users/mike/code/agentbrain"
   ],
-  "updated_at": "2026-07-19T00:10:56.928000Z"
+  "updated_at": "2026-07-19T00:10:57.610000Z"
 }
