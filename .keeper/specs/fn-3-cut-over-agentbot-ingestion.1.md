@@ -47,13 +47,12 @@ No shell invocation, no network in tests, bounded one-command-per-URL behavior, 
 Deploy only when `agentbrain submit` is installed; validate with fake CLI first and real Agentbot smoke during epic rollout.
 
 ## Acceptance
-
 - [ ] Agentbot invokes only the installed Agentbrain CLI for saved-link admission.
+- [ ] The agentbrain submit argv includes --json, and the behavior parses status/metadata from the JSON envelope's data field (not top level) — the close-audit fatal found every invocation throwing on the human-output default.
 - [ ] Queued and duplicate URLs both produce successful user acknowledgement and correct metadata counts.
 - [ ] Malformed, incompatible, or failed Agentbrain output fails the behavior clearly without claiming the URL was saved.
-- [ ] Tests assert exact argv and require no live Telegram, Agentbrain database, Scrapectl, or network.
+- [ ] Tests assert exact argv (including --json) and the data-field envelope shape, and require no live Telegram, Agentbrain database, Scrapectl, or network.
 - [ ] Agentbot documentation contains no live Linkctl dependency.
-
 ## Done summary
 
 ## Evidence
