@@ -1,0 +1,14 @@
+{
+  "bundles": [],
+  "created_at": "2026-07-19T00:10:56.928000Z",
+  "depends_on": [],
+  "epic": "fn-8-document-fts-search-chunk-selection",
+  "id": "fn-8-document-fts-search-chunk-selection.1",
+  "model": "gpt-5.6-luna",
+  "priority": null,
+  "snippets": [],
+  "target_repo": "/Users/mike/code/agentbrain",
+  "tier": "low",
+  "title": "Comment search chunk-selection reliance",
+  "updated_at": "2026-07-19T00:10:56.928000Z"
+}
