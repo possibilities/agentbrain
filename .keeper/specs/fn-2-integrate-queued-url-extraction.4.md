@@ -55,5 +55,5 @@ Run the live smoke only after offline suites pass and a browser farm is availabl
 - [ ] Normal test and check commands require no Scrapectl, browserctl, credentials, or network.
 
 ## Done summary
-
+Added offline regression gates for the Scrapectl extraction envelope contract, source/network boundaries, redaction, cancellation, and artifact replay; rewrote the opt-in smoke, README, help, and guide around temporary queued URL admission drained by the worker.
 ## Evidence
