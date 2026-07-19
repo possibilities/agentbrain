@@ -53,5 +53,5 @@ Land after runtime removal so prose describes the deployed boundary rather than 
 - [ ] Boundary tests continue to prohibit Hermes research DB, queue, watcher, and index writes.
 
 ## Done summary
-
+Reconciled Hermes docs (README, architecture, references, twitter-scraper-prd) with Agentbrain-owned durable ingestion/index and Scrapectl-only extraction, marked historical watcher material as non-live, and tightened boundary tests to prohibit Hermes research DB, Agentbrain-ingestion, queue, watcher, and index writes.
 ## Evidence
