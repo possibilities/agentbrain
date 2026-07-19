@@ -103,7 +103,7 @@ function extractionEnvelope(
     },
     relations: [
       {
-        relation_type: "references",
+        relation_type: "content_link",
         target_url: "https://reference.example/item",
       },
     ],
@@ -201,6 +201,24 @@ printf '%s' '{"schema_version":"99"}'
   await expect(
     extractWithScrapectl("https://example.com/protocol"),
   ).rejects.toThrow("protocol defect");
+
+  const url = "https://example.com/unsupported-relation";
+  const unsupported = {
+    ...extractionEnvelope(url),
+    relations: [
+      {
+        relation_type: "reply",
+        target_url: "https://x.com/i/status/123",
+      },
+    ],
+  };
+  writeExecutable(
+    executable,
+    `#!/bin/sh\nprintf '%s' ${shellLiteral(JSON.stringify(unsupported))}\n`,
+  );
+  await expect(extractWithScrapectl(url)).rejects.toThrow(
+    "relation type is unsupported",
+  );
 });
 
 test("Scrapectl adapter resolves PATH and requests final Markdown with explicit argv", async () => {

@@ -26,15 +26,17 @@ import type {
   CompleteResult,
   FailResult,
   FailureClass,
+  FanoutDiscovery,
   HeartbeatResult,
   Job,
   JobState,
   LifecyclePolicy,
   RecoveredLease,
+  ResourceRelation,
   Sensitivity,
 } from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 5;
+export const RESEARCH_SCHEMA_VERSION = 6;
 
 /**
  * Default lease and retry policy. Durations are policy, not identity: callers
@@ -114,6 +116,23 @@ export interface DocumentLinkResult {
   error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface CommitUrlFanoutInput {
+  parentResourceId: number;
+  parentJobId: number;
+  sourceId?: number | null;
+  runId?: number | null;
+  ingress: string;
+  sensitivity: Sensitivity;
+  discoveries: FanoutDiscovery[];
+  observedAt?: Date;
+}
+
+export interface CommitUrlFanoutResult {
+  admitted: number;
+  suppressed: number;
+  relations: ResourceRelation[];
 }
 
 const SCHEMA_V1 = `
@@ -434,6 +453,73 @@ const MIGRATION_V5 = `
   CREATE INDEX IF NOT EXISTS idx_artifact_derivations_parent
     ON artifact_derivations(parent_artifact_id, artifact_id);
   UPDATE meta SET value='5' WHERE key='schema_version';
+`;
+
+const MIGRATION_V6 = `
+  CREATE TABLE IF NOT EXISTS resource_relations (
+    id INTEGER PRIMARY KEY,
+    from_resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    to_resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL CHECK (
+      relation_type IN ('content_link', 'article', 'quoted_post')
+    ),
+    source_job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    observed_url TEXT NOT NULL,
+    discovery_ordinal INTEGER NOT NULL CHECK (discovery_ordinal >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_job_id, relation_type, discovery_ordinal)
+  );
+  CREATE INDEX IF NOT EXISTS idx_resource_relations_from
+    ON resource_relations(from_resource_id, relation_type);
+  CREATE INDEX IF NOT EXISTS idx_resource_relations_to
+    ON resource_relations(to_resource_id, relation_type);
+
+  CREATE TABLE observations_v6 (
+    id INTEGER PRIMARY KEY,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    parent_resource_id INTEGER REFERENCES resources(id) ON DELETE CASCADE,
+    source_job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    ingress TEXT NOT NULL,
+    relation_type TEXT CHECK (
+      relation_type IS NULL OR
+      relation_type IN ('content_link', 'article', 'quoted_post')
+    ),
+    discovery_ordinal INTEGER CHECK (
+      discovery_ordinal IS NULL OR discovery_ordinal >= 0
+    ),
+    observed_locator TEXT,
+    suppressed INTEGER NOT NULL DEFAULT 0 CHECK (suppressed IN (0, 1)),
+    suppressed_reason TEXT,
+    observed_at TEXT NOT NULL,
+    CHECK (suppressed = 0 OR suppressed_reason IS NOT NULL),
+    CHECK (
+      (parent_resource_id IS NULL AND source_job_id IS NULL AND relation_type IS NULL AND discovery_ordinal IS NULL) OR
+      (parent_resource_id IS NOT NULL AND source_job_id IS NOT NULL AND relation_type IS NOT NULL AND discovery_ordinal IS NOT NULL)
+    )
+  );
+  INSERT INTO observations_v6(
+    id, resource_id, source_id, run_id, ingress, observed_locator, suppressed,
+    suppressed_reason, observed_at
+  )
+    SELECT id, resource_id, source_id, run_id, ingress, observed_locator,
+           suppressed, suppressed_reason, observed_at
+    FROM observations;
+  DROP TABLE observations;
+  ALTER TABLE observations_v6 RENAME TO observations;
+  CREATE INDEX idx_observations_resource
+    ON observations(resource_id, observed_at DESC);
+  CREATE INDEX idx_observations_parent
+    ON observations(parent_resource_id, discovery_ordinal);
+  CREATE UNIQUE INDEX idx_observations_legacy_identity
+    ON observations(run_id, resource_id, observed_locator)
+    WHERE parent_resource_id IS NULL;
+  CREATE UNIQUE INDEX idx_observations_fanout_identity
+    ON observations(source_job_id, relation_type, discovery_ordinal)
+    WHERE source_job_id IS NOT NULL;
+  UPDATE meta SET value='6' WHERE key='schema_version';
 `;
 
 const MEDIA_TYPE_PATTERN =
@@ -766,6 +852,235 @@ export class ResearchStore {
       >;
     });
     return { success: true, ...transaction.immediate() };
+  }
+
+  commitUrlFanout(input: CommitUrlFanoutInput): CommitUrlFanoutResult {
+    const timestamp = (input.observedAt ?? new Date()).toISOString();
+    const transaction = this.db.transaction((): CommitUrlFanoutResult => {
+      const parent = this.db
+        .query("SELECT id FROM resources WHERE id=?")
+        .get(input.parentResourceId);
+      if (parent === null) {
+        throw new CliError(
+          "resource_not_found",
+          `parent Resource ${input.parentResourceId} not found`,
+        );
+      }
+      const parentJob = this.db
+        .query("SELECT id FROM jobs WHERE id=?")
+        .get(input.parentJobId);
+      if (parentJob === null) {
+        throw new CliError(
+          "job_not_found",
+          `parent job ${input.parentJobId} not found`,
+        );
+      }
+
+      let admitted = 0;
+      let suppressed = 0;
+      const relations: ResourceRelation[] = [];
+      for (const discovery of input.discoveries) {
+        this.db
+          .query(
+            `INSERT INTO resources(
+               key_type, key_value, kind, sensitivity, created_at, updated_at
+             ) VALUES (?, ?, 'url', ?, ?, ?)
+             ON CONFLICT(key_type, key_value) DO UPDATE SET
+               sensitivity=CASE
+                 WHEN (SELECT rank FROM sensitivity_levels WHERE level=excluded.sensitivity) >
+                      (SELECT rank FROM sensitivity_levels WHERE level=resources.sensitivity)
+                 THEN excluded.sensitivity ELSE resources.sensitivity END,
+               updated_at=excluded.updated_at`,
+          )
+          .run(
+            discovery.resourceKey.type,
+            discovery.resourceKey.value,
+            input.sensitivity,
+            timestamp,
+            timestamp,
+          );
+        const target = this.db
+          .query("SELECT id FROM resources WHERE key_type=? AND key_value=?")
+          .get(discovery.resourceKey.type, discovery.resourceKey.value) as {
+          id: number;
+        };
+        this.db
+          .query(
+            `INSERT INTO resource_aliases(
+               resource_id, alias_type, locator, evidence,
+               first_observed_at, last_observed_at
+             ) VALUES (?, 'extractor_target_url', ?, 'extraction_relation', ?, ?)
+             ON CONFLICT(resource_id, alias_type, locator) DO UPDATE SET
+               last_observed_at=excluded.last_observed_at`,
+          )
+          .run(target.id, discovery.targetUrl, timestamp, timestamp);
+
+        const existingObservation = this.db
+          .query(
+            `SELECT id FROM observations
+             WHERE source_job_id=? AND relation_type=? AND discovery_ordinal=?`,
+          )
+          .get(
+            input.parentJobId,
+            discovery.relationType,
+            discovery.ordinal,
+          ) as { id: number } | null;
+        const isSuppressed = discovery.suppressionReason !== null;
+        if (existingObservation === null) {
+          this.db
+            .query(
+              `INSERT INTO observations(
+                 resource_id, parent_resource_id, source_job_id, source_id, run_id,
+                 ingress, relation_type, discovery_ordinal, observed_locator,
+                 suppressed, suppressed_reason, observed_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              target.id,
+              input.parentResourceId,
+              input.parentJobId,
+              input.sourceId ?? null,
+              input.runId ?? null,
+              input.ingress,
+              discovery.relationType,
+              discovery.ordinal,
+              discovery.targetUrl,
+              isSuppressed ? 1 : 0,
+              discovery.suppressionReason,
+              timestamp,
+            );
+        } else {
+          this.db
+            .query(
+              `UPDATE observations SET
+                 resource_id=?, source_id=?, run_id=?, ingress=?,
+                 observed_locator=?, suppressed=?, suppressed_reason=?, observed_at=?
+               WHERE id=?`,
+            )
+            .run(
+              target.id,
+              input.sourceId ?? null,
+              input.runId ?? null,
+              input.ingress,
+              discovery.targetUrl,
+              isSuppressed ? 1 : 0,
+              discovery.suppressionReason,
+              timestamp,
+              existingObservation.id,
+            );
+        }
+
+        if (isSuppressed) {
+          suppressed += 1;
+          continue;
+        }
+        admitted += 1;
+        this.db
+          .query(
+            `INSERT INTO resource_relations(
+               from_resource_id, to_resource_id, relation_type, source_job_id,
+               observed_url, discovery_ordinal, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(source_job_id, relation_type, discovery_ordinal)
+             DO UPDATE SET
+               to_resource_id=excluded.to_resource_id,
+               source_job_id=excluded.source_job_id,
+               observed_url=excluded.observed_url,
+               updated_at=excluded.updated_at`,
+          )
+          .run(
+            input.parentResourceId,
+            target.id,
+            discovery.relationType,
+            input.parentJobId,
+            discovery.targetUrl,
+            discovery.ordinal,
+            timestamp,
+            timestamp,
+          );
+        relations.push(
+          this.db
+            .query(
+              `SELECT * FROM resource_relations
+               WHERE source_job_id=? AND relation_type=? AND discovery_ordinal=?`,
+            )
+            .get(
+              input.parentJobId,
+              discovery.relationType,
+              discovery.ordinal,
+            ) as ResourceRelation,
+        );
+
+        let child = this.db
+          .query(
+            `SELECT id FROM jobs
+             WHERE resource_id=? AND kind='url'
+               AND state IN ('queued', 'running', 'retry_wait', 'completed')
+             ORDER BY CASE state WHEN 'completed' THEN 0 ELSE 1 END, id
+             LIMIT 1`,
+          )
+          .get(target.id) as { id: number } | null;
+        if (child === null) {
+          const existingJob = this.db
+            .query(
+              "SELECT id, intent, resource_id FROM jobs WHERE idempotency_key=?",
+            )
+            .get(discovery.childIdempotencyKey) as {
+            id: number;
+            intent: string | null;
+            resource_id: number | null;
+          } | null;
+          if (
+            existingJob !== null &&
+            (existingJob.intent !== discovery.childIntent ||
+              (existingJob.resource_id !== null &&
+                existingJob.resource_id !== target.id))
+          ) {
+            throw new CliError(
+              "idempotency_conflict",
+              "fanout child identity conflicts with existing durable intent",
+            );
+          }
+          child = this.enqueueJob({
+            idempotencyKey: discovery.childIdempotencyKey,
+            kind: "url",
+            intent: discovery.childIntent,
+            sensitivity: input.sensitivity,
+            resourceId: target.id,
+            now: new Date(timestamp),
+          }).job;
+        }
+        this.db
+          .query(
+            `UPDATE jobs SET
+               resource_id=?,
+               sensitivity=CASE
+                 WHEN (SELECT rank FROM sensitivity_levels WHERE level=?) >
+                      (SELECT rank FROM sensitivity_levels WHERE level=jobs.sensitivity)
+                 THEN ? ELSE jobs.sensitivity END,
+               updated_at=?
+             WHERE id=?`,
+          )
+          .run(
+            target.id,
+            input.sensitivity,
+            input.sensitivity,
+            timestamp,
+            child.id,
+          );
+        this.db
+          .query(
+            `UPDATE artifacts SET sensitivity=?
+             WHERE id IN (
+               SELECT artifact_id FROM resource_artifacts WHERE resource_id=?
+             ) AND (SELECT rank FROM sensitivity_levels WHERE level=?) >
+                   (SELECT rank FROM sensitivity_levels WHERE level=artifacts.sensitivity)`,
+          )
+          .run(input.sensitivity, target.id, input.sensitivity);
+      }
+      return { admitted, suppressed, relations };
+    });
+    return transaction.immediate();
   }
 
   deleteDocument(input: {
@@ -1982,6 +2297,7 @@ export class ResearchStore {
         if (version < 3) this.db.exec(MIGRATION_V3);
         if (version < 4) this.db.exec(MIGRATION_V4);
         if (version < 5) this.db.exec(MIGRATION_V5);
+        if (version < 6) this.db.exec(MIGRATION_V6);
       })
       .immediate();
   }

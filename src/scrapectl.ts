@@ -743,6 +743,13 @@ function parseMetadata(value: unknown): ExtractionMetadata {
   };
 }
 
+const EXTRACTION_RELATION_TYPES = new Set<ExtractionRelation["relation_type"]>([
+  "references",
+  "content_link",
+  "article",
+  "quoted_post",
+]);
+
 function parseRelations(value: unknown, maximum: number): ExtractionRelation[] {
   if (!Array.isArray(value) || value.length > maximum) {
     return protocolDefect("extraction relations are invalid");
@@ -753,11 +760,17 @@ function parseRelations(value: unknown, maximum: number): ExtractionRelation[] {
       ["relation_type", "target_url"],
       "extraction relation",
     );
-    if (record.relation_type !== "references") {
+    if (
+      typeof record.relation_type !== "string" ||
+      !EXTRACTION_RELATION_TYPES.has(
+        record.relation_type as ExtractionRelation["relation_type"],
+      )
+    ) {
       return protocolDefect("extraction relation type is unsupported");
     }
     return {
-      relation_type: "references" as const,
+      relation_type:
+        record.relation_type as ExtractionRelation["relation_type"],
       target_url: extractionUrl(record.target_url, "relation target URL"),
     };
   });

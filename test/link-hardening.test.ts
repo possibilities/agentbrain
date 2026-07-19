@@ -2,7 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ingestPrescrapedLink, type ScrapedLink } from "../src/link-ingest";
+import {
+  ingestPrescrapedLink,
+  planQueuedUrlFanout,
+  type ScrapedLink,
+} from "../src/link-ingest";
 import { sanitizeExternalError } from "../src/sanitize";
 import { ResearchStore } from "../src/store";
 
@@ -29,7 +33,7 @@ function xScrape(requested: string, reported = requested): ScrapedLink {
   };
 }
 
-test("external and X children use the same Scrapectl scrape provider", async () => {
+test("the completed-link compatibility adapter never performs child extraction", async () => {
   const research = store();
   const routes: string[] = [];
   const result = await ingestPrescrapedLink(
@@ -51,11 +55,8 @@ test("external and X children use the same Scrapectl scrape provider", async () 
       },
     },
   );
-  expect(result.success).toBe(true);
-  expect(routes).toEqual([
-    "https://example.com/story",
-    "https://twitter.com/child/status/2",
-  ]);
+  expect(result).toMatchObject({ success: true, linked_count: 0 });
+  expect(routes).toEqual([]);
   research.close();
 });
 
@@ -86,29 +87,19 @@ test("generic completed roots never trigger child scraping", async () => {
   research.close();
 });
 
-test("child identity remains the requested canonical URL instead of provider-reported metadata", async () => {
-  const research = store();
-  const result = await ingestPrescrapedLink(
-    research,
+test("queued child identity uses the requested canonical provider identity", () => {
+  const plan = planQueuedUrlFanout("https://x.com/root/status/1", [
     {
-      url: "https://x.com/root/status/1",
-      markdown: "root",
-      structured: { links: [{ url: "https://x.com/child/status/2" }] },
+      relation_type: "references",
+      target_url: "https://twitter.com/child/status/2?ref=timeline",
     },
-    {
-      scrape: async (url) => xScrape(url, "https://x.com/attacker/status/3"),
-    },
-  );
-  expect(result).toMatchObject({
-    success: true,
-    root_success: true,
-    linked_failed_count: 0,
+  ]);
+  expect(plan.discoveries[0]).toMatchObject({
+    canonicalUrl: "https://x.com/i/status/2",
+    resourceKey: { type: "x:status", value: "2" },
+    relationType: "content_link",
+    suppressionReason: null,
   });
-  expect(result.linked_results[0].relation).toMatchObject({
-    status: "success",
-    resolved_url: "https://x.com/i/status/2",
-  });
-  research.close();
 });
 
 test("identical completed-link replay is unchanged and does not churn chunks", async () => {
@@ -161,8 +152,9 @@ test("artifact failure is root-success partial and adds metadata only on failure
   research.close();
 });
 
-test("child failures persist and emit only sanitized bounded errors", async () => {
+test("legacy child provider failures cannot make root completion partial", async () => {
   const research = store();
+  let calls = 0;
   const result = await ingestPrescrapedLink(
     research,
     {
@@ -172,18 +164,18 @@ test("child failures persist and emit only sanitized bounded errors", async () =
     },
     {
       scrape: async () => {
-        throw new Error(
-          `Authorization: Bearer persist.secret token=db-secret ${"z".repeat(1000)} secret=tail-secret`,
-        );
+        calls += 1;
+        throw new Error("must not synchronously extract a child");
       },
     },
   );
-  const failure = result.linked_results[0];
-  expect(failure.error).not.toContain("persist.secret");
-  expect(failure.error).not.toContain("db-secret");
-  expect(failure.error).not.toContain("tail-secret");
-  expect(failure.error?.length ?? 0).toBeLessThanOrEqual(601);
-  expect(failure.relation).toMatchObject({ error: failure.error });
+  expect(result).toMatchObject({
+    success: true,
+    root_success: true,
+    linked_count: 0,
+    linked_failed_count: 0,
+  });
+  expect(calls).toBe(0);
   research.close();
 });
 

@@ -14,6 +14,7 @@ import {
   inferTitleFromSource,
   isProbablyBinary,
 } from "./extract";
+import { planQueuedUrlFanout, QUEUED_FANOUT_JOB_PREFIX } from "./link-ingest";
 import { sanitizeExternalError } from "./sanitize";
 import {
   type ExtractionProvider,
@@ -27,6 +28,7 @@ import {
 import { DEFAULT_LIFECYCLE_POLICY, type ResearchStore } from "./store";
 import { cleanText } from "./text";
 import type {
+  ExtractionFanoutPlan,
   ExtractionSuccess,
   FailureClass,
   Job,
@@ -59,6 +61,7 @@ export interface MaterializedDocument {
     storagePath: string;
     provenance: Record<string, unknown>;
   };
+  fanout?: ExtractionFanoutPlan;
 }
 
 export interface MaterializerContext {
@@ -348,6 +351,7 @@ function promoteExtraction(
 }
 
 function urlDocument(
+  job: Job,
   url: string,
   extraction: ExtractionSuccess,
   record: PromotedUrlExtraction,
@@ -405,6 +409,9 @@ function urlDocument(
         metadata: record.metadata,
       },
     },
+    fanout: planQueuedUrlFanout(url, extraction.relations, {
+      oneHopChild: job.idempotency_key.startsWith(QUEUED_FANOUT_JOB_PREFIX),
+    }),
   };
 }
 
@@ -463,7 +470,7 @@ export const defaultMaterializer: JobMaterializer = async (
       record = cached.record;
     }
     if (context.signal.aborted) throw abortError();
-    return [urlDocument(url, extraction, record, intent)];
+    return [urlDocument(job, url, extraction, record, intent)];
   }
 
   const descriptors =
@@ -538,9 +545,10 @@ function applyDocuments(
   job: Job,
   intent: DurableSubmissionIntent,
   documents: MaterializedDocument[],
+  observedAt: Date,
 ): number | null {
   let firstResourceId: number | null = null;
-  const timestamp = new Date().toISOString();
+  const timestamp = observedAt.toISOString();
   for (const [index, document] of documents.entries()) {
     const indexed = store.upsertDocument({
       sourceType: document.sourceType,
@@ -578,8 +586,13 @@ function applyDocuments(
         timestamp,
       );
     const resource = store.db
-      .query("SELECT id FROM resources WHERE key_type=? AND key_value=?")
-      .get(resourceKey.type, resourceKey.value) as { id: number };
+      .query(
+        "SELECT id, sensitivity FROM resources WHERE key_type=? AND key_value=?",
+      )
+      .get(resourceKey.type, resourceKey.value) as {
+      id: number;
+      sensitivity: Sensitivity;
+    };
     if (firstResourceId === null) firstResourceId = resource.id;
     const aliases = [
       {
@@ -656,7 +669,7 @@ function applyDocuments(
             document.artifact.mediaType,
             document.artifact.byteSize,
             document.artifact.artifactRole,
-            job.sensitivity,
+            resource.sensitivity,
             document.artifact.storagePath,
             timestamp,
           );
@@ -664,7 +677,7 @@ function applyDocuments(
           id: Number(inserted.lastInsertRowid),
           media_type: document.artifact.mediaType,
           byte_size: document.artifact.byteSize,
-          sensitivity: job.sensitivity,
+          sensitivity: resource.sensitivity,
           storage_path: document.artifact.storagePath,
         };
       } else {
@@ -678,12 +691,12 @@ function applyDocuments(
           );
         }
         if (
-          SENSITIVITY_RANK[job.sensitivity] >
+          SENSITIVITY_RANK[resource.sensitivity] >
           SENSITIVITY_RANK[artifact.sensitivity]
         ) {
           store.db
             .query("UPDATE artifacts SET sensitivity=? WHERE id=?")
-            .run(job.sensitivity, artifact.id);
+            .run(resource.sensitivity, artifact.id);
         }
       }
       store.db
@@ -729,13 +742,25 @@ function applyDocuments(
           `INSERT OR IGNORE INTO collections(slug, title, sensitivity, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?)`,
         )
-        .run(slug, slug, job.sensitivity, timestamp, timestamp);
+        .run(slug, slug, resource.sensitivity, timestamp, timestamp);
       store.db
         .query(
           `INSERT OR IGNORE INTO collection_memberships(collection_id, resource_id, added_at)
            SELECT id, ?, ? FROM collections WHERE slug=?`,
         )
         .run(resource.id, timestamp, slug);
+    }
+    if (document.fanout !== undefined) {
+      store.commitUrlFanout({
+        parentResourceId: resource.id,
+        parentJobId: job.id,
+        sourceId: job.source_id,
+        runId: job.run_id,
+        ingress: intent.ingress,
+        sensitivity: resource.sensitivity,
+        discoveries: document.fanout.discoveries,
+        observedAt,
+      });
     }
   }
   if (firstResourceId !== null) {
@@ -874,11 +899,12 @@ export async function runWorker(
           continue;
         }
         completing = true;
+        const completionTime = now();
         const completed = store.completeJob({
           fencingToken: claim.fencing_token,
-          now: now(),
+          now: completionTime,
           apply: () => {
-            applyDocuments(store, claim.job, intent, documents);
+            applyDocuments(store, claim.job, intent, documents, completionTime);
           },
         });
         if (completed.ok) {

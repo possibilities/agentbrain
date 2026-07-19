@@ -311,7 +311,7 @@ test("legacy help exits zero without stdin or database initialization", () => {
   expect(existsSync(state.db)).toBe(false);
 });
 
-test("native ingest-link exits 2 for a root-success child partial", () => {
+test("native ingest-link completes its root without synchronous child work", () => {
   const state = temp();
   const partial = run("agentbrain", ["ingest-link", "--json"], {
     db: state.db,
@@ -323,18 +323,19 @@ test("native ingest-link exits 2 for a root-success child partial", () => {
       source: "agentbot",
     },
   });
-  expect(partial.exitCode).toBe(2);
+  expect(partial.exitCode).toBe(0);
   expect(JSON.parse(decode(partial.stdout))).toMatchObject({
     ok: true,
     data: {
-      success: false,
+      success: true,
       root_success: true,
-      linked_failed_count: 1,
+      linked_count: 0,
+      linked_failed_count: 0,
     },
   });
 });
 
-test("legacy adapter exits 1 on invalid input and 2 after root-first child failure", () => {
+test("legacy adapter rejects invalid input and never synchronously extracts children", () => {
   const invalidState = temp();
   const invalid = run("legacy", [], {
     db: invalidState.db,
@@ -359,17 +360,15 @@ test("legacy adapter exits 1 on invalid input and 2 after root-first child failu
       source: "agentbot",
     },
   });
-  expect(partial.exitCode).toBe(2);
+  expect(partial.exitCode).toBe(0);
   const payload = JSON.parse(decode(partial.stdout));
   expect(payload).toMatchObject({
-    success: false,
+    success: true,
     root_success: true,
-    linked_failed_count: 1,
+    linked_count: 0,
+    linked_failed_count: 0,
   });
-  expect(payload.linked_results[0]).toMatchObject({
-    success: false,
-    relation: { status: "failed" },
-  });
+  expect(payload.linked_results).toEqual([]);
 });
 
 test("legacy artifact failure exits 2 with root committed and optional metadata", () => {
