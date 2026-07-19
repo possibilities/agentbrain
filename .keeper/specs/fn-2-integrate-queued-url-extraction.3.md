@@ -55,5 +55,5 @@ Preserve Linkctl-origin fixture labels as historical evidence while updating the
 - [ ] Generic non-X roots do not gain implicit Markdown-link crawling.
 
 ## Done summary
-
+Replaced synchronous X child extraction with transactional parent completion: commitUrlFanout records typed relations, observations, and durable suppression reasons for up to 25 eligible one-hop children atomically with the parent, without waiting on child extraction.
 ## Evidence
