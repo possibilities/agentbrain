@@ -1,6 +1,10 @@
 import { hostname } from "node:os";
 import type { DurableSubmissionIntent } from "./admission";
-import { ArtifactStore } from "./artifacts";
+import {
+  ArtifactStore,
+  ArtifactStoreError,
+  isSafeArtifactStoragePath,
+} from "./artifacts";
 import {
   decodeBytes,
   extractDocxBytes,
@@ -10,12 +14,32 @@ import {
   inferTitleFromSource,
   isProbablyBinary,
 } from "./extract";
+import { planQueuedUrlFanout, QUEUED_FANOUT_JOB_PREFIX } from "./link-ingest";
 import { sanitizeExternalError } from "./sanitize";
-import { type ScrapeProvider, scrapeWithScrapectl } from "./scrapectl";
+import {
+  type ExtractionProvider,
+  extractWithScrapectl,
+  SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+  ScrapectlExtractionError,
+  validateExtractionEnvelope,
+} from "./scrapectl";
 import { DEFAULT_LIFECYCLE_POLICY, type ResearchStore } from "./store";
 import { cleanText } from "./text";
-import type { FailureClass, Job, LifecyclePolicy } from "./types";
-import { sourceTypeForUrl } from "./url";
+import type {
+  ExtractionFanoutPlan,
+  ExtractionSuccess,
+  FailureClass,
+  Job,
+  LifecyclePolicy,
+  PromotedUrlExtraction,
+  Sensitivity,
+} from "./types";
+import {
+  canonicalizeSource,
+  normalizedWebUrl,
+  xArticleId,
+  xStatusId,
+} from "./url";
 
 export interface MaterializedDocument {
   sourceType: string;
@@ -25,12 +49,23 @@ export interface MaterializedDocument {
   tags?: string[];
   notes?: string;
   artifactDigest?: string;
+  resourceKey?: { type: string; value: string };
+  aliases?: Array<{ type: string; locator: string; evidence: string }>;
+  artifact?: {
+    contentDigest: string;
+    byteSize: number;
+    mediaType: string;
+    artifactRole: string;
+    storagePath: string;
+    provenance: Record<string, unknown>;
+  };
+  fanout?: ExtractionFanoutPlan;
 }
 
 export interface MaterializerContext {
   artifactStore: ArtifactStore;
   signal: AbortSignal;
-  scrape: ScrapeProvider;
+  extract: ExtractionProvider;
 }
 
 export type JobMaterializer = (
@@ -48,7 +83,7 @@ export interface WorkerOptions {
   shutdownGraceMs?: number;
   artifactStore?: ArtifactStore;
   materialize?: JobMaterializer;
-  scrape?: ScrapeProvider;
+  extract?: ExtractionProvider;
   now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
   policy?: Partial<LifecyclePolicy>;
@@ -161,6 +196,221 @@ function requireArtifact(value: unknown): IntentArtifact {
   return artifact as unknown as IntentArtifact;
 }
 
+function cacheRecord(value: unknown): PromotedUrlExtraction {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ScrapectlExtractionError(
+      "scrapectl protocol defect: cached extraction record is invalid",
+      "permanent",
+      "protocol",
+    );
+  }
+  const record = value as Record<string, unknown>;
+  const keys = [
+    "record_version",
+    "requested_url",
+    "final_url",
+    "extractor",
+    "artifact",
+    "metadata",
+    "relations",
+  ].sort();
+  if (
+    Object.keys(record)
+      .sort()
+      .some((key, index) => key !== keys[index]) ||
+    Object.keys(record).length !== keys.length ||
+    record.record_version !== 1 ||
+    record.artifact === null ||
+    typeof record.artifact !== "object" ||
+    Array.isArray(record.artifact)
+  ) {
+    throw new ScrapectlExtractionError(
+      "scrapectl protocol defect: cached extraction record is invalid",
+      "permanent",
+      "protocol",
+    );
+  }
+  const artifact = record.artifact as Record<string, unknown>;
+  const artifactKeys = [
+    "artifact_type",
+    "media_type",
+    "encoding",
+    "size_bytes",
+    "sha256",
+    "artifact_role",
+    "storage_path",
+  ].sort();
+  if (
+    Object.keys(artifact)
+      .sort()
+      .some((key, index) => key !== artifactKeys[index]) ||
+    Object.keys(artifact).length !== artifactKeys.length ||
+    artifact.artifact_role !== "extracted_markdown" ||
+    typeof artifact.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
+    typeof artifact.storage_path !== "string" ||
+    !isSafeArtifactStoragePath(artifact.storage_path, artifact.sha256)
+  ) {
+    throw new ScrapectlExtractionError(
+      "scrapectl protocol defect: cached extraction Artifact is invalid",
+      "permanent",
+      "protocol",
+    );
+  }
+  return record as unknown as PromotedUrlExtraction;
+}
+
+function extractionFromCache(
+  artifacts: ArtifactStore,
+  jobId: number,
+  url: string,
+  maxContentBytes: number,
+): { extraction: ExtractionSuccess; record: PromotedUrlExtraction } | null {
+  const cached = artifacts.readUrlExtraction(jobId);
+  if (cached === null) return null;
+  const record = cacheRecord(cached);
+  const stored = artifacts.verify(record.artifact.sha256);
+  if (
+    stored.byteSize !== record.artifact.size_bytes ||
+    stored.storagePath !== record.artifact.storage_path
+  ) {
+    throw new ArtifactStoreError(
+      "artifact_corrupt",
+      "cached URL extraction Artifact metadata does not match its bytes",
+    );
+  }
+  const content = artifacts.readUtf8(record.artifact.sha256, maxContentBytes);
+  const envelope = validateExtractionEnvelope(
+    {
+      schema_version: "1",
+      status: "success",
+      requested_url: record.requested_url,
+      final_url: record.final_url,
+      extractor: record.extractor,
+      artifacts: [
+        {
+          artifact_type: record.artifact.artifact_type,
+          media_type: record.artifact.media_type,
+          encoding: record.artifact.encoding,
+          content,
+          size_bytes: record.artifact.size_bytes,
+          sha256: record.artifact.sha256,
+        },
+      ],
+      metadata: record.metadata,
+      relations: record.relations,
+      failure: null,
+    },
+    url,
+    { maxContentBytes },
+  );
+  if (envelope.status !== "success") {
+    throw new ScrapectlExtractionError(
+      "scrapectl protocol defect: cached extraction is not successful",
+      "permanent",
+      "protocol",
+    );
+  }
+  return { extraction: envelope, record };
+}
+
+function promoteExtraction(
+  artifacts: ArtifactStore,
+  jobId: number,
+  extraction: ExtractionSuccess,
+  maxContentBytes: number,
+): PromotedUrlExtraction {
+  const descriptor = extraction.artifacts[0];
+  const stored = artifacts.captureBytes(descriptor.content, {
+    expectedDigest: descriptor.sha256,
+    maxBytes: maxContentBytes,
+  });
+  const record: PromotedUrlExtraction = {
+    record_version: 1,
+    requested_url: extraction.requested_url,
+    final_url: extraction.final_url,
+    extractor: extraction.extractor,
+    artifact: {
+      artifact_type: descriptor.artifact_type,
+      media_type: descriptor.media_type,
+      encoding: descriptor.encoding,
+      size_bytes: descriptor.size_bytes,
+      sha256: descriptor.sha256,
+      artifact_role: "extracted_markdown",
+      storage_path: stored.storagePath,
+    },
+    metadata: extraction.metadata,
+    relations: extraction.relations,
+  };
+  artifacts.writeUrlExtraction(jobId, record);
+  return record;
+}
+
+function urlDocument(
+  job: Job,
+  url: string,
+  extraction: ExtractionSuccess,
+  record: PromotedUrlExtraction,
+  intent: DurableSubmissionIntent,
+): MaterializedDocument {
+  const [sourceType, sourceUri] = canonicalizeSource(url);
+  const statusId = xStatusId(url);
+  const articleId = xArticleId(url);
+  const resourceKey = statusId
+    ? { type: "x:status", value: statusId }
+    : articleId
+      ? { type: "x:article", value: articleId }
+      : { type: "url", value: normalizedWebUrl(url) };
+  const aliases = [
+    {
+      type: "submitted_url",
+      locator: normalizedWebUrl(url),
+      evidence: "intent",
+    },
+    {
+      type: "extractor_requested_url",
+      locator: extraction.requested_url,
+      evidence: "scrapectl",
+    },
+    {
+      type: "redirect_resolved_url",
+      locator: extraction.final_url,
+      evidence: "scrapectl",
+    },
+  ];
+  return {
+    sourceType,
+    sourceUri,
+    title:
+      intent.options.title ??
+      (extraction.metadata.title ||
+        titleFromMarkdown(sourceUri, extraction.artifacts[0].content)),
+    content: extraction.artifacts[0].content,
+    tags: intent.options.tags,
+    notes: intent.options.notes,
+    resourceKey,
+    aliases,
+    artifactDigest: record.artifact.sha256,
+    artifact: {
+      contentDigest: record.artifact.sha256,
+      byteSize: record.artifact.size_bytes,
+      mediaType: record.artifact.media_type,
+      artifactRole: record.artifact.artifact_role,
+      storagePath: record.artifact.storage_path,
+      provenance: {
+        schema_version: "1",
+        requested_url: record.requested_url,
+        final_url: record.final_url,
+        extractor: record.extractor,
+        metadata: record.metadata,
+      },
+    },
+    fanout: planQueuedUrlFanout(url, extraction.relations, {
+      oneHopChild: job.idempotency_key.startsWith(QUEUED_FANOUT_JOB_PREFIX),
+    }),
+  };
+}
+
 export const defaultMaterializer: JobMaterializer = async (
   job,
   intent,
@@ -176,21 +426,47 @@ export const defaultMaterializer: JobMaterializer = async (
     if (!("url" in intent.payload))
       throw new Error("URL intent payload is missing");
     const url = intent.payload.url.url;
-    const scraped = await context.scrape(url, {
-      maxMarkdownBytes: options.max_bytes,
-      maxMarkdownCodePoints: options.max_bytes,
-      retry: { maxAttempts: 1, writeDiagnostic: () => {} },
-    });
+    const maxContentBytes = Math.min(
+      options.max_bytes,
+      SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+    );
+    const cached = extractionFromCache(
+      context.artifactStore,
+      job.id,
+      url,
+      maxContentBytes,
+    );
+    let extraction: ExtractionSuccess;
+    let record: PromotedUrlExtraction;
+    if (cached === null) {
+      extraction = await context.extract(url, {
+        maxContentBytes,
+        signal: context.signal,
+      });
+      if (context.signal.aborted) throw abortError();
+      const validated = validateExtractionEnvelope(extraction, url, {
+        maxContentBytes,
+      });
+      if (validated.status !== "success") {
+        throw new ScrapectlExtractionError(
+          "scrapectl protocol defect: extraction provider returned a failure value",
+          "permanent",
+          "protocol",
+        );
+      }
+      extraction = validated;
+      record = promoteExtraction(
+        context.artifactStore,
+        job.id,
+        extraction,
+        maxContentBytes,
+      );
+    } else {
+      extraction = cached.extraction;
+      record = cached.record;
+    }
     if (context.signal.aborted) throw abortError();
-    return [
-      {
-        sourceType: sourceTypeForUrl(url),
-        sourceUri: url,
-        title: options.title ?? titleFromMarkdown(url, scraped.markdown),
-        content: scraped.markdown,
-        ...common,
-      },
-    ];
+    return [urlDocument(job, url, extraction, record, intent)];
   }
 
   const descriptors =
@@ -228,6 +504,10 @@ export const defaultMaterializer: JobMaterializer = async (
 };
 
 function classifyFailure(error: unknown): FailureClass {
+  if (error instanceof ScrapectlExtractionError) {
+    return error.disposition === "cancelled" ? "permanent" : error.disposition;
+  }
+  if (error instanceof ArtifactStoreError) return "infra";
   const message = (
     error instanceof Error ? error.message : String(error)
   ).toLowerCase();
@@ -249,14 +529,22 @@ function classifyFailure(error: unknown): FailureClass {
   return "permanent";
 }
 
+const SENSITIVITY_RANK: Record<Sensitivity, number> = {
+  public: 0,
+  normal: 1,
+  sensitive: 2,
+  private: 3,
+};
+
 function applyDocuments(
   store: ResearchStore,
   job: Job,
   intent: DurableSubmissionIntent,
   documents: MaterializedDocument[],
+  observedAt: Date,
 ): number | null {
   let firstResourceId: number | null = null;
-  const timestamp = new Date().toISOString();
+  const timestamp = observedAt.toISOString();
   for (const [index, document] of documents.entries()) {
     const indexed = store.upsertDocument({
       sourceType: document.sourceType,
@@ -267,18 +555,26 @@ function applyDocuments(
       notes: document.notes,
       force: intent.options.force,
     });
-    const keyValue = `${job.id}:${index + 1}`;
+    const resourceKey = document.resourceKey ?? {
+      type: "ingestion_job_item",
+      value: `${job.id}:${index + 1}`,
+    };
     store.db
       .query(
         `INSERT INTO resources(
            key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
-         ) VALUES ('ingestion_job_item', ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(key_type, key_value) DO UPDATE SET
-           document_id=excluded.document_id, sensitivity=excluded.sensitivity,
+           document_id=excluded.document_id,
+           sensitivity=CASE
+             WHEN (SELECT rank FROM sensitivity_levels WHERE level=excluded.sensitivity) >
+                  (SELECT rank FROM sensitivity_levels WHERE level=resources.sensitivity)
+             THEN excluded.sensitivity ELSE resources.sensitivity END,
            updated_at=excluded.updated_at`,
       )
       .run(
-        keyValue,
+        resourceKey.type,
+        resourceKey.value,
         job.kind,
         job.sensitivity,
         indexed.document_id,
@@ -287,26 +583,141 @@ function applyDocuments(
       );
     const resource = store.db
       .query(
-        "SELECT id FROM resources WHERE key_type='ingestion_job_item' AND key_value=?",
+        "SELECT id, sensitivity FROM resources WHERE key_type=? AND key_value=?",
       )
-      .get(keyValue) as { id: number };
+      .get(resourceKey.type, resourceKey.value) as {
+      id: number;
+      sensitivity: Sensitivity;
+    };
     if (firstResourceId === null) firstResourceId = resource.id;
+    const aliases = [
+      {
+        type: "materialized_uri",
+        locator: document.sourceUri,
+        evidence: "worker",
+      },
+      ...(document.aliases ?? []),
+    ];
+    const seenAliases = new Set<string>();
+    for (const alias of aliases) {
+      const key = `${alias.type}\u0000${alias.locator}`;
+      if (seenAliases.has(key)) continue;
+      seenAliases.add(key);
+      store.db
+        .query(
+          `INSERT INTO resource_aliases(
+             resource_id, alias_type, locator, evidence, first_observed_at, last_observed_at
+           ) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(resource_id, alias_type, locator) DO UPDATE SET
+             evidence=excluded.evidence,
+             last_observed_at=excluded.last_observed_at`,
+        )
+        .run(
+          resource.id,
+          alias.type,
+          alias.locator,
+          alias.evidence,
+          timestamp,
+          timestamp,
+        );
+    }
     store.db
       .query(
-        `INSERT INTO resource_aliases(
-           resource_id, alias_type, locator, evidence, first_observed_at, last_observed_at
-         ) VALUES (?, 'materialized_uri', ?, 'worker', ?, ?)
-         ON CONFLICT(resource_id, alias_type, locator) DO UPDATE SET
-           last_observed_at=excluded.last_observed_at`,
+        `INSERT INTO provenance(
+           resource_id, evidence_type, source_id, run_id, ingress, raw_metadata,
+           observed_at
+         ) VALUES (?, 'ingestion_materialized', ?, ?, ?, ?, ?)`,
       )
-      .run(resource.id, document.sourceUri, timestamp, timestamp);
-    store.db
-      .query(
-        `INSERT INTO provenance(resource_id, evidence_type, ingress, observed_at)
-         VALUES (?, 'ingestion_materialized', ?, ?)`,
-      )
-      .run(resource.id, intent.ingress, timestamp);
-    if (document.artifactDigest !== undefined) {
+      .run(
+        resource.id,
+        job.source_id,
+        job.run_id,
+        intent.ingress,
+        JSON.stringify({ job_id: job.id, item: index + 1 }),
+        timestamp,
+      );
+    if (document.artifact !== undefined) {
+      let artifact = store.db
+        .query(
+          `SELECT id, media_type, byte_size, sensitivity, storage_path
+           FROM artifacts WHERE content_hash=? AND artifact_role=?`,
+        )
+        .get(
+          document.artifact.contentDigest,
+          document.artifact.artifactRole,
+        ) as {
+        id: number;
+        media_type: string;
+        byte_size: number;
+        sensitivity: Sensitivity;
+        storage_path: string | null;
+      } | null;
+      if (artifact === null) {
+        const inserted = store.db
+          .query(
+            `INSERT INTO artifacts(
+               content_hash, media_type, byte_size, artifact_role, sensitivity,
+               storage_path, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            document.artifact.contentDigest,
+            document.artifact.mediaType,
+            document.artifact.byteSize,
+            document.artifact.artifactRole,
+            resource.sensitivity,
+            document.artifact.storagePath,
+            timestamp,
+          );
+        artifact = {
+          id: Number(inserted.lastInsertRowid),
+          media_type: document.artifact.mediaType,
+          byte_size: document.artifact.byteSize,
+          sensitivity: resource.sensitivity,
+          storage_path: document.artifact.storagePath,
+        };
+      } else {
+        if (
+          artifact.media_type !== document.artifact.mediaType ||
+          artifact.byte_size !== document.artifact.byteSize ||
+          artifact.storage_path !== document.artifact.storagePath
+        ) {
+          throw new Error(
+            "extracted Artifact metadata conflicts with existing content",
+          );
+        }
+        if (
+          SENSITIVITY_RANK[resource.sensitivity] >
+          SENSITIVITY_RANK[artifact.sensitivity]
+        ) {
+          store.db
+            .query("UPDATE artifacts SET sensitivity=? WHERE id=?")
+            .run(resource.sensitivity, artifact.id);
+        }
+      }
+      store.db
+        .query(
+          `INSERT OR IGNORE INTO resource_artifacts(resource_id, artifact_id, observed_at)
+           VALUES (?, ?, ?)`,
+        )
+        .run(resource.id, artifact.id, timestamp);
+      store.db
+        .query(
+          `INSERT INTO provenance(
+             resource_id, evidence_type, source_id, run_id, artifact_id, ingress,
+             raw_metadata, observed_at
+           ) VALUES (?, 'url_extraction', ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          resource.id,
+          job.source_id,
+          job.run_id,
+          artifact.id,
+          intent.ingress,
+          JSON.stringify({ job_id: job.id, ...document.artifact.provenance }),
+          timestamp,
+        );
+    } else if (document.artifactDigest !== undefined) {
       const artifact = store.db
         .query(
           "SELECT id FROM artifacts WHERE content_hash=? AND artifact_role='original'",
@@ -327,13 +738,25 @@ function applyDocuments(
           `INSERT OR IGNORE INTO collections(slug, title, sensitivity, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?)`,
         )
-        .run(slug, slug, job.sensitivity, timestamp, timestamp);
+        .run(slug, slug, resource.sensitivity, timestamp, timestamp);
       store.db
         .query(
           `INSERT OR IGNORE INTO collection_memberships(collection_id, resource_id, added_at)
            SELECT id, ?, ? FROM collections WHERE slug=?`,
         )
         .run(resource.id, timestamp, slug);
+    }
+    if (document.fanout !== undefined) {
+      store.commitUrlFanout({
+        parentResourceId: resource.id,
+        parentJobId: job.id,
+        sourceId: job.source_id,
+        runId: job.run_id,
+        ingress: intent.ingress,
+        sensitivity: resource.sensitivity,
+        discoveries: document.fanout.discoveries,
+        observedAt,
+      });
     }
   }
   if (firstResourceId !== null) {
@@ -359,7 +782,7 @@ export async function runWorker(
   const sleep = options.sleep ?? defaultSleep;
   const artifactStore = options.artifactStore ?? new ArtifactStore();
   const materialize = options.materialize ?? defaultMaterializer;
-  const scrape = options.scrape ?? scrapeWithScrapectl;
+  const extract = options.extract ?? extractWithScrapectl;
   if (
     !Number.isFinite(pollMs) ||
     pollMs < 1 ||
@@ -457,22 +880,25 @@ export async function runWorker(
           controller.abort();
         }
       }, heartbeatMs);
+      let completing = false;
       try {
         const intent = parseIntent(claim.job);
         const documents = await materialize(claim.job, intent, {
           artifactStore,
           signal: controller.signal,
-          scrape,
+          extract,
         });
         if (controller.signal.aborted || lostLease) {
           result.fenced += 1;
           continue;
         }
+        completing = true;
+        const completionTime = now();
         const completed = store.completeJob({
           fencingToken: claim.fencing_token,
-          now: now(),
+          now: completionTime,
           apply: () => {
-            applyDocuments(store, claim.job, intent, documents);
+            applyDocuments(store, claim.job, intent, documents, completionTime);
           },
         });
         if (completed.ok) {
@@ -485,9 +911,33 @@ export async function runWorker(
           result.fenced += 1;
           continue;
         }
+        if (
+          error instanceof ScrapectlExtractionError &&
+          error.disposition === "cancelled"
+        ) {
+          const guard = store.heartbeat({
+            fencingToken: claim.fencing_token,
+            now: now(),
+            leaseMs,
+            policy: options.policy,
+          });
+          if (!guard.ok) {
+            result.fenced += 1;
+            continue;
+          }
+          const cancelled = store.cancelJob({
+            jobId: claim.job.id,
+            actor: workerId,
+            reason: sanitizeExternalError(error),
+            now: now(),
+          });
+          if (cancelled.ok) result.failed += 1;
+          else result.fenced += 1;
+          continue;
+        }
         const failed = store.failAttempt({
           fencingToken: claim.fencing_token,
-          failureClass: classifyFailure(error),
+          failureClass: completing ? "infra" : classifyFailure(error),
           summary: sanitizeExternalError(error),
           now: now(),
           policy: options.policy,

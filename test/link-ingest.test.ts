@@ -1,42 +1,112 @@
-import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  canonicalizeSource,
-  extractOutboundLinks,
-  ingestPrescrapedLink,
-  LINKED_FAN_OUT_LIMIT,
-  type ScrapedLink,
-} from "../src/link-ingest";
+import type { DurableSubmissionIntent } from "../src/admission";
+import { ArtifactStore } from "../src/artifacts";
+import { canonicalizeSource, LINKED_FAN_OUT_LIMIT } from "../src/link-ingest";
+import { ScrapectlExtractionError } from "../src/scrapectl";
 import { ResearchStore } from "../src/store";
+import type { ExtractionRelation, ExtractionSuccess, Job } from "../src/types";
+import { runWorker } from "../src/worker";
 
-const dirs: string[] = [];
+const roots: string[] = [];
+const T0 = new Date("2026-07-19T00:00:00.000Z");
+
+function at(milliseconds: number): Date {
+  return new Date(T0.getTime() + milliseconds);
+}
+
 afterEach(() => {
-  for (const dir of dirs.splice(0))
-    rmSync(dir, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true });
 });
 
-function setup(): { store: ResearchStore; path: string } {
-  const dir = mkdtempSync(join(tmpdir(), "agentbrain-link-"));
-  dirs.push(dir);
-  const path = join(dir, "research.db");
-  return { store: new ResearchStore(path), path };
-}
-
-async function fixture(name: string): Promise<Record<string, unknown>> {
-  return Bun.file(join(import.meta.dir, "fixtures", name)).json();
-}
-
-function scraped(url: string): ScrapedLink {
+function setup(): {
+  store: ResearchStore;
+  artifacts: ArtifactStore;
+} {
+  const root = mkdtempSync(join(tmpdir(), "agentbrain-link-"));
+  roots.push(root);
   return {
-    success: true,
-    url,
+    store: new ResearchStore(join(root, "research.db")),
+    artifacts: new ArtifactStore(join(root, "artifacts")),
+  };
+}
+
+async function fixture(name: string): Promise<ExtractionSuccess> {
+  return (await Bun.file(
+    join(import.meta.dir, "fixtures", name),
+  ).json()) as ExtractionSuccess;
+}
+
+function intent(url: string, ingress = "linkctl"): DurableSubmissionIntent {
+  return {
+    version: 1,
+    kind: "url",
+    ingress,
+    collections: [],
+    payload: { url: { url } },
+    options: { tags: [], force: false, max_bytes: 1_000_000 },
+  };
+}
+
+function enqueue(
+  store: ResearchStore,
+  url: string,
+  key: string,
+  ingress = "linkctl",
+): Job {
+  return store.enqueueJob({
+    idempotencyKey: key,
+    kind: "url",
+    intent: intent(url, ingress),
+    now: T0,
+  }).job;
+}
+
+function envelope(
+  url: string,
+  relations: ExtractionRelation[] = [],
+  options: {
+    title?: string;
+    contentType?: "web_page" | "social_post" | "article";
+  } = {},
+): ExtractionSuccess {
+  const content = `# ${options.title ?? "Extracted"}\n\nContent from ${url}`;
+  return {
+    schema_version: "1",
+    status: "success",
     requested_url: url,
-    markdown: `# Child\n\nContent from ${url}`,
-    content: `# Child\n\nContent from ${url}`,
-    size_chars: 20,
+    final_url: url,
+    extractor: {
+      name: "scrapectl",
+      version: "1.0.0",
+      implementation: "test-fixture",
+      implementation_version: "1",
+    },
+    artifacts: [
+      {
+        artifact_type: "document",
+        media_type: "text/markdown",
+        encoding: "utf-8",
+        content,
+        size_bytes: Buffer.byteLength(content),
+        sha256: createHash("sha256").update(content).digest("hex"),
+      },
+    ],
+    metadata: {
+      content_type: options.contentType ?? "web_page",
+      title: options.title ?? "Extracted",
+      author_name: "",
+      author_handle: "",
+      published_at: "",
+      source_id: "",
+      warnings: [],
+    },
+    relations,
+    failure: null,
   };
 }
 
@@ -50,248 +120,475 @@ test("X status and article URL forms canonicalize to stable native identities", 
   ]);
 });
 
-test("generic completed root commits directly without root or child scraping", async () => {
-  const { store, path } = setup();
-  let calls = 0;
-  const result = await ingestPrescrapedLink(
-    store,
-    {
-      url: "https://Example.COM/reference#section",
-      markdown:
-        "# Generic reference\n\nA useful body with https://fallback.example/ignored.",
-      structured: {
-        kind: "page",
-        links: [{ url: "https://child.example/ignored" }],
-      },
-      source: "agentbot",
+test("generic roots ignore Markdown URLs and extractor relations for automatic fanout", async () => {
+  const { store, artifacts } = setup();
+  const url = "https://example.com/root";
+  enqueue(store, url, "generic-root");
+  const calls: string[] = [];
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "generic-worker",
+    now: () => T0,
+    artifactStore: artifacts,
+    extract: async (requested) => {
+      calls.push(requested);
+      const extracted = envelope(requested, [
+        {
+          relation_type: "references",
+          target_url: "https://child.example/from-envelope",
+        },
+      ]);
+      extracted.artifacts[0].content +=
+        "\n\nMarkdown-only https://child.example/from-markdown";
+      extracted.artifacts[0].size_bytes = Buffer.byteLength(
+        extracted.artifacts[0].content,
+      );
+      extracted.artifacts[0].sha256 = createHash("sha256")
+        .update(extracted.artifacts[0].content)
+        .digest("hex");
+      return extracted;
     },
-    {
-      scrape: async () => {
-        calls += 1;
-        throw new Error("must not scrape generic roots");
-      },
-    },
-  );
-  expect(result).toMatchObject({ success: true, linked_count: 0 });
-  expect(result.root).toMatchObject({
-    source_type: "scraped_url",
-    source_uri: "https://example.com/reference",
+    installSignalHandlers: false,
   });
-  expect(calls).toBe(0);
-  store.close();
 
-  const db = new Database(path, { readonly: true });
-  const row = db.query("SELECT tags, notes FROM documents").get() as {
-    tags: string;
-    notes: string;
-  };
-  expect(JSON.parse(row.tags)).toContain("source-agentbot");
-  expect(JSON.parse(row.notes).source).toBe("agentbot");
-  db.close();
-});
-
-test("article fixture preserves structured metadata and source origin", async () => {
-  const { store, path } = setup();
-  const payload = await fixture("prescraped_x_article.json");
-  const result = await ingestPrescrapedLink(store, payload as never);
-  expect(result.root).toMatchObject({
-    source_type: "tweet_article",
-    source_uri: "https://x.com/i/article/987",
-    title: "A Structured X Article",
+  expect(result).toMatchObject({ claimed: 1, completed: 1, failed: 0 });
+  expect(calls).toEqual([url]);
+  expect(store.db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({
+    count: 1,
   });
-  store.close();
-  const db = new Database(path, { readonly: true });
-  const row = db.query("SELECT tags, notes FROM documents").get() as {
-    tags: string;
-    notes: string;
-  };
-  expect(JSON.parse(row.tags)).toEqual(
-    expect.arrayContaining([
-      "tweet-article",
-      "source-linkctl",
-      "author-writer",
-    ]),
-  );
-  expect(JSON.parse(row.notes).structured_metadata).toEqual({
-    title: "A Structured X Article",
-    author: { name: "Writer Name", handle: "writer" },
-    published_at: "2026-07-14T12:30:00Z",
-  });
-  db.close();
-});
-
-test("nested structured links override Markdown, deduplicate, and stop after one hop", async () => {
-  const { store, path } = setup();
-  const scrapeCalls: string[] = [];
-  const payload = await fixture("prescraped_x_tweet.json");
-  const result = await ingestPrescrapedLink(store, payload as never, {
-    scrape: async (url) => {
-      scrapeCalls.push(url);
-      return scraped(url);
-    },
-  });
-  expect(scrapeCalls).toEqual([
-    "https://example.com/story",
-    "https://x.com/original_handle",
-    "https://twitter.com/writer/articles/987",
-    "https://twitter.com/peer/status/456",
-  ]);
-  expect(scrapeCalls).not.toContain("https://fallback.example/ignored");
-  expect(result).toMatchObject({ success: true, linked_count: 4 });
-  store.close();
-
-  const db = new Database(path, { readonly: true });
   expect(
-    db.query("SELECT COUNT(*) AS count FROM document_links").get(),
-  ).toEqual({ count: 4 });
-  expect(db.query("SELECT COUNT(*) AS count FROM documents").get()).toEqual({
-    count: 5,
-  });
-  db.close();
-});
-
-test("empty nested links are authoritative over Markdown fallback", () => {
-  expect(
-    extractOutboundLinks(
-      "https://x.com/a/status/1",
-      "fallback https://example.com/ignored",
-      { data: { links: [] } },
-    ),
-  ).toEqual([]);
-});
-
-test("root-first partial failure persists provenance and retries relation in place", async () => {
-  const { store, path } = setup();
-  const payload = {
-    url: "https://x.com/writer/articles/777",
-    markdown: "# Root article",
-    structured: {
-      title: "Root article",
-      links: [
-        { label: "works", url: "https://ok.example/page" },
-        { label: "fails", url: "https://fail.example/page" },
-      ],
-    },
-    source: "linkctl",
-  };
-  let fail = true;
-  const dependencies = {
-    scrape: async (url: string) => {
-      if (fail && url.includes("fail.example"))
-        throw new Error("fixture destination failed");
-      return scraped(url);
-    },
-  };
-  const first = await ingestPrescrapedLink(store, payload, dependencies);
-  expect(first).toMatchObject({
-    success: false,
-    root_success: true,
-    linked_failed_count: 1,
-  });
-  expect(first.linked_results.map((item) => item.success)).toEqual([
-    true,
-    false,
-  ]);
-  expect(
-    store.db.query("SELECT status FROM document_links ORDER BY id").all(),
-  ).toEqual([{ status: "success" }, { status: "failed" }]);
-
-  fail = false;
-  const second = await ingestPrescrapedLink(store, payload, dependencies);
-  expect(second).toMatchObject({ success: true, linked_failed_count: 0 });
-  expect(
-    store.db.query("SELECT COUNT(*) AS count FROM document_links").get(),
-  ).toEqual({ count: 2 });
+    store.db.query("SELECT COUNT(*) AS count FROM resource_relations").get(),
+  ).toEqual({ count: 0 });
   expect(
     store.db
       .query(
-        "SELECT COUNT(*) AS count FROM document_links WHERE status='success'",
+        `SELECT observed_locator, suppressed_reason FROM observations
+         WHERE suppressed=1`,
       )
       .get(),
-  ).toEqual({ count: 2 });
-  store.close();
-
-  const db = new Database(path, { readonly: true });
-  expect(db.query("SELECT COUNT(*) AS count FROM documents").get()).toEqual({
-    count: 3,
+  ).toEqual({
+    observed_locator: "https://child.example/from-envelope",
+    suppressed_reason: "ineligible_root",
   });
-  db.close();
-});
-
-test("one-hop fan-out attempts only the first 25 discoveries without omitted relations", async () => {
-  const { store } = setup();
-  const discovered = Array.from(
-    { length: LINKED_FAN_OUT_LIMIT + 5 },
-    (_, index) => `https://child.example/story-${index + 1}`,
-  );
-  const calls: string[] = [];
-  const result = await ingestPrescrapedLink(
-    store,
-    {
-      url: "https://x.com/person/status/500",
-      markdown: "root",
-      structured: { links: discovered.map((url) => ({ url })) },
-    },
-    {
-      scrape: async (url) => {
-        calls.push(url);
-        return scraped(url);
-      },
-    },
-  );
-
-  expect(result).toMatchObject({
-    success: false,
-    root_success: true,
-    linked_count: LINKED_FAN_OUT_LIMIT,
-    linked_failed_count: 0,
-    linked_truncated: true,
-    linked_discovered_count: discovered.length,
-  });
-  expect(calls).toEqual(discovered.slice(0, LINKED_FAN_OUT_LIMIT));
-  expect(result.linked_results.map((item) => item.url)).toEqual(calls);
-  expect(
-    store.db.query("SELECT COUNT(*) AS count FROM document_links").get(),
-  ).toEqual({ count: LINKED_FAN_OUT_LIMIT });
   expect(
     store.db
       .query(
-        "SELECT COUNT(*) AS count FROM document_links WHERE discovered_url = ?",
+        `SELECT COUNT(*) AS count FROM resource_aliases
+         WHERE locator='https://child.example/from-markdown'`,
       )
-      .get(discovered[discovered.length - 1] as string),
+      .get(),
   ).toEqual({ count: 0 });
   store.close();
 });
 
-test("two parents reuse one shared child document while retaining both relations", async () => {
-  const { store } = setup();
-  const deps = {
-    scrape: async (url: string) => ({
-      ...scraped(url),
-      markdown: "shared child",
-      content: "shared child",
-    }),
+test("X fixture commits typed relations, child jobs, aliases, and policy suppressions", async () => {
+  const { store, artifacts } = setup();
+  const root = await fixture("prescraped_x_tweet.json");
+  enqueue(store, root.requested_url, "fixture-root");
+  const calls: string[] = [];
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "fixture-worker",
+    now: () => T0,
+    artifactStore: artifacts,
+    extract: async (url) => {
+      calls.push(url);
+      return url === root.requested_url ? root : envelope(url);
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 4, completed: 4, failed: 0 });
+  expect(calls).toEqual([
+    root.requested_url,
+    "https://example.com/story",
+    "https://x.com/i/article/987",
+    "https://x.com/i/status/456",
+  ]);
+  expect(
+    store.db
+      .query(
+        `SELECT relation_type, observed_url FROM resource_relations
+         ORDER BY discovery_ordinal`,
+      )
+      .all(),
+  ).toEqual([
+    {
+      relation_type: "content_link",
+      observed_url: "https://example.com/story",
+    },
+    {
+      relation_type: "article",
+      observed_url: "https://twitter.com/writer/articles/987",
+    },
+    {
+      relation_type: "quoted_post",
+      observed_url: "https://twitter.com/peer/status/456",
+    },
+  ]);
+  expect(
+    store.db
+      .query(
+        `SELECT discovery_ordinal, suppressed_reason FROM observations
+         WHERE suppressed=1 ORDER BY discovery_ordinal`,
+      )
+      .all(),
+  ).toEqual([
+    { discovery_ordinal: 1, suppressed_reason: "duplicate_destination" },
+    { discovery_ordinal: 2, suppressed_reason: "self_reference" },
+    { discovery_ordinal: 3, suppressed_reason: "excluded_x_chrome" },
+    { discovery_ordinal: 6, suppressed_reason: "excluded_media" },
+    { discovery_ordinal: 7, suppressed_reason: "unsafe_destination" },
+  ]);
+  expect(
+    store.db
+      .query(
+        `SELECT key_type, key_value FROM resources
+         WHERE key_type LIKE 'x:%' ORDER BY key_type, key_value`,
+      )
+      .all(),
+  ).toEqual([
+    { key_type: "x:article", key_value: "987" },
+    { key_type: "x:status", key_value: "123" },
+    { key_type: "x:status", key_value: "456" },
+  ]);
+  const provenance = store.db
+    .query(
+      `SELECT raw_metadata FROM provenance
+       WHERE evidence_type='url_extraction' AND raw_metadata LIKE '%historical-fixture%'`,
+    )
+    .get() as { raw_metadata: string };
+  expect(JSON.parse(provenance.raw_metadata).extractor.implementation).toBe(
+    "linkctl",
+  );
+  store.close();
+});
+
+test("an X article with zero relations completes without child intent", async () => {
+  const { store, artifacts } = setup();
+  const root = await fixture("prescraped_x_article.json");
+  enqueue(store, root.requested_url, "zero-relations");
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "zero-worker",
+    now: () => T0,
+    artifactStore: artifacts,
+    extract: async () => root,
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 1, completed: 1 });
+  expect(store.db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({
+    count: 1,
+  });
+  expect(
+    store.db.query("SELECT title, source_type FROM documents").get(),
+  ).toEqual({ title: "A Structured X Article", source_type: "tweet_article" });
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM observations").get(),
+  ).toEqual({ count: 0 });
+  store.close();
+});
+
+test("fanout admits exactly 25 children and durably suppresses every excess discovery", async () => {
+  const { store, artifacts } = setup();
+  const rootUrl = "https://x.com/person/status/500";
+  const discovered = Array.from(
+    { length: LINKED_FAN_OUT_LIMIT + 5 },
+    (_, index) => `https://child.example/story-${index + 1}`,
+  );
+  enqueue(store, rootUrl, "bounded-root");
+  const calls: string[] = [];
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "bounded-worker",
+    now: () => T0,
+    artifactStore: artifacts,
+    extract: async (url) => {
+      calls.push(url);
+      return url === rootUrl
+        ? envelope(
+            url,
+            discovered.map((target_url) => ({
+              relation_type: "references",
+              target_url,
+            })),
+            { contentType: "social_post" },
+          )
+        : envelope(url);
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({
+    claimed: LINKED_FAN_OUT_LIMIT + 1,
+    completed: LINKED_FAN_OUT_LIMIT + 1,
+  });
+  expect(calls).toEqual([rootUrl, ...discovered.slice(0, 25)]);
+  expect(store.db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({
+    count: 26,
+  });
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM resource_relations").get(),
+  ).toEqual({ count: 25 });
+  expect(
+    store.db
+      .query(
+        `SELECT COUNT(*) AS count FROM observations
+         WHERE suppressed=1 AND suppressed_reason='fanout_limit'`,
+      )
+      .get(),
+  ).toEqual({ count: 5 });
+  store.close();
+});
+
+test("two parents share one child lifecycle while retaining independent provenance and replay is inert", async () => {
+  const { store, artifacts } = setup();
+  const shared = "https://shared.example/story";
+  const parentOne = "https://x.com/person/status/1";
+  const parentTwo = "https://twitter.com/person/status/2";
+  const first = enqueue(store, parentOne, "parent-one", "saved-one");
+  const second = enqueue(store, parentTwo, "parent-two", "saved-two");
+  const calls: string[] = [];
+  const extract = async (url: string): Promise<ExtractionSuccess> => {
+    calls.push(url);
+    return url === shared
+      ? envelope(url)
+      : envelope(url, [{ relation_type: "references", target_url: shared }], {
+          contentType: "social_post",
+        });
   };
-  for (const id of [1, 2]) {
-    await ingestPrescrapedLink(
-      store,
-      {
-        url: `https://x.com/person/status/${id}`,
-        markdown: `root ${id}`,
-        structured: { links: [{ url: "https://shared.example/story" }] },
-      },
-      deps,
-    );
-  }
+  await runWorker(store, {
+    once: true,
+    workerId: "shared-worker",
+    now: () => T0,
+    artifactStore: artifacts,
+    extract,
+    installSignalHandlers: false,
+  });
+
+  expect(calls).toEqual([parentOne, parentTwo, shared]);
+  expect(store.db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({
+    count: 3,
+  });
   expect(
-    store.db.query("SELECT COUNT(*) AS count FROM documents").get(),
-  ).toEqual({ count: 3 });
+    store.db
+      .query(
+        `SELECT source_job_id FROM resource_relations
+         ORDER BY source_job_id`,
+      )
+      .all(),
+  ).toEqual([{ source_job_id: first.id }, { source_job_id: second.id }]);
   expect(
-    store.db.query("SELECT COUNT(*) AS count FROM document_links").get(),
+    store.db
+      .query(
+        `SELECT ingress FROM observations
+         WHERE observed_locator=? ORDER BY source_job_id`,
+      )
+      .all(shared),
+  ).toEqual([{ ingress: "saved-one" }, { ingress: "saved-two" }]);
+  expect(
+    store.db
+      .query(
+        `SELECT COUNT(DISTINCT to_resource_id) AS count
+         FROM resource_relations`,
+      )
+      .get(),
+  ).toEqual({ count: 1 });
+
+  const replay = await runWorker(store, {
+    once: true,
+    workerId: "replay-worker",
+    now: () => at(1),
+    artifactStore: artifacts,
+    extract,
+    installSignalHandlers: false,
+  });
+  expect(replay).toMatchObject({ claimed: 0, completed: 0 });
+  expect(calls).toEqual([parentOne, parentTwo, shared]);
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM observations").get(),
   ).toEqual({ count: 2 });
-  const targetCount = store.db
-    .query("SELECT COUNT(DISTINCT to_document_id) AS count FROM document_links")
-    .get();
-  expect(targetCount).toEqual({ count: 1 });
+  store.close();
+});
+
+test("child failure and retry never re-extract the parent and survive parent document deletion", async () => {
+  const { store, artifacts } = setup();
+  const rootUrl = "https://x.com/person/status/700";
+  const childUrl = "https://child.example/retry";
+  const parent = enqueue(store, rootUrl, "retry-parent");
+  const calls: string[] = [];
+  let childFails = true;
+  const extract = async (url: string): Promise<ExtractionSuccess> => {
+    calls.push(url);
+    if (url === childUrl && childFails) {
+      throw new ScrapectlExtractionError(
+        "child temporarily unavailable",
+        "item_transient",
+        "item",
+      );
+    }
+    return url === rootUrl
+      ? envelope(url, [{ relation_type: "references", target_url: childUrl }], {
+          contentType: "social_post",
+        })
+      : envelope(url);
+  };
+  const policy = {
+    itemBaseMs: 1_000,
+    itemCapMs: 1_000,
+    jitterRatio: 0,
+  };
+  const first = await runWorker(store, {
+    once: true,
+    workerId: "first-child-attempt",
+    now: () => T0,
+    artifactStore: artifacts,
+    extract,
+    policy,
+    installSignalHandlers: false,
+  });
+
+  expect(first).toMatchObject({ claimed: 2, completed: 1, failed: 1 });
+  expect(
+    store.db
+      .query("SELECT state, attempt_count FROM jobs WHERE id=?")
+      .get(parent.id),
+  ).toEqual({ state: "completed", attempt_count: 1 });
+  const child = store.db
+    .query("SELECT id, state, attempt_count FROM jobs WHERE id<>?")
+    .get(parent.id) as { id: number; state: string; attempt_count: number };
+  expect(child).toMatchObject({ state: "retry_wait", attempt_count: 1 });
+
+  const parentResource = store.db
+    .query("SELECT resource_id FROM jobs WHERE id=?")
+    .get(parent.id) as { resource_id: number };
+  const parentDocument = store.db
+    .query("SELECT document_id FROM resources WHERE id=?")
+    .get(parentResource.resource_id) as { document_id: number };
+  store.deleteDocument({
+    documentId: parentDocument.document_id,
+    confirm: "delete",
+  });
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM resource_relations").get(),
+  ).toEqual({ count: 1 });
+
+  childFails = false;
+  const retry = await runWorker(store, {
+    once: true,
+    workerId: "second-child-attempt",
+    now: () => at(1_000),
+    artifactStore: artifacts,
+    extract,
+    policy,
+    installSignalHandlers: false,
+  });
+  expect(retry).toMatchObject({ claimed: 1, completed: 1, failed: 0 });
+  expect(calls).toEqual([rootUrl, childUrl, childUrl]);
+  expect(
+    store.db
+      .query("SELECT state, attempt_count FROM jobs WHERE id=?")
+      .get(parent.id),
+  ).toEqual({ state: "completed", attempt_count: 1 });
+  expect(
+    store.db
+      .query("SELECT state, attempt_count FROM jobs WHERE id=?")
+      .get(child.id),
+  ).toEqual({ state: "completed", attempt_count: 2 });
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM resource_relations").get(),
+  ).toEqual({ count: 1 });
+  store.close();
+});
+
+test("an admitted X child records but does not enqueue a second automatic hop", async () => {
+  const { store, artifacts } = setup();
+  const rootUrl = "https://x.com/person/status/800";
+  const childUrl = "https://x.com/other/status/801";
+  const grandchildUrl = "https://grandchild.example/story";
+  enqueue(store, rootUrl, "one-hop-root");
+  const calls: string[] = [];
+  await runWorker(store, {
+    once: true,
+    workerId: "one-hop-worker",
+    now: () => T0,
+    artifactStore: artifacts,
+    extract: async (url) => {
+      calls.push(url);
+      return envelope(
+        url,
+        url === rootUrl
+          ? [{ relation_type: "references", target_url: childUrl }]
+          : [{ relation_type: "references", target_url: grandchildUrl }],
+        { contentType: "social_post" },
+      );
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(calls).toEqual([rootUrl, "https://x.com/i/status/801"]);
+  expect(store.db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({
+    count: 2,
+  });
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM resource_relations").get(),
+  ).toEqual({ count: 1 });
+  expect(
+    store.db
+      .query(
+        `SELECT observed_locator, suppressed_reason FROM observations
+         WHERE suppressed=1`,
+      )
+      .get(),
+  ).toEqual({
+    observed_locator: grandchildUrl,
+    suppressed_reason: "one_hop_limit",
+  });
+  store.close();
+});
+
+test("a fanout write failure rolls back parent indexing, relations, observations, and child jobs", async () => {
+  const { store, artifacts } = setup();
+  const rootUrl = "https://x.com/person/status/900";
+  const childUrl = "https://child.example/atomic";
+  const parent = enqueue(store, rootUrl, "atomic-root");
+  const commitFanout = store.commitUrlFanout.bind(store);
+  store.commitUrlFanout = ((input) => {
+    commitFanout(input);
+    throw new Error("simulated fanout write failure");
+  }) as ResearchStore["commitUrlFanout"];
+
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "atomic-worker",
+    now: () => T0,
+    artifactStore: artifacts,
+    extract: async (url) =>
+      envelope(url, [{ relation_type: "references", target_url: childUrl }], {
+        contentType: "social_post",
+      }),
+    policy: { infraBaseMs: 1_000, infraCapMs: 1_000, jitterRatio: 0 },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 1, completed: 0, failed: 1 });
+  expect(
+    store.db.query("SELECT state FROM jobs WHERE id=?").get(parent.id),
+  ).toEqual({ state: "retry_wait" });
+  expect(store.db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({
+    count: 1,
+  });
+  for (const table of [
+    "documents",
+    "resources",
+    "resource_relations",
+    "observations",
+    "provenance",
+  ]) {
+    expect(
+      store.db.query(`SELECT COUNT(*) AS count FROM ${table}`).get(),
+    ).toEqual({ count: 0 });
+  }
   store.close();
 });

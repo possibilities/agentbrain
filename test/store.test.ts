@@ -104,7 +104,7 @@ test("writable store migrates v1 additively and preserves IDs and FTS", () => {
   expect(
     db.query("SELECT value FROM meta WHERE key='schema_version'").get(),
   ).toEqual({
-    value: "5",
+    value: "6",
   });
   expect(db.query("SELECT id FROM documents").get()).toEqual({ id: 7 });
   expect(
@@ -318,7 +318,7 @@ test("newer schema versions are rejected", () => {
   const path = tempDb();
   const db = new Database(path);
   db.exec(
-    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version','6')",
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version','7')",
   );
   db.close();
   expect(() => new ResearchStore(path)).toThrow("newer than supported");

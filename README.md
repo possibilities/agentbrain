@@ -37,7 +37,7 @@ agentbrain submit https://example.com/article --kind url --max-bytes 5000000 --j
 
 Text and local file bytes are captured as immutable Artifacts before acknowledgement. URL Admission performs syntax validation and queues normalized intent without network work. A new intent returns `queued`; a replay returns `duplicate` with the same job identity. Materialization happens only after a Worker leases the job.
 
-For URL jobs, the Worker invokes PATH-resolved `scrapectl fetch-markdown --markdown URL` without a shell. Scrapectl owns fetching, browser/session behavior, redirects, credentials, backend retries, and extraction hardening. Agentbrain bounds and sanitizes provider output and remains the only component allowed to mutate the index.
+For URL jobs, the Worker invokes PATH-resolved `scrapectl fetch-markdown URL --envelope --max-content-bytes N --max-relations N` without a shell. Scrapectl owns fetching, browser/session behavior, redirects, credentials, backend retries, and extraction hardening. Agentbrain rejects incompatible envelope versions, bounds and sanitizes extractor output, and remains the only component allowed to mutate the index.
 
 Operate the queue explicitly with:
 
@@ -111,7 +111,7 @@ The LaunchAgent drains already admitted ingestion jobs only. Installation does *
 
 ## Completed-link compatibility adapter
 
-`research-ingest-link` remains a temporary Scrapectl compatibility executable. It reads one bounded completed payload from stdin and emits legacy bare JSON rather than Agentbrain's `{ok,data}` envelope. New Ingress integrations should use durable `agentbrain submit` instead.
+`research-ingest-link` remains a temporary Scrapectl compatibility executable for already completed root payloads. It reads one bounded completed payload from stdin, indexes that root without child extraction, and emits legacy bare JSON rather than Agentbrain's `{ok,data}` envelope. New Ingress integrations should use durable `agentbrain submit` instead.
 
 ```bash
 printf '%s' '{"url":"https://example.com","markdown":"# Saved"}' \
@@ -136,4 +136,10 @@ Run all project checks with:
 bun run check
 ```
 
-An opt-in real Scrapectl smoke exists outside `bun test` and always uses a temporary database. Run it only after the human has brought Scrapectl up: `./scripts/smoke-scrapectl-url-ingest.sh [https://example.com/]`.
+The real Scrapectl smoke is opt-in and outside `bun test`. It creates a temporary database and Artifact root, submits a queued URL job, drains it with `worker --once`, verifies the materialized document is searchable, and deletes the temporary state only after success:
+
+```bash
+./scripts/smoke-scrapectl-url-ingest.sh [https://example.com/]
+```
+
+Run it only after the human has brought Scrapectl and any required browser farm up. If the smoke fails, it preserves the temporary directory and JSON evidence so the admitted job and Attempt can be inspected without touching the live database or configured recurring Sources.

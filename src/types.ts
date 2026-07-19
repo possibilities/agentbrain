@@ -277,16 +277,60 @@ export interface CollectionMembership {
   added_at: string;
 }
 
+export type ResourceRelationType = "content_link" | "article" | "quoted_post";
+
+export type FanoutSuppressionReason =
+  | "self_reference"
+  | "duplicate_destination"
+  | "excluded_x_chrome"
+  | "excluded_media"
+  | "unsafe_destination"
+  | "relation_target_mismatch"
+  | "ineligible_root"
+  | "fanout_limit"
+  | "one_hop_limit";
+
+export interface ResourceRelation {
+  id: number;
+  from_resource_id: number;
+  to_resource_id: number;
+  relation_type: ResourceRelationType;
+  source_job_id: number;
+  observed_url: string;
+  discovery_ordinal: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Observation {
   id: number;
   resource_id: number;
+  parent_resource_id: number | null;
+  source_job_id: number | null;
   source_id: number | null;
   run_id: number | null;
   ingress: string;
+  relation_type: ResourceRelationType | null;
+  discovery_ordinal: number | null;
   observed_locator: string | null;
   suppressed: boolean;
   suppressed_reason: string | null;
   observed_at: string;
+}
+
+export interface FanoutDiscovery {
+  ordinal: number;
+  relationType: ResourceRelationType;
+  targetUrl: string;
+  canonicalUrl: string;
+  resourceKey: { type: string; value: string };
+  childIdempotencyKey: string;
+  childIntent: string;
+  suppressionReason: FanoutSuppressionReason | null;
+}
+
+export interface ExtractionFanoutPlan {
+  discoveries: FanoutDiscovery[];
 }
 
 export interface Run {
@@ -346,6 +390,99 @@ export type FailureClass =
   | "item_transient"
   | "permanent"
   | "auth_config";
+
+export type ExtractionFailureClass =
+  | "invalid_request"
+  | "authentication_required"
+  | "upstream_unavailable"
+  | "timeout"
+  | "browser_error"
+  | "provider_error"
+  | "malformed_provider_output"
+  | "empty_content"
+  | "output_limit_exceeded"
+  | "cancelled"
+  | "internal_error";
+
+export interface ExtractionArtifact {
+  artifact_type: "document";
+  media_type: "text/markdown";
+  encoding: "utf-8";
+  content: string;
+  size_bytes: number;
+  sha256: string;
+}
+
+export interface ExtractionMetadata {
+  content_type: "web_page" | "social_post" | "article";
+  title: string;
+  author_name: string;
+  author_handle: string;
+  published_at: string;
+  source_id: string;
+  warnings: Array<"partial_content">;
+}
+
+export interface ExtractionRelation {
+  relation_type: "references" | ResourceRelationType;
+  target_url: string;
+}
+
+export interface ExtractorIdentity {
+  name: "scrapectl";
+  version: string;
+  implementation: string;
+  implementation_version: string;
+}
+
+export interface ExtractionFailureDetail {
+  failure_class: ExtractionFailureClass;
+  retryable: boolean;
+  message: string;
+  evidence: string;
+}
+
+interface ExtractionEnvelopeBase {
+  schema_version: "1";
+  requested_url: string;
+  final_url: string | null;
+  extractor: ExtractorIdentity;
+  artifacts: ExtractionArtifact[];
+  metadata: ExtractionMetadata | null;
+  relations: ExtractionRelation[];
+  failure: ExtractionFailureDetail | null;
+}
+
+export interface ExtractionSuccess extends ExtractionEnvelopeBase {
+  status: "success";
+  final_url: string;
+  artifacts: [ExtractionArtifact];
+  metadata: ExtractionMetadata;
+  failure: null;
+}
+
+export interface ExtractionFailure extends ExtractionEnvelopeBase {
+  status: "failure";
+  artifacts: [];
+  metadata: null;
+  relations: [];
+  failure: ExtractionFailureDetail;
+}
+
+export type ExtractionEnvelope = ExtractionSuccess | ExtractionFailure;
+
+export interface PromotedUrlExtraction {
+  record_version: 1;
+  requested_url: string;
+  final_url: string;
+  extractor: ExtractorIdentity;
+  artifact: Omit<ExtractionArtifact, "content"> & {
+    artifact_role: "extracted_markdown";
+    storage_path: string;
+  };
+  metadata: ExtractionMetadata;
+  relations: ExtractionRelation[];
+}
 
 export interface Job {
   id: number;

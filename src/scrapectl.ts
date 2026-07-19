@@ -1,8 +1,19 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { findExecutable } from "./executable";
 import { sanitizeExternalError } from "./sanitize";
 import { codePointLength } from "./text";
-import { normalizedWebUrl } from "./url";
+import type {
+  ExtractionEnvelope,
+  ExtractionFailureClass,
+  ExtractionFailureDetail,
+  ExtractionMetadata,
+  ExtractionRelation,
+  ExtractionSuccess,
+  ExtractorIdentity,
+  FailureClass,
+} from "./types";
+import { normalizedWebUrl, validateHttpUrl } from "./url";
 
 export const SCRAPECTL_DEFAULT_TIMEOUT_MS = 120_000;
 export const SCRAPECTL_OUTPUT_MAX_BYTES = 20_000_000;
@@ -14,6 +25,8 @@ export const SCRAPECTL_RETRY_ENV_MIN_MS = 100;
 export const SCRAPECTL_RETRY_CONFIG_MAX_MS = 3_600_000;
 export const SCRAPECTL_TIMEOUT_MAX_MS = 600_000;
 export const SCRAPECTL_TERMINATION_GRACE_MS = 250;
+export const SCRAPECTL_EXTRACTION_SCHEMA_VERSION = "1" as const;
+export const SCRAPECTL_DEFAULT_MAX_RELATIONS = 256;
 
 export interface ScrapedLink {
   success: true;
@@ -46,6 +59,39 @@ export type ScrapeProvider = (
   url: string,
   options?: ScrapeOptions,
 ) => ScrapedLink | Promise<ScrapedLink>;
+
+export interface ExtractionOptions {
+  timeoutMs?: number;
+  maxContentBytes?: number;
+  maxOutputBytes?: number;
+  maxRelations?: number;
+  signal?: AbortSignal;
+}
+
+export type ExtractionProvider = (
+  url: string,
+  options?: ExtractionOptions,
+) => ExtractionSuccess | Promise<ExtractionSuccess>;
+
+export type ExtractionDisposition = FailureClass | "cancelled";
+
+export class ScrapectlExtractionError extends Error {
+  constructor(
+    message: string,
+    readonly disposition: ExtractionDisposition,
+    readonly outcome:
+      | "infrastructure"
+      | "item"
+      | "auth_config"
+      | "permanent"
+      | "policy"
+      | "cancellation"
+      | "protocol",
+  ) {
+    super(message);
+    this.name = "ScrapectlExtractionError";
+  }
+}
 
 type CancellationSignal = "SIGHUP" | "SIGINT" | "SIGTERM";
 
@@ -104,6 +150,7 @@ interface CommandResult {
   spawnError?: unknown;
   timedOut: boolean;
   outputExceeded: boolean;
+  aborted: boolean;
 }
 
 class AttemptFailure extends Error {
@@ -235,6 +282,7 @@ function runCommand(
   args: string[],
   timeoutMs: number,
   maxOutputBytes: number,
+  abortSignal?: AbortSignal,
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const useProcessGroup = process.platform !== "win32";
@@ -256,6 +304,7 @@ function runCommand(
     let totalBytes = 0;
     let timedOut = false;
     let outputExceeded = false;
+    let aborted = false;
     let spawnError: unknown;
     let terminationStarted = false;
     let escalationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -290,6 +339,12 @@ function runCommand(
         SCRAPECTL_TERMINATION_GRACE_MS,
       );
     };
+    const abortAttempt = (): void => {
+      aborted = true;
+      terminateAttempt();
+    };
+    abortSignal?.addEventListener("abort", abortAttempt, { once: true });
+    if (abortSignal?.aborted) abortAttempt();
     const collect = (destination: Buffer[], chunk: Buffer | string): void => {
       if (outputExceeded) return;
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -316,6 +371,7 @@ function runCommand(
       clearTimeout(timer);
       unregisterProviderTerminator();
       process.removeListener("exit", terminateOnParentExit);
+      abortSignal?.removeEventListener("abort", abortAttempt);
       if (escalationTimer !== undefined) {
         clearTimeout(escalationTimer);
         // The direct process may exit while descendants still hold no pipes.
@@ -329,6 +385,7 @@ function runCommand(
         ...(spawnError === undefined ? {} : { spawnError }),
         timedOut,
         outputExceeded,
+        aborted,
       });
     });
   });
@@ -498,4 +555,561 @@ export async function scrapeWithScrapectl(
       attempt += 1;
     }
   }
+}
+
+const EXTRACTION_FAILURE_CLASSES = new Set<ExtractionFailureClass>([
+  "invalid_request",
+  "authentication_required",
+  "upstream_unavailable",
+  "timeout",
+  "browser_error",
+  "provider_error",
+  "malformed_provider_output",
+  "empty_content",
+  "output_limit_exceeded",
+  "cancelled",
+  "internal_error",
+]);
+
+function protocolDefect(detail: string): never {
+  throw new ScrapectlExtractionError(
+    `scrapectl protocol defect: ${detail}`,
+    "permanent",
+    "protocol",
+  );
+}
+
+function extractionRecord(
+  value: unknown,
+  keys: readonly string[],
+  name: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return protocolDefect(`${name} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((key, index) => key !== expected[index])
+  ) {
+    return protocolDefect(`${name} has unknown or missing fields`);
+  }
+  return record;
+}
+
+function extractionString(
+  value: unknown,
+  name: string,
+  maximum: number,
+  minimum = 0,
+): string {
+  if (typeof value !== "string") {
+    return protocolDefect(`${name} must be text`);
+  }
+  const length = codePointLength(value);
+  if (length < minimum || length > maximum) {
+    return protocolDefect(`${name} is outside its size bound`);
+  }
+  return value;
+}
+
+function extractionUrl(value: unknown, name: string): string {
+  const text = extractionString(value, name, 4096, 1);
+  if (Buffer.byteLength(text, "utf8") > 4096) {
+    return protocolDefect(`${name} is outside its byte bound`);
+  }
+  try {
+    validateHttpUrl(text);
+  } catch {
+    return protocolDefect(`${name} is not an absolute HTTP(S) URL`);
+  }
+  return text;
+}
+
+function redactedComponentMatches(expected: string, actual: string): boolean {
+  if (expected === actual) return true;
+  try {
+    return decodeURIComponent(actual) === "[REDACTED]";
+  } catch {
+    return false;
+  }
+}
+
+function requestEvidenceMatches(expected: string, actual: string): boolean {
+  const left = validateHttpUrl(expected);
+  const right = validateHttpUrl(actual);
+  if (
+    left.protocol.toLowerCase() !== right.protocol.toLowerCase() ||
+    left.hostname.toLowerCase() !== right.hostname.toLowerCase() ||
+    left.port !== right.port
+  ) {
+    return false;
+  }
+  const leftPath = left.pathname.split("/");
+  const rightPath = right.pathname.split("/");
+  if (
+    leftPath.length !== rightPath.length ||
+    leftPath.some(
+      (part, index) => !redactedComponentMatches(part, rightPath[index] ?? ""),
+    )
+  ) {
+    return false;
+  }
+  const leftQuery = [...left.searchParams.entries()];
+  const rightQuery = [...right.searchParams.entries()];
+  return (
+    leftQuery.length === rightQuery.length &&
+    leftQuery.every(([name, value], index) => {
+      const other = rightQuery[index];
+      return (
+        other !== undefined &&
+        name === other[0] &&
+        redactedComponentMatches(value, other[1])
+      );
+    })
+  );
+}
+
+function parseExtractor(value: unknown): ExtractorIdentity {
+  const record = extractionRecord(
+    value,
+    ["name", "version", "implementation", "implementation_version"],
+    "extractor",
+  );
+  if (record.name !== "scrapectl") {
+    return protocolDefect("extractor name is unsupported");
+  }
+  return {
+    name: "scrapectl",
+    version: extractionString(record.version, "extractor version", 100),
+    implementation: extractionString(
+      record.implementation,
+      "extractor implementation",
+      100,
+    ),
+    implementation_version: extractionString(
+      record.implementation_version,
+      "extractor implementation version",
+      100,
+    ),
+  };
+}
+
+function parseMetadata(value: unknown): ExtractionMetadata {
+  const record = extractionRecord(
+    value,
+    [
+      "content_type",
+      "title",
+      "author_name",
+      "author_handle",
+      "published_at",
+      "source_id",
+      "warnings",
+    ],
+    "extraction metadata",
+  );
+  if (
+    !new Set(["web_page", "social_post", "article"]).has(
+      String(record.content_type),
+    )
+  ) {
+    return protocolDefect("metadata content type is unsupported");
+  }
+  if (!Array.isArray(record.warnings) || record.warnings.length > 8) {
+    return protocolDefect("metadata warnings are invalid");
+  }
+  if (record.warnings.some((warning) => warning !== "partial_content")) {
+    return protocolDefect("metadata warning is unsupported");
+  }
+  return {
+    content_type: record.content_type as ExtractionMetadata["content_type"],
+    title: extractionString(record.title, "metadata title", 500),
+    author_name: extractionString(record.author_name, "metadata author", 200),
+    author_handle: extractionString(
+      record.author_handle,
+      "metadata author handle",
+      100,
+    ),
+    published_at: extractionString(
+      record.published_at,
+      "metadata publication time",
+      100,
+    ),
+    source_id: extractionString(record.source_id, "metadata source id", 200),
+    warnings: record.warnings as Array<"partial_content">,
+  };
+}
+
+const EXTRACTION_RELATION_TYPES = new Set<ExtractionRelation["relation_type"]>([
+  "references",
+  "content_link",
+  "article",
+  "quoted_post",
+]);
+
+function parseRelations(value: unknown, maximum: number): ExtractionRelation[] {
+  if (!Array.isArray(value) || value.length > maximum) {
+    return protocolDefect("extraction relations are invalid");
+  }
+  return value.map((item) => {
+    const record = extractionRecord(
+      item,
+      ["relation_type", "target_url"],
+      "extraction relation",
+    );
+    if (
+      typeof record.relation_type !== "string" ||
+      !EXTRACTION_RELATION_TYPES.has(
+        record.relation_type as ExtractionRelation["relation_type"],
+      )
+    ) {
+      return protocolDefect("extraction relation type is unsupported");
+    }
+    return {
+      relation_type:
+        record.relation_type as ExtractionRelation["relation_type"],
+      target_url: extractionUrl(record.target_url, "relation target URL"),
+    };
+  });
+}
+
+function parseFailureDetail(value: unknown): ExtractionFailureDetail {
+  const record = extractionRecord(
+    value,
+    ["failure_class", "retryable", "message", "evidence"],
+    "extraction failure",
+  );
+  if (
+    typeof record.failure_class !== "string" ||
+    !EXTRACTION_FAILURE_CLASSES.has(
+      record.failure_class as ExtractionFailureClass,
+    )
+  ) {
+    return protocolDefect("extraction failure class is unsupported");
+  }
+  if (typeof record.retryable !== "boolean") {
+    return protocolDefect("extraction retry advice is invalid");
+  }
+  return {
+    failure_class: record.failure_class as ExtractionFailureClass,
+    retryable: record.retryable,
+    message: extractionString(
+      record.message,
+      "extraction failure message",
+      200,
+    ),
+    evidence: extractionString(
+      record.evidence,
+      "extraction failure evidence",
+      1024,
+      1,
+    ),
+  };
+}
+
+export function validateExtractionEnvelope(
+  value: unknown,
+  expectedUrl: string,
+  options: { maxContentBytes?: number; maxRelations?: number } = {},
+): ExtractionEnvelope {
+  const maxContentBytes = positiveInteger(
+    options.maxContentBytes ?? SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+    "max extraction content bytes",
+    SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+  );
+  const maxRelations = nonnegativeInteger(
+    options.maxRelations ?? SCRAPECTL_DEFAULT_MAX_RELATIONS,
+    "max extraction relations",
+    SCRAPECTL_DEFAULT_MAX_RELATIONS,
+  );
+  const record = extractionRecord(
+    value,
+    [
+      "schema_version",
+      "status",
+      "requested_url",
+      "final_url",
+      "extractor",
+      "artifacts",
+      "metadata",
+      "relations",
+      "failure",
+    ],
+    "extraction envelope",
+  );
+  if (record.schema_version !== SCRAPECTL_EXTRACTION_SCHEMA_VERSION) {
+    return protocolDefect("extraction schema version is unsupported");
+  }
+  const requestedUrl = extractionUrl(
+    record.requested_url,
+    "extraction requested URL",
+  );
+  if (!requestEvidenceMatches(expectedUrl, requestedUrl)) {
+    return protocolDefect("extraction requested URL does not match the job");
+  }
+  const extractor = parseExtractor(record.extractor);
+
+  if (record.status === "success") {
+    const finalUrl = extractionUrl(record.final_url, "extraction final URL");
+    if (!Array.isArray(record.artifacts) || record.artifacts.length !== 1) {
+      return protocolDefect("successful extraction must contain one artifact");
+    }
+    const artifactRecord = extractionRecord(
+      record.artifacts[0],
+      [
+        "artifact_type",
+        "media_type",
+        "encoding",
+        "content",
+        "size_bytes",
+        "sha256",
+      ],
+      "extraction artifact",
+    );
+    if (
+      artifactRecord.artifact_type !== "document" ||
+      artifactRecord.media_type !== "text/markdown" ||
+      artifactRecord.encoding !== "utf-8"
+    ) {
+      return protocolDefect("extraction artifact descriptor is unsupported");
+    }
+    const content = extractionString(
+      artifactRecord.content,
+      "extraction content",
+      maxContentBytes,
+      1,
+    );
+    if (!content.trim()) {
+      return protocolDefect("successful extraction content is empty");
+    }
+    const contentBytes = Buffer.byteLength(content, "utf8");
+    if (contentBytes > maxContentBytes) {
+      return protocolDefect("extraction content exceeds its byte bound");
+    }
+    if (
+      !Number.isSafeInteger(artifactRecord.size_bytes) ||
+      artifactRecord.size_bytes !== contentBytes
+    ) {
+      return protocolDefect("extraction artifact size does not match content");
+    }
+    if (
+      typeof artifactRecord.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(artifactRecord.sha256) ||
+      createHash("sha256").update(content, "utf8").digest("hex") !==
+        artifactRecord.sha256
+    ) {
+      return protocolDefect(
+        "extraction artifact digest does not match content",
+      );
+    }
+    if (record.failure !== null) {
+      return protocolDefect("successful extraction contains failure details");
+    }
+    const metadata = parseMetadata(record.metadata);
+    const relations = parseRelations(record.relations, maxRelations);
+    return {
+      schema_version: "1",
+      status: "success",
+      requested_url: requestedUrl,
+      final_url: finalUrl,
+      extractor,
+      artifacts: [
+        {
+          artifact_type: "document",
+          media_type: "text/markdown",
+          encoding: "utf-8",
+          content,
+          size_bytes: contentBytes,
+          sha256: artifactRecord.sha256,
+        },
+      ],
+      metadata,
+      relations,
+      failure: null,
+    };
+  }
+
+  if (record.status !== "failure") {
+    return protocolDefect("extraction status is unsupported");
+  }
+  if (
+    !Array.isArray(record.artifacts) ||
+    record.artifacts.length !== 0 ||
+    record.metadata !== null ||
+    !Array.isArray(record.relations) ||
+    record.relations.length !== 0
+  ) {
+    return protocolDefect("failed extraction contains success data");
+  }
+  const finalUrl =
+    record.final_url === null
+      ? null
+      : extractionUrl(record.final_url, "extraction final URL");
+  return {
+    schema_version: "1",
+    status: "failure",
+    requested_url: requestedUrl,
+    final_url: finalUrl,
+    extractor,
+    artifacts: [],
+    metadata: null,
+    relations: [],
+    failure: parseFailureDetail(record.failure),
+  };
+}
+
+function envelopeFailure(detail: ExtractionFailureDetail): never {
+  const summary = sanitizeExternalError(
+    `${detail.message}: ${detail.evidence}`,
+  );
+  const message = `scrapectl extraction failed (${detail.failure_class}): ${summary}`;
+  if (detail.failure_class === "cancelled") {
+    throw new ScrapectlExtractionError(message, "cancelled", "cancellation");
+  }
+  if (detail.failure_class === "authentication_required") {
+    throw new ScrapectlExtractionError(message, "auth_config", "auth_config");
+  }
+  if (detail.failure_class === "invalid_request") {
+    throw new ScrapectlExtractionError(message, "permanent", "policy");
+  }
+  if (
+    detail.retryable &&
+    new Set([
+      "upstream_unavailable",
+      "timeout",
+      "browser_error",
+      "provider_error",
+    ]).has(detail.failure_class)
+  ) {
+    throw new ScrapectlExtractionError(message, "item_transient", "item");
+  }
+  throw new ScrapectlExtractionError(message, "permanent", "permanent");
+}
+
+export async function extractWithScrapectl(
+  inputUrl: string,
+  options: ExtractionOptions = {},
+): Promise<ExtractionSuccess> {
+  const requestedUrl = normalizedWebUrl(inputUrl);
+  const timeoutMs = positiveInteger(
+    options.timeoutMs ?? SCRAPECTL_DEFAULT_TIMEOUT_MS,
+    "scrapectl timeout",
+    SCRAPECTL_TIMEOUT_MAX_MS,
+  );
+  const maxContentBytes = positiveInteger(
+    options.maxContentBytes ?? SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+    "scrapectl max content bytes",
+    SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+  );
+  const maxRelations = nonnegativeInteger(
+    options.maxRelations ?? SCRAPECTL_DEFAULT_MAX_RELATIONS,
+    "scrapectl max relations",
+    SCRAPECTL_DEFAULT_MAX_RELATIONS,
+  );
+  const maxOutputBytes = Math.min(
+    positiveInteger(
+      options.maxOutputBytes ?? SCRAPECTL_OUTPUT_MAX_BYTES,
+      "scrapectl max output bytes",
+    ),
+    SCRAPECTL_OUTPUT_MAX_BYTES,
+  );
+  if (options.signal?.aborted) {
+    throw new ScrapectlExtractionError(
+      "scrapectl extraction was cancelled",
+      "cancelled",
+      "cancellation",
+    );
+  }
+  const executable = findExecutable("scrapectl");
+  if (executable === null) {
+    throw new ScrapectlExtractionError(
+      "scrapectl extraction infrastructure is unavailable",
+      "infra",
+      "infrastructure",
+    );
+  }
+  const args = [
+    "fetch-markdown",
+    requestedUrl,
+    "--envelope",
+    "--max-content-bytes",
+    String(maxContentBytes),
+    "--max-relations",
+    String(maxRelations),
+  ];
+
+  let result: CommandResult;
+  try {
+    result = await runCommand(
+      executable,
+      args,
+      timeoutMs,
+      maxOutputBytes,
+      options.signal,
+    );
+  } catch (error) {
+    throw new ScrapectlExtractionError(
+      `scrapectl extraction infrastructure failed: ${sanitizeExternalError(error)}`,
+      "infra",
+      "infrastructure",
+    );
+  }
+  if (result.aborted) {
+    throw new ScrapectlExtractionError(
+      "scrapectl extraction was cancelled",
+      "cancelled",
+      "cancellation",
+    );
+  }
+  if (result.outputExceeded) {
+    return protocolDefect("extraction command output exceeded its bound");
+  }
+  if (result.timedOut) {
+    throw new ScrapectlExtractionError(
+      `scrapectl extraction timed out after ${timeoutMs}ms`,
+      "item_transient",
+      "item",
+    );
+  }
+  if (result.spawnError !== undefined) {
+    throw new ScrapectlExtractionError(
+      `scrapectl extraction infrastructure failed: ${sanitizeExternalError(result.spawnError)}`,
+      "infra",
+      "infrastructure",
+    );
+  }
+  if (result.signal !== null) {
+    const cancelled = new Set(["SIGHUP", "SIGINT", "SIGTERM"]).has(
+      result.signal,
+    );
+    throw new ScrapectlExtractionError(
+      `scrapectl extraction terminated by ${result.signal}`,
+      cancelled ? "cancelled" : "infra",
+      cancelled ? "cancellation" : "infrastructure",
+    );
+  }
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(result.stdout) as unknown;
+  } catch {
+    return protocolDefect("extraction command returned malformed JSON");
+  }
+  const envelope = validateExtractionEnvelope(decoded, requestedUrl, {
+    maxContentBytes,
+    maxRelations,
+  });
+  if (envelope.status === "success") {
+    if (result.status !== 0) {
+      return protocolDefect("successful extraction exited nonzero");
+    }
+    return envelope;
+  }
+  if (result.status === 0) {
+    return protocolDefect("failed extraction exited successfully");
+  }
+  return envelopeFailure(envelope.failure);
 }

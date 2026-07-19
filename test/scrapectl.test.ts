@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -10,7 +11,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scrapeWithScrapectl } from "../src/scrapectl";
+import {
+  extractWithScrapectl,
+  ScrapectlExtractionError,
+  scrapeWithScrapectl,
+  validateExtractionEnvelope,
+} from "../src/scrapectl";
 
 const dirs: string[] = [];
 const originalPath = process.env.PATH;
@@ -61,6 +67,251 @@ function installScrapectl(script: string): { dir: string; executable: string } {
   writeExecutable(executable, script);
   return { dir, executable };
 }
+
+function extractionEnvelope(
+  requestedUrl: string,
+  content = "# Extracted\n\nBody",
+): Record<string, unknown> {
+  return {
+    schema_version: "1",
+    status: "success",
+    requested_url: requestedUrl,
+    final_url: `${requestedUrl}/final`,
+    extractor: {
+      name: "scrapectl",
+      version: "1.2.3",
+      implementation: "generic-page",
+      implementation_version: "1",
+    },
+    artifacts: [
+      {
+        artifact_type: "document",
+        media_type: "text/markdown",
+        encoding: "utf-8",
+        content,
+        size_bytes: Buffer.byteLength(content),
+        sha256: createHash("sha256").update(content).digest("hex"),
+      },
+    ],
+    metadata: {
+      content_type: "web_page",
+      title: "Extracted",
+      author_name: "",
+      author_handle: "",
+      published_at: "",
+      source_id: "",
+      warnings: [],
+    },
+    relations: [
+      {
+        relation_type: "content_link",
+        target_url: "https://reference.example/item",
+      },
+    ],
+    failure: null,
+  };
+}
+
+function shellLiteral(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+const SCRAPECTL_CONTRACT_FIXTURE =
+  process.env.SCRAPECTL_CONTRACT_FIXTURE ??
+  "/Users/mike/code/arthack/apps/scrapectl/tests/fixtures/extraction-generic.expected.json";
+
+function assertCompatibleFixture(
+  label: string,
+  path: string,
+  expectedUrl: string,
+): void {
+  if (!existsSync(path)) {
+    throw new Error(`${label} contract fixture is missing: ${path}`);
+  }
+  const payload = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  try {
+    const envelope = validateExtractionEnvelope(payload, expectedUrl);
+    expect(envelope.status).toBe("success");
+  } catch (error) {
+    throw new Error(
+      `${label} contract fixture is incompatible with Agentbrain: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+test("recorded Scrapectl extraction fixtures match Agentbrain's envelope contract", () => {
+  assertCompatibleFixture(
+    "Scrapectl generic",
+    SCRAPECTL_CONTRACT_FIXTURE,
+    "https://example.com/start",
+  );
+  assertCompatibleFixture(
+    "Agentbrain X post",
+    join(import.meta.dir, "fixtures", "prescraped_x_tweet.json"),
+    "https://twitter.com/original_handle/status/123?ref=timeline",
+  );
+  assertCompatibleFixture(
+    "Agentbrain X article",
+    join(import.meta.dir, "fixtures", "prescraped_x_article.json"),
+    "https://twitter.com/writer/article/987?utm_source=timeline",
+  );
+});
+
+test("incompatible extraction envelope changes are protocol defects", () => {
+  const url = "https://example.com/contract";
+  const base = extractionEnvelope(url);
+  const missingFailure = { ...base };
+  delete (missingFailure as Record<string, unknown>).failure;
+  const cases: Array<[string, Record<string, unknown>, string]> = [
+    [
+      "schema version",
+      { ...base, schema_version: "2" },
+      "extraction schema version is unsupported",
+    ],
+    [
+      "provider fields",
+      { ...base, status_code: 200 },
+      "extraction envelope has unknown or missing fields",
+    ],
+    [
+      "extractor identity",
+      {
+        ...base,
+        extractor: {
+          ...(base.extractor as Record<string, unknown>),
+          name: "browserctl",
+        },
+      },
+      "extractor name is unsupported",
+    ],
+    [
+      "missing failure sentinel",
+      missingFailure,
+      "extraction envelope has unknown or missing fields",
+    ],
+  ];
+  for (const [label, payload, message] of cases) {
+    try {
+      expect(() => validateExtractionEnvelope(payload, url)).toThrow(
+        `scrapectl protocol defect: ${message}`,
+      );
+    } catch (error) {
+      throw new Error(
+        `${label} did not fail as a clear protocol defect: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+});
+
+test("versioned extraction uses explicit argv and validates the success envelope", async () => {
+  const url = "https://example.com/article";
+  const envelope = extractionEnvelope(url);
+  const { dir } = installScrapectl(`#!/bin/sh
+printf '%s\\n' "$@" > "$LOG"
+printf '%s' ${shellLiteral(JSON.stringify(envelope))}
+`);
+  const log = join(dir, "extraction-argv.txt");
+  process.env.LOG = log;
+
+  const result = await extractWithScrapectl(url, {
+    maxContentBytes: 1000,
+    maxRelations: 3,
+  });
+
+  expect(readFileSync(log, "utf8")).toBe(
+    "fetch-markdown\nhttps://example.com/article\n--envelope\n--max-content-bytes\n1000\n--max-relations\n3\n",
+  );
+  expect(result).toMatchObject({
+    status: "success",
+    final_url: "https://example.com/article/final",
+    metadata: { title: "Extracted" },
+  });
+});
+
+test("classified extraction failures map without parsing stderr", async () => {
+  const url = "https://example.com/failure";
+  const { executable } = installScrapectl("#!/bin/sh\nexit 1\n");
+  const cases = [
+    ["upstream_unavailable", true, "item_transient", "item", 1],
+    ["authentication_required", false, "auth_config", "auth_config", 2],
+    ["provider_error", false, "permanent", "permanent", 1],
+    ["invalid_request", false, "permanent", "policy", 1],
+    ["cancelled", false, "cancelled", "cancellation", 130],
+  ] as const;
+
+  for (const [
+    failureClass,
+    retryable,
+    disposition,
+    outcome,
+    exitCode,
+  ] of cases) {
+    const envelope = {
+      ...extractionEnvelope(url),
+      status: "failure",
+      final_url: null,
+      artifacts: [],
+      metadata: null,
+      relations: [],
+      failure: {
+        failure_class: failureClass,
+        retryable,
+        message: "classified failure",
+        evidence: "Cookie: secret-value",
+      },
+    };
+    writeExecutable(
+      executable,
+      `#!/bin/sh\nprintf '%s\\n' 'stderr must not classify this' >&2\nprintf '%s' ${shellLiteral(JSON.stringify(envelope))}\nexit ${exitCode}\n`,
+    );
+    let caught: unknown;
+    try {
+      await extractWithScrapectl(url);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ScrapectlExtractionError);
+    expect(caught).toMatchObject({ disposition, outcome });
+    expect(String(caught)).not.toContain("secret-value");
+    expect(String(caught)).not.toContain("stderr must not classify");
+  }
+});
+
+test("malformed and unknown envelopes are visible protocol defects", async () => {
+  const { executable } = installScrapectl(`#!/bin/sh
+printf '%s' '{"schema_version":"99"}'
+`);
+  await expect(
+    extractWithScrapectl("https://example.com/protocol"),
+  ).rejects.toMatchObject({ disposition: "permanent", outcome: "protocol" });
+
+  writeExecutable(executable, "#!/bin/sh\nprintf '%s' 'not-json'\n");
+  await expect(
+    extractWithScrapectl("https://example.com/protocol"),
+  ).rejects.toThrow("protocol defect");
+
+  const url = "https://example.com/unsupported-relation";
+  const unsupported = {
+    ...extractionEnvelope(url),
+    relations: [
+      {
+        relation_type: "reply",
+        target_url: "https://x.com/i/status/123",
+      },
+    ],
+  };
+  writeExecutable(
+    executable,
+    `#!/bin/sh\nprintf '%s' ${shellLiteral(JSON.stringify(unsupported))}\n`,
+  );
+  await expect(extractWithScrapectl(url)).rejects.toThrow(
+    "relation type is unsupported",
+  );
+});
 
 test("Scrapectl adapter resolves PATH and requests final Markdown with explicit argv", async () => {
   const { dir } = installScrapectl(`#!/bin/sh
@@ -334,6 +585,57 @@ wait
   }
   expect(alive).toBe(false);
 });
+
+test("extraction abort kills detached Scrapectl descendants", async () => {
+  if (process.platform === "win32") return;
+  const { dir } = installScrapectl(`#!/bin/sh
+sh -c 'trap "" HUP INT TERM; exec sleep 30' &
+printf '%s' "$!" > "$CHILD_PID_FILE"
+wait
+`);
+  const pidFile = join(dir, "extraction-child.pid");
+  process.env.CHILD_PID_FILE = pidFile;
+  const controller = new AbortController();
+  const pending = extractWithScrapectl("https://example.com/cancel", {
+    signal: controller.signal,
+    timeoutMs: 30_000,
+  });
+
+  for (let attempt = 0; attempt < 1_000 && !existsSync(pidFile); attempt += 1) {
+    await Bun.sleep(10);
+  }
+  if (!existsSync(pidFile)) {
+    controller.abort();
+    await pending.catch(() => {});
+    throw new Error(
+      "provider fixture did not start for extraction cancellation",
+    );
+  }
+  const descendantPid = Number(readFileSync(pidFile, "utf8"));
+  controller.abort();
+  await expect(pending).rejects.toMatchObject({
+    disposition: "cancelled",
+    outcome: "cancellation",
+  });
+
+  let alive = true;
+  for (let attempt = 0; attempt < 20 && alive; attempt += 1) {
+    try {
+      process.kill(descendantPid, 0);
+      await Bun.sleep(10);
+    } catch {
+      alive = false;
+    }
+  }
+  if (alive) {
+    try {
+      process.kill(descendantPid, "SIGKILL");
+    } catch {
+      // It exited between the final probe and cleanup.
+    }
+  }
+  expect(alive).toBe(false);
+}, 10_000);
 
 test("parent cancellation kills detached Scrapectl descendants and preserves signal exits", async () => {
   if (process.platform === "win32") return;
