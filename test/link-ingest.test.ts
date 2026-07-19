@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DurableSubmissionIntent } from "../src/admission";
 import { ArtifactStore } from "../src/artifacts";
-import { canonicalizeSource, LINKED_FAN_OUT_LIMIT } from "../src/link-ingest";
+import { LINKED_FAN_OUT_LIMIT } from "../src/link-ingest";
 import { ScrapectlExtractionError } from "../src/scrapectl";
 import { ResearchStore } from "../src/store";
 import type { ExtractionRelation, ExtractionSuccess, Job } from "../src/types";
+import { canonicalizeSource } from "../src/url";
 import { runWorker } from "../src/worker";
 
 const roots: string[] = [];
@@ -41,7 +42,10 @@ async function fixture(name: string): Promise<ExtractionSuccess> {
   ).json()) as ExtractionSuccess;
 }
 
-function intent(url: string, ingress = "linkctl"): DurableSubmissionIntent {
+function intent(
+  url: string,
+  ingress = "test-ingress",
+): DurableSubmissionIntent {
   return {
     version: 1,
     kind: "url",
@@ -56,7 +60,7 @@ function enqueue(
   store: ResearchStore,
   url: string,
   key: string,
-  ingress = "linkctl",
+  ingress = "test-ingress",
 ): Job {
   return store.enqueueJob({
     idempotencyKey: key,
@@ -181,10 +185,10 @@ test("generic roots ignore Markdown URLs and extractor relations for automatic f
   store.close();
 });
 
-test("X fixture commits typed relations, child jobs, aliases, and policy suppressions", async () => {
+test("legacy Linkctl fixture provenance remains readable after worker indexing", async () => {
   const { store, artifacts } = setup();
   const root = await fixture("prescraped_x_tweet.json");
-  enqueue(store, root.requested_url, "fixture-root");
+  enqueue(store, root.requested_url, "fixture-root", "linkctl");
   const calls: string[] = [];
   const result = await runWorker(store, {
     once: true,
@@ -254,20 +258,22 @@ test("X fixture commits typed relations, child jobs, aliases, and policy suppres
   ]);
   const provenance = store.db
     .query(
-      `SELECT raw_metadata FROM provenance
+      `SELECT ingress, raw_metadata FROM provenance
        WHERE evidence_type='url_extraction' AND raw_metadata LIKE '%historical-fixture%'`,
     )
-    .get() as { raw_metadata: string };
-  expect(JSON.parse(provenance.raw_metadata).extractor.implementation).toBe(
-    "linkctl",
-  );
+    .get() as { ingress: string; raw_metadata: string };
+  expect(provenance.ingress).toBe("linkctl");
+  expect(JSON.parse(provenance.raw_metadata).extractor).toMatchObject({
+    implementation: "linkctl",
+    implementation_version: "historical-fixture",
+  });
   store.close();
 });
 
-test("an X article with zero relations completes without child intent", async () => {
+test("legacy X article fixture remains readable without child intent", async () => {
   const { store, artifacts } = setup();
   const root = await fixture("prescraped_x_article.json");
-  enqueue(store, root.requested_url, "zero-relations");
+  enqueue(store, root.requested_url, "zero-relations", "linkctl");
   const result = await runWorker(store, {
     once: true,
     workerId: "zero-worker",
@@ -287,6 +293,17 @@ test("an X article with zero relations completes without child intent", async ()
   expect(
     store.db.query("SELECT COUNT(*) AS count FROM observations").get(),
   ).toEqual({ count: 0 });
+  const provenance = store.db
+    .query(
+      `SELECT ingress, raw_metadata FROM provenance
+       WHERE evidence_type='url_extraction' AND raw_metadata LIKE '%historical-fixture%'`,
+    )
+    .get() as { ingress: string; raw_metadata: string };
+  expect(provenance.ingress).toBe("linkctl");
+  expect(JSON.parse(provenance.raw_metadata).extractor).toMatchObject({
+    implementation: "linkctl",
+    implementation_version: "historical-fixture",
+  });
   store.close();
 });
 

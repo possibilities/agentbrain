@@ -5,8 +5,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "agentbrain": "src/cli.ts",
-    "research-ingest-link": "src/research-ingest-link.ts"
+    "agentbrain": "src/cli.ts"
   },
   "scripts": {
     "lint": "biome check src test",

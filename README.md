@@ -76,7 +76,7 @@ Then install the commands and the one user service:
 
 The idempotent installer creates only these owned entries:
 
-- `~/.local/bin/agentbrain` and `~/.local/bin/research-ingest-link`, linked to this checkout;
+- `~/.local/bin/agentbrain`, linked to this checkout;
 - `~/Library/LaunchAgents/agentbrain.worker.plist`, invoking only the installed `agentbrain worker` command;
 - `${XDG_STATE_HOME:-~/.local/state}/agentbrain/worker.log` in a private state directory.
 
@@ -109,14 +109,7 @@ It gracefully unloads the Worker and removes only owned command links and the ma
 
 The LaunchAgent drains already admitted ingestion jobs only. Installation does **not** create, discover, schedule, or enable recurring remote Sources. Remote Source activation remains deferred to a later, explicit operator rollout.
 
-## Completed-link compatibility adapter
-
-`research-ingest-link` remains a temporary Scrapectl compatibility executable for already completed root payloads. It reads one bounded completed payload from stdin, indexes that root without child extraction, and emits legacy bare JSON rather than Agentbrain's `{ok,data}` envelope. New Ingress integrations should use durable `agentbrain submit` instead.
-
-```bash
-printf '%s' '{"url":"https://example.com","markdown":"# Saved"}' \
-  | agentbrain ingest-link --json
-```
+Legacy provenance labels such as `source=linkctl` remain queryable as historical data. They do not identify a live Ingress or an installed command.
 
 ## Deletion
 

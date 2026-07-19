@@ -39,10 +39,6 @@ export const COMMANDS = [
     summary: "Check database, Artifact, lease, and provider health",
   },
   {
-    name: "ingest-link",
-    summary: "Index one completed Scrapectl payload from stdin",
-  },
-  {
     name: "delete",
     summary: "Delete one selected document with explicit confirmation",
   },
@@ -267,31 +263,6 @@ Usage:
 Uses a structurally read-only database connection. Reports safe status/count data for
 SQLite integrity, schema, Artifact references, leases, and Scrapectl availability.
 Exits 1 when a required check fails.
-`,
-  "ingest-link": `agentbrain ingest-link — index a completed scraped link
-
-Usage:
-  printf '%s' '{"url":"https://example.com","markdown":"# Saved"}' | agentbrain ingest-link --json
-
-Reads exactly one JSON object from stdin. Fields: url, markdown, optional structured,
-source, title, category, tags, summary, notes, preset, and save_markdown_copy. Raw stdin
-is capped at 10000000 bytes; markdown is capped at 5000000 UTF-8 bytes and 5000000
-Unicode code points. Invalid/oversize input is rejected before the database is opened.
-
-Every completed root is indexed without re-scraping it. The adapter never extracts
-child URLs, parses Markdown links for fanout, or enqueues child jobs. Use queued
-agentbrain submit plus worker execution for new URL ingestion and durable child fanout.
-Agentbrain performs no DNS/network checks, direct HTTP fallback, browser behavior, or
-X-specific extraction route.
-
-Optional artifacts are written below XDG_DATA_HOME/agentbrain/scraped (default
-~/.local/share/agentbrain/scraped). Artifact failure leaves the root committed and is a
-partial result. Exit 0 means complete; exit 1 means invalid/root failure; exit 2 means
-a root-success artifact partial. The separate research-ingest-link adapter uses the same
-limits/exits but emits temporary legacy bare JSON.
-
-Agentbrain owns Admission, the ingestion ledger, Artifact storage, and index writes.
-Scrapectl owns URL extraction and backend behavior before this compatibility handoff.
 `,
   delete: `agentbrain delete — delete one indexed document
 

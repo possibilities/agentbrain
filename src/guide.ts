@@ -62,7 +62,6 @@ export function buildGuide(): unknown {
         "worker",
         "jobs retry/cancel/exclude",
         "jobs show --reveal-content",
-        "ingest-link",
         "delete",
       ],
       submission_contract: {
@@ -73,15 +72,6 @@ export function buildGuide(): unknown {
         wait_timeout_preserves_job: true,
       },
       citation_fields: ["document_id", "chunk_id", "source_uri", "title"],
-      legacy_adapter:
-        "research-ingest-link emits bare Scrapectl-compatible JSON, not the Agentbrain envelope.",
-      completed_link_limits: {
-        raw_stdin_bytes: 10000000,
-        markdown_utf8_bytes: 5000000,
-        markdown_unicode_code_points: 5000000,
-      },
-      optional_artifacts:
-        "save_markdown_copy writes under XDG_DATA_HOME/agentbrain/scraped (default ~/.local/share/agentbrain/scraped); failure is a root-success partial and adds artifact_error.",
       document_relations: {
         outbound_links:
           "Links discovered from the selected document to targets or unresolved URLs.",
@@ -102,8 +92,8 @@ export function buildGuide(): unknown {
       },
       exit_codes: {
         "0": "success",
-        "1": "runtime, root-ingest, not-found, or database failure",
-        "2": "argument or pre-admission validation error; for ingest-link adapters, root committed with child or optional artifact failures",
+        "1": "runtime, extraction, indexing, not-found, or database failure",
+        "2": "argument or pre-admission validation error",
       },
     },
     recommended_workflow: [
@@ -130,8 +120,6 @@ export function buildGuide(): unknown {
       jobs: "Content-safe ingestion ledger listing, detail, statistics, retry, cancellation, exclusion, and explicit audited Artifact reveal.",
       doctor:
         "Read-only database, Artifact-reference, lease, schema, and provider health checks.",
-      "ingest-link":
-        "Read one bounded already-scraped root from stdin for the temporary compatibility adapter; it never extracts child URLs, parses Markdown links for fanout, or enqueues child jobs.",
       delete: "Delete exactly one selected document with --confirm delete.",
       tags: "Tag discovery.",
       sources: "Source-type and domain discovery.",
@@ -178,7 +166,6 @@ Inspect:
   agentbrain worker --help
   agentbrain jobs --help
   agentbrain doctor --help
-  agentbrain ingest-link --help
   agentbrain delete --help
   agentbrain stats --help
   agentbrain tags --help
@@ -190,7 +177,7 @@ Document:
 3. Zero-result recovery through alternate terms, tags, and sources.
 4. Generic explicit ingestion and guarded deletion.
 5. The ownership boundary: Agentbrain owns durable admission, ingestion jobs, Artifact snapshots, and index writes; Scrapectl owns URL extraction/network/backend behavior.
-6. Queued and duplicate submission acknowledgements, explicit idempotency conflicts, --wait observation, and the temporary completed-link compatibility adapter.
+6. Queued and duplicate submission acknowledgements, explicit idempotency conflicts, and --wait observation.
 7. The opt-in real Scrapectl smoke: temporary database, queued URL Admission, worker --once, search verification, and preserved failed evidence.
 8. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.hermes/research-cache/research.db.
 

@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -624,4 +624,31 @@ test("invalid submission fails before creating a job or Artifact", () => {
     count: 0,
   });
   db.close();
+});
+
+test("completed-link compatibility commands are absent from every public surface", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-retired-command-"));
+  tempDirs.push(dir);
+  const dbPath = join(dir, "research.db");
+  const retired = runCli(["ingest-link", "--json"], dbPath);
+  expect(retired.exitCode).toBe(2);
+  expect(JSON.parse(decode(retired.stdout))).toMatchObject({
+    ok: false,
+    command: "ingest-link",
+    error: { code: "unknown_command" },
+  });
+  expect(existsSync(dbPath)).toBe(false);
+
+  const topHelp = decode(runCli(["--help"]).stdout);
+  const guide = decode(runCli(["guide", "--json"]).stdout);
+  const prompt = decode(runCli(["prompt"]).stdout);
+  for (const output of [topHelp, guide, prompt]) {
+    expect(output).not.toContain("ingest-link");
+    expect(output).not.toContain("completed-link");
+  }
+
+  const pkg = await Bun.file(join(REPO, "package.json")).json();
+  expect(pkg.bin).toEqual({ agentbrain: "src/cli.ts" });
+  expect(existsSync(join(REPO, "src/research-ingest-link.ts"))).toBe(false);
+  expect(existsSync(join(REPO, "src/completed-link-input.ts"))).toBe(false);
 });

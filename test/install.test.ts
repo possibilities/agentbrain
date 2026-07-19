@@ -94,9 +94,7 @@ test("installer renders one private owned worker service idempotently", () => {
   expect(readlinkSync(join(fixture.bin, "agentbrain"))).toBe(
     join(REPO, "src/cli.ts"),
   );
-  expect(readlinkSync(join(fixture.bin, "research-ingest-link"))).toBe(
-    join(REPO, "src/research-ingest-link.ts"),
-  );
+  expect(existsSync(join(fixture.bin, "research-ingest-link"))).toBe(false);
   expect(readdirSync(fixture.launchAgents)).toEqual([
     "agentbrain.worker.plist",
   ]);
@@ -201,34 +199,43 @@ test("installer stops before mutation when an owned service cannot unload", () =
   );
   expect(readFileSync(service, "utf8")).toBe(originalPlist);
   expect(existsSync(join(fixture.bin, "agentbrain"))).toBe(true);
-  expect(existsSync(join(fixture.bin, "research-ingest-link"))).toBe(true);
+  expect(existsSync(join(fixture.bin, "research-ingest-link"))).toBe(false);
 }, 15_000);
 
-test("installer accepts exact owned and legacy command links", () => {
-  const fixture = setup();
+test("installer removes only known retired links and preserves unrelated binaries", () => {
+  const owned = setup();
   symlinkSync(
-    relative(fixture.bin, join(REPO, "src/cli.ts")),
-    join(fixture.bin, "agentbrain"),
+    relative(owned.bin, join(REPO, "src/research-ingest-link.ts")),
+    join(owned.bin, "research-ingest-link"),
   );
+  expect(runInstaller(owned).exitCode).toBe(0);
+  expect(existsSync(join(owned.bin, "research-ingest-link"))).toBe(false);
+
+  const legacy = setup();
   symlinkSync(
     join(dirname(REPO), "hermes-greybird/bin/research-ingest-link"),
-    join(fixture.bin, "research-ingest-link"),
+    join(legacy.bin, "research-ingest-link"),
   );
-  expect(runInstaller(fixture).exitCode).toBe(0);
-  expect(readlinkSync(join(fixture.bin, "research-ingest-link"))).toBe(
-    join(REPO, "src/research-ingest-link.ts"),
-  );
+  expect(runInstaller(legacy).exitCode).toBe(0);
+  expect(existsSync(join(legacy.bin, "research-ingest-link"))).toBe(false);
+
+  const unrelated = setup();
+  const foreign = join(unrelated.bin, "research-ingest-link");
+  writeFileSync(foreign, "foreign command");
+  expect(runInstaller(unrelated).exitCode).toBe(0);
+  expect(readFileSync(foreign, "utf8")).toBe("foreign command");
+  expect(runInstaller(unrelated, "--uninstall").exitCode).toBe(0);
+  expect(readFileSync(foreign, "utf8")).toBe("foreign command");
 }, 15_000);
 
-test("installer refuses foreign commands without partial takeover or removal", () => {
+test("installer refuses foreign active commands without partial takeover", () => {
   const regular = setup();
-  writeFileSync(join(regular.bin, "research-ingest-link"), "foreign command");
+  writeFileSync(join(regular.bin, "agentbrain"), "foreign command");
   const refusedRegular = runInstaller(regular);
   expect(refusedRegular.exitCode).not.toBe(0);
   expect(decode(refusedRegular.stderr)).toContain(
     "refusing to overwrite non-symlink",
   );
-  expect(existsSync(join(regular.bin, "agentbrain"))).toBe(false);
   expect(existsSync(regular.launchAgents)).toBe(false);
 
   const unrelated = setup();
@@ -243,12 +250,14 @@ test("installer refuses foreign commands without partial takeover or removal", (
   expect(runInstaller(installed).exitCode).toBe(0);
   rmSync(join(installed.bin, "agentbrain"));
   symlinkSync("../foreign/agentbrain", join(installed.bin, "agentbrain"));
+  const foreignBinary = join(installed.bin, "research-ingest-link");
+  writeFileSync(foreignBinary, "unrelated local binary");
   const refusedRemoval = runInstaller(installed, "--uninstall");
   expect(refusedRemoval.exitCode).not.toBe(0);
   expect(decode(refusedRemoval.stderr)).toContain(
     "refusing to remove foreign command",
   );
-  expect(existsSync(join(installed.bin, "research-ingest-link"))).toBe(true);
+  expect(readFileSync(foreignBinary, "utf8")).toBe("unrelated local binary");
   expect(
     existsSync(join(installed.launchAgents, "agentbrain.worker.plist")),
   ).toBe(true);
