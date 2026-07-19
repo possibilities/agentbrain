@@ -21,5 +21,5 @@ Files:
 - [ ] Query results unchanged; existing search/query tests still pass
 
 ## Done summary
-
+Documented SQLite single-MIN/MAX bare-column reliance with a warning comment at the search() FTS query in src/db.ts; no query or behavior change.
 ## Evidence
