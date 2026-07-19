@@ -55,5 +55,5 @@ Add the new contract alongside existing scrape-only modes until Agentbrain consu
 - [ ] Existing offline Scrapectl suites and corpus fixtures pass without browser or network access.
 
 ## Done summary
-
+Added a versioned, provider-neutral extraction envelope in Scrapectl covering generic pages, X posts, and X Articles: bounded hashed artifacts, sanitized metadata, typed outbound relations excluding profile/media/analytics/navigation links, and machine-readable failure classes, with contract fixtures and failure-class tests.
 ## Evidence
