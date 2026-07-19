@@ -1,13 +1,23 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DurableSubmissionIntent } from "../src/admission";
 import { ArtifactStore } from "../src/artifacts";
+import { ScrapectlExtractionError } from "../src/scrapectl";
 import { ResearchStore } from "../src/store";
 import { type JobMaterializer, runWorker } from "../src/worker";
 
 const roots: string[] = [];
+const originalPath = process.env.PATH;
 const T0 = new Date("2026-06-01T00:00:00.000Z");
 
 function at(milliseconds: number): Date {
@@ -15,14 +25,22 @@ function at(milliseconds: number): Date {
 }
 
 afterEach(() => {
+  process.env.PATH = originalPath;
+  delete process.env.COUNT_FILE;
+  delete process.env.ARGV_FILE;
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(): { store: ResearchStore; artifacts: ArtifactStore } {
+function fixture(): {
+  root: string;
+  store: ResearchStore;
+  artifacts: ArtifactStore;
+} {
   const root = mkdtempSync(join(tmpdir(), "agentbrain-worker-"));
   roots.push(root);
   return {
+    root,
     store: new ResearchStore(join(root, "brain.db")),
     artifacts: new ArtifactStore(join(root, "artifacts")),
   };
@@ -49,6 +67,60 @@ function intent(kind: "text" | "url" = "text"): DurableSubmissionIntent {
   };
 }
 
+function extractionEnvelope(url: string, content: string): string {
+  return JSON.stringify({
+    schema_version: "1",
+    status: "success",
+    requested_url: url,
+    final_url: "https://example.test/final",
+    extractor: {
+      name: "scrapectl",
+      version: "1.2.3",
+      implementation: "generic-page",
+      implementation_version: "1",
+    },
+    artifacts: [
+      {
+        artifact_type: "document",
+        media_type: "text/markdown",
+        encoding: "utf-8",
+        content,
+        size_bytes: Buffer.byteLength(content),
+        sha256: createHash("sha256").update(content).digest("hex"),
+      },
+    ],
+    metadata: {
+      content_type: "web_page",
+      title: "Queued URL",
+      author_name: "",
+      author_handle: "",
+      published_at: "",
+      source_id: "",
+      warnings: [],
+    },
+    relations: [],
+    failure: null,
+  });
+}
+
+function installExtractionCommand(root: string, envelope: string): void {
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const executable = join(bin, "scrapectl");
+  writeFileSync(
+    executable,
+    `#!/bin/sh
+printf x >> "$COUNT_FILE"
+printf '%s\\n' "$@" > "$ARGV_FILE"
+printf '%s' '${envelope.replaceAll("'", `'\\''`)}'
+`,
+  );
+  chmodSync(executable, 0o755);
+  process.env.PATH = `${bin}:${originalPath}`;
+  process.env.COUNT_FILE = join(root, "count");
+  process.env.ARGV_FILE = join(root, "argv");
+}
+
 const materialize: JobMaterializer = (job) => [
   {
     sourceType: "text",
@@ -57,6 +129,169 @@ const materialize: JobMaterializer = (job) => [
     content: `materialized ${job.id}`,
   },
 ];
+
+test("queued URL extraction promotes and commits through fenced completion", async () => {
+  const { root, store, artifacts } = fixture();
+  const queued = store.enqueueJob({
+    idempotencyKey: "queued-url",
+    kind: "url",
+    intent: intent("url"),
+    now: T0,
+  });
+  const requested = "https://example.test/private?token=%5BREDACTED%5D";
+  const content = "# Queued URL\n\nDurable body";
+  installExtractionCommand(root, extractionEnvelope(requested, content));
+
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "url-worker",
+    now: () => T0,
+    artifactStore: artifacts,
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 1, completed: 1, failed: 0 });
+  expect(
+    store.db
+      .query("SELECT state, resource_id FROM jobs WHERE id=?")
+      .get(queued.job.id),
+  ).toMatchObject({ state: "completed", resource_id: 1 });
+  const artifact = store.db
+    .query(
+      "SELECT content_hash, artifact_role, storage_path FROM artifacts WHERE artifact_role='extracted_markdown'",
+    )
+    .get() as {
+    content_hash: string;
+    artifact_role: string;
+    storage_path: string;
+  };
+  expect(artifacts.readUtf8(artifact.content_hash)).toBe(content);
+  expect(
+    store.db
+      .query("SELECT evidence_type, raw_metadata FROM provenance ORDER BY id")
+      .all(),
+  ).toEqual([
+    {
+      evidence_type: "ingestion_materialized",
+      raw_metadata: JSON.stringify({ job_id: queued.job.id, item: 1 }),
+    },
+    {
+      evidence_type: "url_extraction",
+      raw_metadata: expect.stringContaining('"name":"scrapectl"'),
+    },
+  ]);
+  expect(readFileSync(process.env.ARGV_FILE ?? "", "utf8")).toContain(
+    "--envelope\n",
+  );
+  expect(readFileSync(process.env.ARGV_FILE ?? "", "utf8")).not.toContain(
+    "--markdown",
+  );
+  store.close();
+});
+
+test("retry after index failure reuses the promoted URL Artifact", async () => {
+  const { root, store, artifacts } = fixture();
+  const queued = store.enqueueJob({
+    idempotencyKey: "url-index-retry",
+    kind: "url",
+    intent: intent("url"),
+    now: T0,
+  });
+  const content = "# Reusable\n\nExtract once";
+  installExtractionCommand(
+    root,
+    extractionEnvelope(
+      "https://example.test/private?token=%5BREDACTED%5D",
+      content,
+    ),
+  );
+  const upsert = store.upsertDocument.bind(store);
+  let indexAvailable = false;
+  store.upsertDocument = ((input) => {
+    if (!indexAvailable) throw new Error("simulated index failure");
+    return upsert(input);
+  }) as ResearchStore["upsertDocument"];
+  const policy = { infraBaseMs: 1000, infraCapMs: 1000, jitterRatio: 0 };
+
+  await runWorker(store, {
+    once: true,
+    workerId: "first-index-attempt",
+    now: () => T0,
+    artifactStore: artifacts,
+    policy,
+    installSignalHandlers: false,
+  });
+  expect(readFileSync(process.env.COUNT_FILE ?? "", "utf8")).toBe("x");
+  expect(
+    store.db.query("SELECT state FROM jobs WHERE id=?").get(queued.job.id),
+  ).toEqual({ state: "retry_wait" });
+
+  indexAvailable = true;
+  const retried = await runWorker(store, {
+    once: true,
+    workerId: "second-index-attempt",
+    now: () => at(1000),
+    artifactStore: artifacts,
+    policy,
+    installSignalHandlers: false,
+  });
+  expect(retried).toMatchObject({ claimed: 1, completed: 1 });
+  expect(readFileSync(process.env.COUNT_FILE ?? "", "utf8")).toBe("x");
+  expect(
+    store.db
+      .query("SELECT state, attempt_count FROM jobs WHERE id=?")
+      .get(queued.job.id),
+  ).toEqual({ state: "completed", attempt_count: 2 });
+  expect(store.db.query("SELECT content FROM documents").get()).toEqual({
+    content,
+  });
+  store.close();
+});
+
+test("extraction dispositions reach accepted durable job states", async () => {
+  const cases = [
+    ["infra", "infrastructure", "retry_wait"],
+    ["item_transient", "item", "retry_wait"],
+    ["auth_config", "auth_config", "blocked"],
+    ["permanent", "policy", "failed"],
+    ["permanent", "protocol", "failed"],
+    ["cancelled", "cancellation", "cancelled"],
+  ] as const;
+  for (const [disposition, outcome, expectedState] of cases) {
+    const { store, artifacts } = fixture();
+    const queued = store.enqueueJob({
+      idempotencyKey: `disposition-${outcome}`,
+      kind: "url",
+      intent: intent("url"),
+      now: T0,
+    });
+    await runWorker(store, {
+      once: true,
+      workerId: `worker-${outcome}`,
+      now: () => T0,
+      artifactStore: artifacts,
+      extract: async () => {
+        throw new ScrapectlExtractionError(
+          `safe ${outcome} failure`,
+          disposition,
+          outcome,
+        );
+      },
+      policy: {
+        infraBaseMs: 1000,
+        infraCapMs: 1000,
+        itemBaseMs: 1000,
+        itemCapMs: 1000,
+        jitterRatio: 0,
+      },
+      installSignalHandlers: false,
+    });
+    expect(
+      store.db.query("SELECT state FROM jobs WHERE id=?").get(queued.job.id),
+    ).toEqual({ state: expectedState });
+    store.close();
+  }
+});
 
 test("worker once drains only eligible jobs", async () => {
   const { store, artifacts } = fixture();

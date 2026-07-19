@@ -13,6 +13,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -20,8 +21,10 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { sanitizeArtifactError } from "./sanitize";
+import type { PromotedUrlExtraction } from "./types";
 
 export const DEFAULT_MAX_ARTIFACT_BYTES = 50_000_000;
+export const URL_EXTRACTION_RECORD_MAX_BYTES = 2_000_000;
 export const PRIVATE_DIRECTORY_MODE = 0o700;
 export const PRIVATE_FILE_MODE = 0o600;
 export const SHA256_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
@@ -216,14 +219,17 @@ export class ArtifactStore {
   readonly root: string;
   readonly stagingRoot: string;
   readonly objectsRoot: string;
+  readonly urlExtractionRoot: string;
 
   constructor(root = defaultArtifactRoot()) {
     this.root = root;
     this.stagingRoot = join(root, "staging");
     this.objectsRoot = join(root, "sha256");
+    this.urlExtractionRoot = join(root, "url-extractions");
     ensurePrivateDirectory(this.root);
     ensurePrivateDirectory(this.stagingRoot);
     ensurePrivateDirectory(this.objectsRoot);
+    ensurePrivateDirectory(this.urlExtractionRoot);
   }
 
   relativePath(contentDigest: string): string {
@@ -511,6 +517,80 @@ export class ArtifactStore {
     );
   }
 
+  readUrlExtraction(jobId: number): unknown | null {
+    const path = join(this.urlExtractionRoot, `${this.safeJobId(jobId)}.json`);
+    if (!existsSync(path)) return null;
+    try {
+      const stat = lstatSync(path);
+      if (
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        stat.size > URL_EXTRACTION_RECORD_MAX_BYTES
+      ) {
+        throw new ArtifactStoreError(
+          "artifact_corrupt",
+          "URL extraction record is invalid",
+        );
+      }
+      return JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(path)),
+      ) as unknown;
+    } catch (error) {
+      if (error instanceof ArtifactStoreError) throw error;
+      throw new ArtifactStoreError(
+        "artifact_corrupt",
+        "URL extraction record is invalid",
+      );
+    }
+  }
+
+  writeUrlExtraction(jobId: number, record: PromotedUrlExtraction): void {
+    const id = this.safeJobId(jobId);
+    let bytes: Uint8Array;
+    try {
+      bytes = new TextEncoder().encode(JSON.stringify(record));
+    } catch {
+      throw new ArtifactStoreError(
+        "artifact_corrupt",
+        "URL extraction record is not serializable",
+      );
+    }
+    if (bytes.byteLength > URL_EXTRACTION_RECORD_MAX_BYTES) {
+      throw new ArtifactStoreError(
+        "artifact_too_large",
+        "URL extraction record exceeds the byte limit",
+      );
+    }
+
+    const stagingId = randomUUID();
+    const stagingPath = join(this.stagingRoot, stagingId);
+    const finalPath = join(this.urlExtractionRoot, `${id}.json`);
+    const fd = openSync(
+      stagingPath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      PRIVATE_FILE_MODE,
+    );
+    try {
+      writeAll(fd, bytes);
+      fsyncSync(fd);
+      closeSync(fd);
+      chmodSync(stagingPath, PRIVATE_FILE_MODE);
+      renameSync(stagingPath, finalPath);
+      chmodSync(finalPath, PRIVATE_FILE_MODE);
+      fsyncDirectory(this.urlExtractionRoot);
+      fsyncDirectory(this.stagingRoot);
+    } catch (error) {
+      safeUnlink(stagingPath);
+      try {
+        closeSync(fd);
+      } catch {}
+      throw new ArtifactStoreError(
+        "artifact_missing",
+        sanitizeArtifactError(error, [this.root, stagingPath, finalPath]),
+      );
+    }
+  }
+
   /**
    * Report filesystem/database gaps without private paths. Staging cleanup is
    * opt-in. Promoted-orphan deletion additionally requires an explicit
@@ -543,6 +623,24 @@ export class ArtifactStore {
     this.checkDirectoryMode(this.root, "root", options, report);
     this.checkDirectoryMode(this.stagingRoot, "staging", options, report);
     this.checkDirectoryMode(this.objectsRoot, "sha256", options, report);
+    this.checkDirectoryMode(
+      this.urlExtractionRoot,
+      "url-extractions",
+      options,
+      report,
+    );
+    for (const name of readdirSync(this.urlExtractionRoot)) {
+      const path = join(this.urlExtractionRoot, name);
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      this.checkFileMode(
+        path,
+        "artifact",
+        `url-extractions/${name}`,
+        options,
+        report,
+      );
+    }
     for (const first of readdirSync(this.objectsRoot)) {
       const firstPath = join(this.objectsRoot, first);
       if (!lstatSync(firstPath).isDirectory()) continue;
@@ -629,6 +727,16 @@ export class ArtifactStore {
       });
     }
     return report;
+  }
+
+  private safeJobId(jobId: number): number {
+    if (!Number.isSafeInteger(jobId) || jobId < 1) {
+      throw new ArtifactStoreError(
+        "invalid_staging",
+        "URL extraction job identifier is invalid",
+      );
+    }
+    return jobId;
   }
 
   private hashRegularFile(path: string, expectedSize?: number): StoredArtifact {

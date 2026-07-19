@@ -347,6 +347,99 @@ export type FailureClass =
   | "permanent"
   | "auth_config";
 
+export type ExtractionFailureClass =
+  | "invalid_request"
+  | "authentication_required"
+  | "upstream_unavailable"
+  | "timeout"
+  | "browser_error"
+  | "provider_error"
+  | "malformed_provider_output"
+  | "empty_content"
+  | "output_limit_exceeded"
+  | "cancelled"
+  | "internal_error";
+
+export interface ExtractionArtifact {
+  artifact_type: "document";
+  media_type: "text/markdown";
+  encoding: "utf-8";
+  content: string;
+  size_bytes: number;
+  sha256: string;
+}
+
+export interface ExtractionMetadata {
+  content_type: "web_page" | "social_post" | "article";
+  title: string;
+  author_name: string;
+  author_handle: string;
+  published_at: string;
+  source_id: string;
+  warnings: Array<"partial_content">;
+}
+
+export interface ExtractionRelation {
+  relation_type: "references";
+  target_url: string;
+}
+
+export interface ExtractorIdentity {
+  name: "scrapectl";
+  version: string;
+  implementation: string;
+  implementation_version: string;
+}
+
+export interface ExtractionFailureDetail {
+  failure_class: ExtractionFailureClass;
+  retryable: boolean;
+  message: string;
+  evidence: string;
+}
+
+interface ExtractionEnvelopeBase {
+  schema_version: "1";
+  requested_url: string;
+  final_url: string | null;
+  extractor: ExtractorIdentity;
+  artifacts: ExtractionArtifact[];
+  metadata: ExtractionMetadata | null;
+  relations: ExtractionRelation[];
+  failure: ExtractionFailureDetail | null;
+}
+
+export interface ExtractionSuccess extends ExtractionEnvelopeBase {
+  status: "success";
+  final_url: string;
+  artifacts: [ExtractionArtifact];
+  metadata: ExtractionMetadata;
+  failure: null;
+}
+
+export interface ExtractionFailure extends ExtractionEnvelopeBase {
+  status: "failure";
+  artifacts: [];
+  metadata: null;
+  relations: [];
+  failure: ExtractionFailureDetail;
+}
+
+export type ExtractionEnvelope = ExtractionSuccess | ExtractionFailure;
+
+export interface PromotedUrlExtraction {
+  record_version: 1;
+  requested_url: string;
+  final_url: string;
+  extractor: ExtractorIdentity;
+  artifact: Omit<ExtractionArtifact, "content"> & {
+    artifact_role: "extracted_markdown";
+    storage_path: string;
+  };
+  metadata: ExtractionMetadata;
+  relations: ExtractionRelation[];
+}
+
 export interface Job {
   id: number;
   idempotency_key: string;

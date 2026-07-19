@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -10,7 +11,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scrapeWithScrapectl } from "../src/scrapectl";
+import {
+  extractWithScrapectl,
+  ScrapectlExtractionError,
+  scrapeWithScrapectl,
+} from "../src/scrapectl";
 
 const dirs: string[] = [];
 const originalPath = process.env.PATH;
@@ -61,6 +66,142 @@ function installScrapectl(script: string): { dir: string; executable: string } {
   writeExecutable(executable, script);
   return { dir, executable };
 }
+
+function extractionEnvelope(
+  requestedUrl: string,
+  content = "# Extracted\n\nBody",
+): Record<string, unknown> {
+  return {
+    schema_version: "1",
+    status: "success",
+    requested_url: requestedUrl,
+    final_url: `${requestedUrl}/final`,
+    extractor: {
+      name: "scrapectl",
+      version: "1.2.3",
+      implementation: "generic-page",
+      implementation_version: "1",
+    },
+    artifacts: [
+      {
+        artifact_type: "document",
+        media_type: "text/markdown",
+        encoding: "utf-8",
+        content,
+        size_bytes: Buffer.byteLength(content),
+        sha256: createHash("sha256").update(content).digest("hex"),
+      },
+    ],
+    metadata: {
+      content_type: "web_page",
+      title: "Extracted",
+      author_name: "",
+      author_handle: "",
+      published_at: "",
+      source_id: "",
+      warnings: [],
+    },
+    relations: [
+      {
+        relation_type: "references",
+        target_url: "https://reference.example/item",
+      },
+    ],
+    failure: null,
+  };
+}
+
+function shellLiteral(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+test("versioned extraction uses explicit argv and validates the success envelope", async () => {
+  const url = "https://example.com/article";
+  const envelope = extractionEnvelope(url);
+  const { dir } = installScrapectl(`#!/bin/sh
+printf '%s\\n' "$@" > "$LOG"
+printf '%s' ${shellLiteral(JSON.stringify(envelope))}
+`);
+  const log = join(dir, "extraction-argv.txt");
+  process.env.LOG = log;
+
+  const result = await extractWithScrapectl(url, {
+    maxContentBytes: 1000,
+    maxRelations: 3,
+  });
+
+  expect(readFileSync(log, "utf8")).toBe(
+    "fetch-markdown\nhttps://example.com/article\n--envelope\n--max-content-bytes\n1000\n--max-relations\n3\n",
+  );
+  expect(result).toMatchObject({
+    status: "success",
+    final_url: "https://example.com/article/final",
+    metadata: { title: "Extracted" },
+  });
+});
+
+test("classified extraction failures map without parsing stderr", async () => {
+  const url = "https://example.com/failure";
+  const { executable } = installScrapectl("#!/bin/sh\nexit 1\n");
+  const cases = [
+    ["upstream_unavailable", true, "item_transient", "item", 1],
+    ["authentication_required", false, "auth_config", "auth_config", 2],
+    ["provider_error", false, "permanent", "permanent", 1],
+    ["invalid_request", false, "permanent", "policy", 1],
+    ["cancelled", false, "cancelled", "cancellation", 130],
+  ] as const;
+
+  for (const [
+    failureClass,
+    retryable,
+    disposition,
+    outcome,
+    exitCode,
+  ] of cases) {
+    const envelope = {
+      ...extractionEnvelope(url),
+      status: "failure",
+      final_url: null,
+      artifacts: [],
+      metadata: null,
+      relations: [],
+      failure: {
+        failure_class: failureClass,
+        retryable,
+        message: "classified failure",
+        evidence: "Cookie: secret-value",
+      },
+    };
+    writeExecutable(
+      executable,
+      `#!/bin/sh\nprintf '%s\\n' 'stderr must not classify this' >&2\nprintf '%s' ${shellLiteral(JSON.stringify(envelope))}\nexit ${exitCode}\n`,
+    );
+    let caught: unknown;
+    try {
+      await extractWithScrapectl(url);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ScrapectlExtractionError);
+    expect(caught).toMatchObject({ disposition, outcome });
+    expect(String(caught)).not.toContain("secret-value");
+    expect(String(caught)).not.toContain("stderr must not classify");
+  }
+});
+
+test("malformed and unknown envelopes are visible protocol defects", async () => {
+  const { executable } = installScrapectl(`#!/bin/sh
+printf '%s' '{"schema_version":"99"}'
+`);
+  await expect(
+    extractWithScrapectl("https://example.com/protocol"),
+  ).rejects.toMatchObject({ disposition: "permanent", outcome: "protocol" });
+
+  writeExecutable(executable, "#!/bin/sh\nprintf '%s' 'not-json'\n");
+  await expect(
+    extractWithScrapectl("https://example.com/protocol"),
+  ).rejects.toThrow("protocol defect");
+});
 
 test("Scrapectl adapter resolves PATH and requests final Markdown with explicit argv", async () => {
   const { dir } = installScrapectl(`#!/bin/sh

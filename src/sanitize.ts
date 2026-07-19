@@ -39,9 +39,10 @@ export function sanitizeExternalError(value: unknown): string {
   }).join("");
   message = message
     .replace(
-      /\b(authorization\s*[:=]\s*)(?:bearer\s+[^\s,;]+|[^\s,;]+)/gi,
+      /\b((?:set-cookie|cookie|proxy-authorization|authorization)\s*[:=]\s*)[^\r\n]*/gi,
       "$1[REDACTED]",
     )
+    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED]@")
     .replace(/\b(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
     .replace(
       /([?&](?:access_token|api[_-]?key|auth|authorization|credential|password|passwd|secret|token)=)[^&#\s]*/gi,
@@ -50,6 +51,10 @@ export function sanitizeExternalError(value: unknown): string {
     .replace(
       /(["']?[a-z0-9_-]*(?:api[_-]?key|authorization|credential|password|passwd|secret|token)[a-z0-9_-]*["']?\s*[:=]\s*["']?)[^\s,"';&}]+/gi,
       "$1[REDACTED]",
+    )
+    .replace(
+      /\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/g,
+      "[REDACTED]",
     )
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
