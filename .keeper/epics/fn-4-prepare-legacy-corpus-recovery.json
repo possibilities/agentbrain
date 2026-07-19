@@ -4,7 +4,8 @@
   "created_at": "2026-07-18T21:25:05.187000Z",
   "depends_on_epics": [
     "fn-3-cut-over-agentbot-ingestion",
-    "fn-1-build-durable-ingestion-core"
+    "fn-1-build-durable-ingestion-core",
+    "fn-1379-hold-live-lanes-against-resets"
   ],
   "id": "fn-4-prepare-legacy-corpus-recovery",
   "last_validated_at": "2026-07-18T23:52:13.415000Z",
@@ -16,5 +17,5 @@
     "/Users/mike/code/agentbrain",
     "/Users/mike/code/dotfiles"
   ],
-  "updated_at": "2026-07-19T19:06:34.567000Z"
+  "updated_at": "2026-07-19T22:42:18.220000Z"
 }
