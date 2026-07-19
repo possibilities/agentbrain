@@ -66,5 +66,6 @@ Use synthetic fixtures and the read-only frozen-generation dry run; live admissi
 - [ ] Private message bodies, credentials, raw Telegram identifiers, unsafe paths, and exact URLs in ordinary diagnostics never enter output, artifacts, or searchable content.
 
 ## Done summary
-
+Audit-severe fix landed by worker session 1ed6fea7 as commit 6b4a9e1 (5 files: src/admission.ts, src/worker.ts + 3 test suites) with the collision-reproducing regression tests the AUDIT-SEVERE-FIX contract required; per-task audit passed (AUDIT_READY receipt in-session). Supervisor-marked after a recipe gap (unblock reverted the task to todo, stranding the worker's done-mark; worker's authorship and evidence unchanged).
 ## Evidence
+- Commits: 6b4a9e1
