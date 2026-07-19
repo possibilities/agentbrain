@@ -580,10 +580,28 @@ function applyDocuments(
     });
     let resource: { id: number; sensitivity: Sensitivity };
     if (recoveryResource !== null) {
-      store.db
-        .query("UPDATE resources SET document_id=?, updated_at=? WHERE id=?")
-        .run(indexed.document_id, timestamp, recoveryResource.id);
-      resource = recoveryResource;
+      const documentOwner = store.db
+        .query("SELECT id, sensitivity FROM resources WHERE document_id=?")
+        .get(indexed.document_id) as {
+        id: number;
+        sensitivity: Sensitivity;
+      } | null;
+      if (documentOwner === null || documentOwner.id === recoveryResource.id) {
+        store.db
+          .query("UPDATE resources SET document_id=?, updated_at=? WHERE id=?")
+          .run(indexed.document_id, timestamp, recoveryResource.id);
+        resource = recoveryResource;
+      } else {
+        const sensitivity =
+          SENSITIVITY_RANK[recoveryResource.sensitivity] >
+          SENSITIVITY_RANK[documentOwner.sensitivity]
+            ? recoveryResource.sensitivity
+            : documentOwner.sensitivity;
+        store.db
+          .query("UPDATE resources SET sensitivity=?, updated_at=? WHERE id=?")
+          .run(sensitivity, timestamp, documentOwner.id);
+        resource = { id: documentOwner.id, sensitivity };
+      }
     } else {
       const resourceKey = document.resourceKey ?? {
         type: "ingestion_job_item",
@@ -620,7 +638,9 @@ function applyDocuments(
         sensitivity: Sensitivity;
       };
     }
-    if (firstResourceId === null) firstResourceId = resource.id;
+    if (firstResourceId === null) {
+      firstResourceId = recoveryResource?.id ?? resource.id;
+    }
     const aliases = [
       {
         type: "materialized_uri",
@@ -911,7 +931,6 @@ export async function runWorker(
           controller.abort();
         }
       }, heartbeatMs);
-      let completing = false;
       try {
         const intent = parseIntent(claim.job);
         const documents = await materialize(claim.job, intent, {
@@ -923,7 +942,6 @@ export async function runWorker(
           result.fenced += 1;
           continue;
         }
-        completing = true;
         const completionTime = now();
         const completed = store.completeJob({
           fencingToken: claim.fencing_token,
@@ -968,7 +986,7 @@ export async function runWorker(
         }
         const failed = store.failAttempt({
           fencingToken: claim.fencing_token,
-          failureClass: completing ? "infra" : classifyFailure(error),
+          failureClass: classifyFailure(error),
           summary: sanitizeExternalError(error),
           now: now(),
           policy: options.policy,

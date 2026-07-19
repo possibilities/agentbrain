@@ -733,7 +733,7 @@ function ensureRecoveryResource(
   candidate: VerifiedRecoveryCandidate,
   timestamp: string,
 ): number {
-  let resource = store.db
+  const candidateResource = store.db
     .query(
       "SELECT id, sensitivity FROM resources WHERE key_type='recovery_candidate' AND key_value=?",
     )
@@ -741,6 +741,44 @@ function ensureRecoveryResource(
     id: number;
     sensitivity: Sensitivity;
   } | null;
+  const exactOwners = store.db
+    .query(
+      `SELECT DISTINCT r.id, r.sensitivity
+       FROM resources r
+       JOIN resource_aliases ra ON ra.resource_id=r.id
+       WHERE ra.alias_type='legacy_exact_url' AND ra.locator=?
+       ORDER BY r.id`,
+    )
+    .all(candidate.sourceUri) as Array<{
+    id: number;
+    sensitivity: Sensitivity;
+  }>;
+  if (exactOwners.length > 1) {
+    throw recoveryAdmissionError(
+      "recovery_identity_conflict",
+      `candidate ${candidate.candidateId} exact identity belongs to multiple Resources`,
+    );
+  }
+
+  let resource = exactOwners[0] ?? candidateResource;
+  if (
+    candidateResource !== null &&
+    resource !== null &&
+    candidateResource.id !== resource.id
+  ) {
+    const candidateAliases = store.db
+      .query(
+        `SELECT locator FROM resource_aliases
+         WHERE resource_id=? AND alias_type='legacy_exact_url'`,
+      )
+      .all(candidateResource.id) as Array<{ locator: string }>;
+    if (candidateAliases.length > 0) {
+      throw recoveryAdmissionError(
+        "recovery_identity_conflict",
+        `candidate ${candidate.candidateId} conflicts with an existing exact identity owner`,
+      );
+    }
+  }
   if (resource === null) {
     const inserted = store.db
       .query(
@@ -767,13 +805,13 @@ function ensureRecoveryResource(
       .query("UPDATE resources SET sensitivity=?, updated_at=? WHERE id=?")
       .run(candidate.sensitivity, timestamp, resource.id);
   }
-  const exact = store.db
+  const exactAliases = store.db
     .query(
       `SELECT locator FROM resource_aliases
        WHERE resource_id=? AND alias_type='legacy_exact_url'`,
     )
-    .get(resource.id) as { locator: string } | null;
-  if (exact !== null && exact.locator !== candidate.sourceUri) {
+    .all(resource.id) as Array<{ locator: string }>;
+  if (exactAliases.some((alias) => alias.locator !== candidate.sourceUri)) {
     throw recoveryAdmissionError(
       "recovery_identity_conflict",
       `candidate ${candidate.candidateId} is already bound to another exact identity`,
@@ -826,13 +864,48 @@ function ensureCandidateOutcome(
     summary: candidate.artifact?.summary ?? null,
     provenance_counts: candidate.provenanceCounts,
   };
-  if (existing.length > 1) {
+  const matching: Array<{
+    id: number;
+    metadata: Record<string, unknown>;
+  }> = [];
+  for (const row of existing) {
+    let metadata: unknown;
+    try {
+      metadata = JSON.parse(row.raw_metadata ?? "null");
+    } catch {
+      throw recoveryAdmissionError(
+        "recovery_identity_conflict",
+        `candidate ${candidate.candidateId} has malformed durable outcome evidence`,
+      );
+    }
+    if (
+      metadata === null ||
+      typeof metadata !== "object" ||
+      typeof (metadata as Record<string, unknown>).candidate_evidence_row_id !==
+        "string"
+    ) {
+      throw recoveryAdmissionError(
+        "recovery_identity_conflict",
+        `candidate ${candidate.candidateId} has malformed durable outcome evidence`,
+      );
+    }
+    if (
+      (metadata as Record<string, unknown>).candidate_evidence_row_id ===
+      candidate.candidateId
+    ) {
+      matching.push({
+        id: row.id,
+        metadata: metadata as Record<string, unknown>,
+      });
+    }
+  }
+  if (matching.length > 1) {
     throw recoveryAdmissionError(
       "recovery_identity_conflict",
       `candidate ${candidate.candidateId} has duplicate durable outcomes`,
     );
   }
-  if (existing.length === 0) {
+  if (matching.length === 0) {
     store.db
       .query(
         `INSERT INTO provenance(
@@ -846,21 +919,8 @@ function ensureCandidateOutcome(
       );
     return true;
   }
-  let previous: Record<string, unknown>;
-  try {
-    previous = JSON.parse(existing[0].raw_metadata ?? "null");
-  } catch {
-    throw recoveryAdmissionError(
-      "recovery_identity_conflict",
-      `candidate ${candidate.candidateId} has malformed durable outcome evidence`,
-    );
-  }
-  if (
-    previous === null ||
-    typeof previous !== "object" ||
-    previous.candidate_evidence_row_id !== candidate.candidateId ||
-    previous.disposition !== candidate.disposition
-  ) {
+  const previous = matching[0].metadata;
+  if (previous.disposition !== candidate.disposition) {
     throw recoveryAdmissionError(
       "recovery_identity_conflict",
       `candidate ${candidate.candidateId} conflicts with its durable outcome`,
@@ -878,7 +938,7 @@ function ensureCandidateOutcome(
     .query("UPDATE provenance SET raw_metadata=? WHERE id=?")
     .run(
       JSON.stringify({ ...base, generation_ids: generations }),
-      existing[0].id,
+      matching[0].id,
     );
   return false;
 }

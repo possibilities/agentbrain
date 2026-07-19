@@ -10,7 +10,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DurableSubmissionIntent } from "../src/admission";
+import {
+  type DurableSubmissionIntent,
+  RECOVERY_JOB_PREFIX,
+} from "../src/admission";
 import { ArtifactStore } from "../src/artifacts";
 import { ScrapectlExtractionError } from "../src/scrapectl";
 import { ResearchStore } from "../src/store";
@@ -208,7 +211,9 @@ test("retry after index failure reuses the promoted URL Artifact", async () => {
   const upsert = store.upsertDocument.bind(store);
   let indexAvailable = false;
   store.upsertDocument = ((input) => {
-    if (!indexAvailable) throw new Error("simulated index failure");
+    if (!indexAvailable) {
+      throw new Error("simulated index temporarily unavailable");
+    }
     return upsert(input);
   }) as ResearchStore["upsertDocument"];
   const policy = { infraBaseMs: 1000, infraCapMs: 1000, jitterRatio: 0 };
@@ -245,6 +250,164 @@ test("retry after index failure reuses the promoted URL Artifact", async () => {
   expect(store.db.query("SELECT content FROM documents").get()).toEqual({
     content,
   });
+  store.close();
+});
+
+test("recovery completion reuses a foreign Resource that already owns the document", async () => {
+  const { store, artifacts } = fixture();
+  const exactUrl = "https://legacy-collision.test/item/1";
+  const document = store.upsertDocument({
+    sourceType: "url",
+    sourceUri: exactUrl,
+    content: "content from a newer generation",
+  });
+  const existingResourceId = Number(
+    store.db
+      .query(
+        `INSERT INTO resources(
+           key_type, key_value, kind, document_id, created_at, updated_at
+         ) VALUES ('url', 'foreign-owner', 'url', ?, ?, ?)`,
+      )
+      .run(document.document_id, T0.toISOString(), T0.toISOString())
+      .lastInsertRowid,
+  );
+  const recoveryResourceId = Number(
+    store.db
+      .query(
+        `INSERT INTO resources(
+           key_type, key_value, kind, sensitivity, created_at, updated_at
+         ) VALUES (
+           'recovery_candidate', 'aaaaaaaaaaaaaaaa', 'url', 'private', ?, ?
+         )`,
+      )
+      .run(T0.toISOString(), T0.toISOString()).lastInsertRowid,
+  );
+  store.db
+    .query(
+      `INSERT INTO resource_aliases(
+         resource_id, alias_type, locator, evidence, first_observed_at,
+         last_observed_at
+       ) VALUES (?, 'legacy_exact_url', ?, 'legacy test', ?, ?)`,
+    )
+    .run(recoveryResourceId, exactUrl, T0.toISOString(), T0.toISOString());
+  const recoveryIntent: DurableSubmissionIntent = {
+    version: 1,
+    kind: "file",
+    ingress: "legacy-recovery",
+    collections: [],
+    payload: {
+      file: {
+        content_digest: "0".repeat(64),
+        byte_size: 1,
+        media_type: "text/markdown",
+        artifact_role: "imported_markdown",
+      },
+    },
+    options: { tags: [], force: false, max_bytes: 1000 },
+  };
+  const queued = store.enqueueJob({
+    idempotencyKey: `${RECOVERY_JOB_PREFIX}aaaaaaaaaaaaaaaa`,
+    kind: "file",
+    intent: recoveryIntent,
+    resourceId: recoveryResourceId,
+    now: T0,
+  });
+
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "recovery-collision",
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: () => [
+      {
+        sourceType: "file",
+        sourceUri: "ignored-for-recovery",
+        title: "Recovered collision",
+        content: "offline body from the older generation",
+      },
+    ],
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 1, completed: 1, failed: 0 });
+  expect(
+    store.db
+      .query("SELECT state, resource_id, failure_class FROM jobs WHERE id=?")
+      .get(queued.job.id),
+  ).toEqual({
+    state: "completed",
+    resource_id: recoveryResourceId,
+    failure_class: null,
+  });
+  expect(
+    store.db
+      .query("SELECT document_id, sensitivity FROM resources WHERE id=?")
+      .get(recoveryResourceId),
+  ).toEqual({ document_id: null, sensitivity: "private" });
+  expect(
+    store.db
+      .query("SELECT document_id, sensitivity FROM resources WHERE id=?")
+      .get(existingResourceId),
+  ).toEqual({ document_id: document.document_id, sensitivity: "private" });
+  expect(
+    store.db
+      .query(
+        `SELECT COUNT(*) AS count FROM provenance
+         WHERE resource_id=? AND evidence_type='ingestion_materialized'`,
+      )
+      .get(existingResourceId),
+  ).toEqual({ count: 1 });
+  const replay = await runWorker(store, {
+    once: true,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize,
+    installSignalHandlers: false,
+  });
+  expect(replay.claimed).toBe(0);
+  expect(
+    store.db
+      .query(
+        `SELECT COUNT(*) AS count FROM provenance
+         WHERE resource_id=? AND evidence_type='ingestion_materialized'`,
+      )
+      .get(existingResourceId),
+  ).toEqual({ count: 1 });
+  store.close();
+});
+
+test("permanent completion failures terminate instead of retrying as infrastructure", async () => {
+  const { store, artifacts } = fixture();
+  const queued = store.enqueueJob({
+    idempotencyKey: "permanent-completion-failure",
+    kind: "text",
+    intent: intent(),
+    now: T0,
+  });
+  store.upsertDocument = (() => {
+    throw new Error("UNIQUE constraint failed: resources.document_id");
+  }) as ResearchStore["upsertDocument"];
+
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "permanent-completion",
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize,
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 1, completed: 0, failed: 1 });
+  expect(
+    store.db
+      .query("SELECT state, failure_class, attempt_count FROM jobs WHERE id=?")
+      .get(queued.job.id),
+  ).toEqual({ state: "failed", failure_class: "permanent", attempt_count: 1 });
+  expect(
+    store.db
+      .query("SELECT state, failure_class FROM attempts WHERE job_id=?")
+      .get(queued.job.id),
+  ).toEqual({ state: "failed", failure_class: "permanent" });
   store.close();
 });
 

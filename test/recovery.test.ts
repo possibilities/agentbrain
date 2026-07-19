@@ -13,9 +13,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { admitRecoveryGeneration } from "../src/admission";
+import { admitRecoveryGeneration, RECOVERY_JOB_PREFIX } from "../src/admission";
 import { ArtifactStore } from "../src/artifacts";
-import { readRecoveryGeneration } from "../src/recovery";
+import {
+  readRecoveryGeneration,
+  type VerifiedRecoveryCandidate,
+  type VerifiedRecoveryGeneration,
+} from "../src/recovery";
 import { ResearchStore } from "../src/store";
 import { runWorker } from "../src/worker";
 
@@ -329,6 +333,86 @@ function decoded(value: Uint8Array | string): string {
   return typeof value === "string" ? value : new TextDecoder().decode(value);
 }
 
+function directAdmissionFixture(): {
+  store: ResearchStore;
+  artifacts: ArtifactStore;
+} {
+  const root = mkdtempSync(join(tmpdir(), "agentbrain-recovery-admission-"));
+  roots.push(root);
+  return {
+    store: new ResearchStore(join(root, "research.db")),
+    artifacts: new ArtifactStore(join(root, "artifacts")),
+  };
+}
+
+function directGeneration(
+  overrides: Partial<VerifiedRecoveryCandidate> = {},
+  generationId = `sha256-${"a".repeat(64)}`,
+): VerifiedRecoveryGeneration {
+  const sourceUri = "https://direct-admission.test/item/1";
+  const candidate: VerifiedRecoveryCandidate = {
+    candidateId: digest(sourceUri).slice(0, 16),
+    sourceUri,
+    comparisonUri: sourceUri,
+    sourceType: "url",
+    sensitivity: "normal",
+    disposition: "review",
+    confidence: "direct_test_fixture",
+    reasons: ["direct_test"],
+    catalogPosition: null,
+    provenanceCounts: {
+      botctlMessages: 0,
+      discordMessages: 0,
+      historicalDocuments: 0,
+      saveLinkPipelines: 0,
+    },
+    observations: [],
+    artifact: null,
+    ...overrides,
+  };
+  const dispositionCounts = Object.fromEntries(
+    DISPOSITIONS.map(([disposition]) => [disposition, 0]),
+  ) as VerifiedRecoveryGeneration["dispositionCounts"];
+  dispositionCounts[candidate.disposition] = 1;
+  return {
+    schemaVersion: 1,
+    generationId,
+    generationDigest: generationId.slice(7),
+    generationRoot: "/direct-test-generation",
+    manifestDigest: "b".repeat(64),
+    candidates: [candidate],
+    onlineAllowlist: [],
+    dispositionCounts,
+    counts: {
+      candidate_rows: 1,
+      baseline_candidate_rows: 1,
+      appended_candidate_rows: 0,
+      telegram_candidate_rows: 0,
+      telegram_observations: 0,
+      telegram_provenance_merges: 0,
+      catalog_memberships: candidate.catalogPosition === null ? 0 : 1,
+      approved_offline_artifacts:
+        candidate.disposition === "import_offline" ? 1 : 0,
+      approved_online_jobs: 0,
+      blocked_review_jobs: 0,
+      excluded_candidates: 0,
+      evidence_only_candidates: 0,
+    },
+  };
+}
+
+function expectRecoveryAdmissionCode(
+  action: () => unknown,
+  code: string,
+): void {
+  try {
+    action();
+    throw new Error(`expected recovery admission error ${code}`);
+  } catch (error) {
+    expect(error).toMatchObject({ code });
+  }
+}
+
 afterEach(() => {
   process.env.PATH = originalPath;
   for (const root of roots.splice(0)) {
@@ -402,11 +486,67 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
   const dbPath = join(fixture.root, "research.db");
   const artifactRoot = join(fixture.root, "artifact-store");
   const store = new ResearchStore(dbPath);
-  store.upsertDocument({
-    sourceType: "text",
-    sourceUri: "fixture:existing",
-    content: "pre-existing non-empty database",
+  const collidingCandidate = generation.candidates.find(
+    (candidate) => candidate.disposition === "import_offline",
+  );
+  if (collidingCandidate === undefined) {
+    throw new Error("fixture has no offline recovery candidate");
+  }
+  expect(collidingCandidate.sourceType).toBe("url");
+  const existingDocument = store.upsertDocument({
+    sourceType: collidingCandidate.sourceType,
+    sourceUri: collidingCandidate.sourceUri,
+    content: "pre-existing recovered body from another generation",
   });
+  const priorCandidateId =
+    collidingCandidate.candidateId === "0000000000000000"
+      ? "1111111111111111"
+      : "0000000000000000";
+  expect(priorCandidateId).not.toBe(collidingCandidate.candidateId);
+  const existingResourceId = Number(
+    store.db
+      .query(
+        `INSERT INTO resources(
+           key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
+         ) VALUES ('recovery_candidate', ?, ?, 'normal', ?, ?, ?)`,
+      )
+      .run(
+        priorCandidateId,
+        collidingCandidate.sourceType,
+        existingDocument.document_id,
+        "2026-07-18T00:00:00.000Z",
+        "2026-07-18T00:00:00.000Z",
+      ).lastInsertRowid,
+  );
+  store.db
+    .query(
+      `INSERT INTO resource_aliases(
+         resource_id, alias_type, locator, evidence, first_observed_at,
+         last_observed_at
+       ) VALUES (?, 'legacy_exact_url', ?, 'prior recovery generation', ?, ?)`,
+    )
+    .run(
+      existingResourceId,
+      collidingCandidate.sourceUri,
+      "2026-07-18T00:00:00.000Z",
+      "2026-07-18T00:00:00.000Z",
+    );
+  store.db
+    .query(
+      `INSERT INTO provenance(
+         resource_id, evidence_type, ingress, raw_metadata, observed_at
+       ) VALUES (?, 'recovery_candidate_outcome', 'legacy-recovery', ?, ?)`,
+    )
+    .run(
+      existingResourceId,
+      JSON.stringify({
+        schema_version: 1,
+        candidate_evidence_row_id: priorCandidateId,
+        disposition: "import_offline",
+        generation_ids: [`sha256-${"f".repeat(64)}`],
+      }),
+      "2026-07-18T00:00:00.000Z",
+    );
   const artifacts = new ArtifactStore(artifactRoot);
   const first = admitRecoveryGeneration(store, generation, {
     artifactStore: artifacts,
@@ -424,6 +564,30 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
     candidate_outcomes_created: 1088,
     observations_created: 294,
   });
+  expect(
+    store.db
+      .query(
+        `SELECT resource_id FROM jobs
+         WHERE idempotency_key=?`,
+      )
+      .get(`${RECOVERY_JOB_PREFIX}${collidingCandidate.candidateId}`),
+  ).toEqual({ resource_id: existingResourceId });
+  expect(
+    store.db
+      .query(
+        `SELECT COUNT(DISTINCT resource_id) AS count FROM resource_aliases
+         WHERE alias_type='legacy_exact_url' AND locator=?`,
+      )
+      .get(collidingCandidate.sourceUri),
+  ).toEqual({ count: 1 });
+  expect(
+    store.db
+      .query(
+        `SELECT id FROM resources
+         WHERE key_type='recovery_candidate' AND key_value=?`,
+      )
+      .get(collidingCandidate.candidateId),
+  ).toBeNull();
   expect(count(store.db, "SELECT COUNT(*) AS count FROM runs")).toBe(1);
   expect(count(store.db, "SELECT COUNT(*) AS count FROM jobs")).toBe(629);
   expect(
@@ -443,7 +607,7 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
       store.db,
       "SELECT COUNT(*) AS count FROM provenance WHERE evidence_type='recovery_candidate_outcome'",
     ),
-  ).toBe(1088);
+  ).toBe(1089);
   expect(count(store.db, "SELECT COUNT(*) AS count FROM observations")).toBe(
     294,
   );
@@ -485,7 +649,12 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
   });
   expect(worker).toMatchObject({ claimed: 581, completed: 581, failed: 0 });
   expect(networkCalls).toBe(0);
-  expect(count(store.db, "SELECT COUNT(*) AS count FROM documents")).toBe(582);
+  expect(
+    store.db
+      .query("SELECT state, failure_class FROM jobs WHERE idempotency_key=?")
+      .get(`${RECOVERY_JOB_PREFIX}${collidingCandidate.candidateId}`),
+  ).toEqual({ state: "completed", failure_class: null });
+  expect(count(store.db, "SELECT COUNT(*) AS count FROM documents")).toBe(581);
   expect(
     count(
       store.db,
@@ -499,6 +668,10 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
     ),
   ).toBe(581);
 
+  const provenanceBeforeReplay = count(
+    store.db,
+    "SELECT COUNT(*) AS count FROM provenance",
+  );
   const second = admitRecoveryGeneration(store, generation, {
     artifactStore: artifacts,
     now: new Date("2026-07-19T01:00:00.000Z"),
@@ -517,9 +690,205 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
       store.db,
       "SELECT COUNT(*) AS count FROM provenance WHERE evidence_type='recovery_candidate_outcome'",
     ),
-  ).toBe(1088);
+  ).toBe(1089);
+  expect(count(store.db, "SELECT COUNT(*) AS count FROM provenance")).toBe(
+    provenanceBeforeReplay,
+  );
+  const mergedOutcomes = (
+    store.db
+      .query(
+        `SELECT raw_metadata FROM provenance
+         WHERE resource_id=? AND evidence_type='recovery_candidate_outcome'
+         ORDER BY id`,
+      )
+      .all(existingResourceId) as Array<{ raw_metadata: string }>
+  ).map(
+    (row) =>
+      (JSON.parse(row.raw_metadata) as { candidate_evidence_row_id: string })
+        .candidate_evidence_row_id,
+  );
+  expect(mergedOutcomes.sort()).toEqual(
+    [priorCandidateId, collidingCandidate.candidateId].sort(),
+  );
   store.close();
 }, 30_000);
+
+test("recovery admission fails closed on an exact identity conflict", () => {
+  const { store, artifacts } = directAdmissionFixture();
+  const generation = directGeneration();
+  const candidate = generation.candidates[0];
+  const timestamp = "2026-07-19T00:00:00.000Z";
+  const resourceId = Number(
+    store.db
+      .query(
+        `INSERT INTO resources(
+           key_type, key_value, kind, created_at, updated_at
+         ) VALUES ('recovery_candidate', ?, 'url', ?, ?)`,
+      )
+      .run(candidate.candidateId, timestamp, timestamp).lastInsertRowid,
+  );
+  store.db
+    .query(
+      `INSERT INTO resource_aliases(
+         resource_id, alias_type, locator, first_observed_at, last_observed_at
+       ) VALUES (?, 'legacy_exact_url', ?, ?, ?)`,
+    )
+    .run(resourceId, candidate.sourceUri, timestamp, timestamp);
+  const foreignResourceId = Number(
+    store.db
+      .query(
+        `INSERT INTO resources(
+           key_type, key_value, kind, created_at, updated_at
+         ) VALUES ('url', 'duplicate-exact-owner', 'url', ?, ?)`,
+      )
+      .run(timestamp, timestamp).lastInsertRowid,
+  );
+  store.db
+    .query(
+      `INSERT INTO resource_aliases(
+         resource_id, alias_type, locator, first_observed_at, last_observed_at
+       ) VALUES (?, 'legacy_exact_url', ?, ?, ?)`,
+    )
+    .run(foreignResourceId, candidate.sourceUri, timestamp, timestamp);
+
+  expectRecoveryAdmissionCode(
+    () =>
+      admitRecoveryGeneration(store, generation, { artifactStore: artifacts }),
+    "recovery_identity_conflict",
+  );
+  store.close();
+});
+
+test("recovery admission fails closed on a catalog position conflict", () => {
+  const { store, artifacts } = directAdmissionFixture();
+  const generation = directGeneration({ catalogPosition: 1 });
+  const timestamp = "2026-07-19T00:00:00.000Z";
+  const collectionId = Number(
+    store.db
+      .query(
+        `INSERT INTO collections(slug, title, created_at, updated_at)
+         VALUES ('legacy-links', 'Legacy links', ?, ?)`,
+      )
+      .run(timestamp, timestamp).lastInsertRowid,
+  );
+  const foreignResourceId = Number(
+    store.db
+      .query(
+        `INSERT INTO resources(
+           key_type, key_value, kind, created_at, updated_at
+         ) VALUES ('url', 'foreign-catalog-owner', 'url', ?, ?)`,
+      )
+      .run(timestamp, timestamp).lastInsertRowid,
+  );
+  store.db
+    .query(
+      `INSERT INTO collection_memberships(
+         collection_id, resource_id, position, external_ref, added_at
+       ) VALUES (?, ?, 1, 'link-00001', ?)`,
+    )
+    .run(collectionId, foreignResourceId, timestamp);
+
+  expectRecoveryAdmissionCode(
+    () =>
+      admitRecoveryGeneration(store, generation, { artifactStore: artifacts }),
+    "recovery_catalog_conflict",
+  );
+  store.close();
+});
+
+test("recovery admission fails closed on an idempotency conflict", () => {
+  const { store, artifacts } = directAdmissionFixture();
+  const generation = directGeneration({ disposition: "review_fetch" });
+  const candidate = generation.candidates[0];
+  store.enqueueJob({
+    idempotencyKey: `${RECOVERY_JOB_PREFIX}${candidate.candidateId}`,
+    kind: "url",
+    intent: { conflicting: true },
+    now: new Date("2026-07-19T00:00:00.000Z"),
+  });
+
+  expectRecoveryAdmissionCode(
+    () =>
+      admitRecoveryGeneration(store, generation, { artifactStore: artifacts }),
+    "recovery_idempotency_conflict",
+  );
+  store.close();
+});
+
+test("recovery admission fails closed on stored Artifact metadata conflict", () => {
+  const { store, artifacts } = directAdmissionFixture();
+  const body = "direct offline recovery body\n";
+  const bodyDigest = digest(body);
+  const generation = directGeneration({
+    disposition: "import_offline",
+    artifact: {
+      sourceDigest: "c".repeat(64),
+      sourceByteSize: 100,
+      summary: "Direct offline fixture",
+      body,
+      bodyDigest,
+      bodyByteSize: Buffer.byteLength(body),
+    },
+  });
+  const stored = artifacts.captureBytes(body, { expectedDigest: bodyDigest });
+  store.db
+    .query(
+      `INSERT INTO artifacts(
+         content_hash, media_type, byte_size, artifact_role, sensitivity,
+         storage_path, created_at
+       ) VALUES (?, 'text/plain', ?, 'imported_markdown', 'normal', ?, ?)`,
+    )
+    .run(
+      bodyDigest,
+      stored.byteSize,
+      stored.storagePath,
+      "2026-07-19T00:00:00.000Z",
+    );
+
+  expectRecoveryAdmissionCode(
+    () =>
+      admitRecoveryGeneration(store, generation, { artifactStore: artifacts }),
+    "recovery_artifact_conflict",
+  );
+  store.close();
+});
+
+test("recovery admission run-checkpoint guard rejects a mixed generation", () => {
+  const { store, artifacts } = directAdmissionFixture();
+  const generation = directGeneration();
+  const timestamp = "2026-07-19T00:00:00.000Z";
+  const sourceId = Number(
+    store.db
+      .query(
+        `INSERT INTO sources(
+           source_type, identifier, enabled, sensitivity, created_at, updated_at
+         ) VALUES ('frozen_recovery_generation', ?, 0, 'normal', ?, ?)`,
+      )
+      .run(generation.generationId, timestamp, timestamp).lastInsertRowid,
+  );
+  store.db
+    .query(
+      `INSERT INTO runs(
+         run_type, source_id, state, checkpoint, created_at, updated_at
+       ) VALUES ('legacy_recovery_import', ?, 'pending', ?, ?, ?)`,
+    )
+    .run(
+      sourceId,
+      JSON.stringify({
+        generation_id: generation.generationId,
+        manifest_digest: "d".repeat(64),
+      }),
+      timestamp,
+      timestamp,
+    );
+
+  expectRecoveryAdmissionCode(
+    () =>
+      admitRecoveryGeneration(store, generation, { artifactStore: artifacts }),
+    "mixed_recovery_generation",
+  );
+  store.close();
+});
 
 test("generation validation fails closed for identity, paths, hashes, and private data", () => {
   const duplicate = makeFixture({

@@ -573,7 +573,7 @@ test("a fanout write failure rolls back parent indexing, relations, observations
   const commitFanout = store.commitUrlFanout.bind(store);
   store.commitUrlFanout = ((input) => {
     commitFanout(input);
-    throw new Error("simulated fanout write failure");
+    throw new Error("simulated fanout storage temporarily unavailable");
   }) as ResearchStore["commitUrlFanout"];
 
   const result = await runWorker(store, {
