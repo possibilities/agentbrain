@@ -1,4 +1,5 @@
 {
+  "audit_required": true,
   "bundles": [],
   "created_at": "2026-07-19T22:44:05.887000Z",
   "depends_on": [],
@@ -8,7 +9,7 @@
   "priority": null,
   "snippets": [],
   "target_repo": "/Users/mike/code/agentbrain",
-  "tier": "xhigh",
+  "tier": "max",
   "title": "Diagnose jobs cli test pollution",
-  "updated_at": "2026-07-19T22:44:05.887000Z"
+  "updated_at": "2026-07-19T22:46:29.808000Z"
 }
