@@ -1,51 +1,10 @@
 ## Description
-
-**Size:** M
-**Files:** src/behaviors/save-links.ts, src/cli.ts, test/behavior_core.test.ts, README.md, docs/behaviors.md
+**Size:** S
+**Files:** src/behaviors/save-links.ts, test/behavior_core.test.ts
 
 ### Approach
 
-Replace `linkctl add-link` with explicit-argv `agentbrain submit --kind url --ingress agentbot --collection saved-links`. Parse the versioned queued/duplicate success envelope, preserve one acknowledgement covering all message URLs, and fail loudly on invalid/mismatched command output without importing sibling code.
-
-### Investigation targets
-
-*Verify before relying — these file:line refs are planner-verified at authoring time, but the repo moves.*
-
-**Required** (read before coding):
-- `src/behaviors/save-links.ts:4-45` — current Linkctl loop and user response.
-- `src/behaviors/save-links.ts:57-73` — strict JSON-object parsing.
-- `test/behavior_core.test.ts:111-167` — injected command and exact argv tests.
-- `CLAUDE.md:3-14` — no sibling source imports and deterministic dependency injection.
-
-**Optional** (reference as needed):
-- `docs/behaviors.md:24-65` — current documented external contract.
-
-### Risks
-
-Duplicate semantics change from exit 1 to exit 0, and a partial multi-URL submission can leave some durable jobs before a later malformed response.
-
-### Test notes
-
-Cover all queued, all duplicate, mixed, invalid JSON, wrong envelope version, conflicting idempotency, nonzero admission failure, and metadata output.
-
-### Detailed phases
-
-1. Replace argv and result parser.
-2. Preserve aggregate user text and saved/skipped metadata.
-3. Update deterministic tests and forward-facing docs.
-
-### Alternatives
-
-Direct Scrapectl submission is rejected because Agentbrain owns admission and collection intent.
-
-### Non-functional targets
-
-No shell invocation, no network in tests, bounded one-command-per-URL behavior, and no private URL content in error logs beyond the already-submitted locator.
-
-### Rollout
-
-Deploy only when `agentbrain submit` is installed; validate with fake CLI first and real Agentbot smoke during epic rollout.
-
+THE FIX IS NOT ON THE LANE YET — the existing lane commit (87e27fb, the original cutover) is BROKEN and a prior worker wrongly re-marked this task done by trusting it. Do not repeat that: the close audit fatal-halted twice on this exact defect. Two surgical changes in src/behaviors/save-links.ts: (1) the agentbrain submit argv MUST include --json (without it agentbrain emits human output and the parse throws); (2) the success/duplicate status and metadata live under the JSON envelope's data field — parse payload.data.status, not payload.status. Update the argv-asserting tests to match. Before running keeper plan done: verify `grep -- --json src/behaviors/save-links.ts` hits, run the behavior test suite, and commit via keeper commit-work — a done-mark with empty commit evidence will be treated as failure by the supervisor.
 ## Acceptance
 - [ ] Agentbot invokes only the installed Agentbrain CLI for saved-link admission.
 - [ ] The agentbrain submit argv includes --json, and the behavior parses status/metadata from the JSON envelope's data field (not top level) — the close-audit fatal found every invocation throwing on the human-output default.
