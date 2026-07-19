@@ -1,0 +1,35 @@
+{
+  "auditable_tasks": [
+    {
+      "assigned_model": "gpt-5.6-luna",
+      "assigned_tier": "low",
+      "config_hash": "3537a88634e79a3ab85b1440da7d1b1be09c92bd75b69d3a0a1354c88e0b97ef",
+      "constraint": null,
+      "diff_stats": {
+        "commit_count": 1,
+        "deletions": 0,
+        "files_changed": 1,
+        "insertions": 1
+      },
+      "done_summary": "Documented SQLite single-MIN/MAX bare-column reliance with a warning comment at the search() FTS query in src/db.ts; no query or behavior change.",
+      "input_hash": "ebb86c5531e7c432af358d9677c14b543e43c2b3f19ba49638c96e35b892ab55",
+      "model": "gpt-5.6-luna",
+      "spec_chars": 1140,
+      "spec_md": "## Description\n\nOriginating finding F1 (evidence: src/db.ts search(), the\n`MIN(chunks_fts.rank) AS score ... GROUP BY d.id` query and the\nsubsequent per-hit `snippet ... WHERE chunk_id=row.chunk_id` fetch).\nThe correctness of chunk_id/chunk_index/start_char/end_char depends on\nSQLite's rule that bare columns take values from the row producing a\nsingle MIN()/MAX() aggregate. Add a one-line comment at that query in\nsrc/db.ts stating this reliance and warning that adding a second\naggregate, or selecting a bare column, would make the chosen chunk (and\nthus the returned snippet/citation) indeterminate. No query or behavior\nchange.\n\nFiles:\n- src/db.ts (search() FTS query)\n\n## Acceptance\n\n- [ ] A comment at the search() query names the SQLite single-MIN/MAX bare-column reliance and its effect on chunk selection\n- [ ] The comment warns a second aggregate / bare-column select would break it\n- [ ] Query results unchanged; existing search/query tests still pass\n\n## Done summary\nDocumented SQLite single-MIN/MAX bare-column reliance with a warning comment at the search() FTS query in src/db.ts; no query or behavior change.\n## Evidence\n",
+      "task_id": "fn-8-document-fts-search-chunk-selection.1",
+      "tier": "low",
+      "title": "Comment search chunk-selection reliance"
+    }
+  ],
+  "created_at": "2026-07-19T02:06:08.757000Z",
+  "epic_id": "fn-8-document-fts-search-chunk-selection",
+  "excluded_tasks": [],
+  "primary_repo": "/Users/mike/code/agentbrain",
+  "schema_version": 2,
+  "selection_config_hash": "3537a88634e79a3ab85b1440da7d1b1be09c92bd75b69d3a0a1354c88e0b97ef",
+  "selection_input_hash": "ebb86c5531e7c432af358d9677c14b543e43c2b3f19ba49638c96e35b892ab55",
+  "selector": {
+    "harness": "subagent",
+    "model": "plan:model-selector"
+  }
+}
