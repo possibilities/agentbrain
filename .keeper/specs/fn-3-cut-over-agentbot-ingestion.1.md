@@ -13,5 +13,5 @@ THE FIX IS NOT ON THE LANE YET — the existing lane commit (87e27fb, the origin
 - [ ] Tests assert exact argv (including --json) and the data-field envelope shape, and require no live Telegram, Agentbrain database, Scrapectl, or network.
 - [ ] Agentbot documentation contains no live Linkctl dependency.
 ## Done summary
-
+Fixed the broken Agentbrain submit contract in save-links: added --json to the CLI argv and parse status/metadata from payload.data instead of top-level payload; hardened against malformed envelopes; updated tests and docs accordingly.
 ## Evidence
