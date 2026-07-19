@@ -1,46 +1,23 @@
 import { expect, test } from "bun:test";
-import {
-  COMPLETED_LINK_STDIN_MAX_BYTES,
-  readCompletedLinkPayload,
-  validateCompletedLinkPayload,
-} from "../src/completed-link-input";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-test("completed-link reader enforces the raw byte cap while streaming", async () => {
-  const bytes = new Uint8Array(COMPLETED_LINK_STDIN_MAX_BYTES + 1);
-  bytes.fill(0x20);
-  await expect(
-    readCompletedLinkPayload(new Blob([bytes]).stream()),
-  ).rejects.toThrow("stdin JSON exceeds");
+const REPO = join(import.meta.dir, "..");
+
+test("retired completed-link adapter source files are absent", () => {
+  expect(existsSync(join(REPO, "src/research-ingest-link.ts"))).toBe(false);
+  expect(existsSync(join(REPO, "src/completed-link-input.ts"))).toBe(false);
 });
 
-test("completed-link reader rejects malformed UTF-8", async () => {
-  const bytes = new Uint8Array([0x7b, 0xff, 0x7d]);
-  await expect(
-    readCompletedLinkPayload(new Blob([bytes]).stream()),
-  ).rejects.toThrow("valid UTF-8");
+test("the package exposes only the durable Agentbrain executable", async () => {
+  const pkg = await Bun.file(join(REPO, "package.json")).json();
+  expect(pkg.bin).toEqual({ agentbrain: "src/cli.ts" });
 });
 
-test("completed-link validation checks URLs and every typed optional field", () => {
-  expect(() =>
-    validateCompletedLinkPayload({ url: "file:///tmp/nope", markdown: "body" }),
-  ).toThrow("http(s) URL");
-
-  for (const [field, value] of [
-    ["title", 42],
-    ["category", null],
-    ["summary", {}],
-    ["notes", []],
-    ["preset", true],
-    ["tags", ["valid", 42]],
-    ["save_markdown_copy", "yes"],
-    ["scrape_linked", 1],
-  ] as const) {
-    expect(() =>
-      validateCompletedLinkPayload({
-        url: "https://example.com",
-        markdown: "body",
-        [field]: value,
-      }),
-    ).toThrow(`payload field '${field}'`);
-  }
+test("extraction fanout helpers cannot write indexed resources directly", () => {
+  const implementation = readFileSync(join(REPO, "src/link-ingest.ts"), "utf8");
+  expect(implementation).toContain("planQueuedUrlFanout");
+  expect(implementation).not.toContain("ResearchStore");
+  expect(implementation).not.toContain("upsertDocument");
+  expect(implementation).not.toContain("CompletedLinkPayload");
 });

@@ -15,10 +15,6 @@ import {
   parseOptions,
   parseTopLevel,
 } from "./args";
-import {
-  type CompletedLinkPayload,
-  readCompletedLinkPayload,
-} from "./completed-link-input";
 import { ResearchCache } from "./db";
 import { CliError } from "./errors";
 import { errorEnvelope, formatList, writeByFormat, writeJson } from "./format";
@@ -34,7 +30,6 @@ import {
   safeJobView,
   showJob,
 } from "./jobs";
-import { ingestPrescrapedLink } from "./link-ingest";
 import {
   humanChunk,
   humanContext,
@@ -62,13 +57,7 @@ const READ_COMMANDS = new Set([
   "context",
   "doctor",
 ]);
-const MUTATION_COMMANDS = new Set([
-  "submit",
-  "ingest",
-  "ingest-link",
-  "delete",
-  "worker",
-]);
+const MUTATION_COMMANDS = new Set(["submit", "ingest", "delete", "worker"]);
 
 interface IngestRequest {
   version: number;
@@ -212,15 +201,6 @@ async function runParsed(
 
   if (command === "worker") {
     await runWorkerCommand(
-      parsed.globals.dbPath,
-      parsed.commandArgv,
-      parsed.globals,
-    );
-    return;
-  }
-
-  if (command === "ingest-link") {
-    await runIngestLink(
       parsed.globals.dbPath,
       parsed.commandArgv,
       parsed.globals,
@@ -831,40 +811,6 @@ async function executeAdmission(
     result = await waitForAdmission(store, result, request.waitTimeoutMs);
   }
   writeByFormat(command, result, globals, humanAdmission, { readOnly: false });
-}
-
-async function runIngestLink(
-  dbPath: string,
-  argv: string[],
-  globals: GlobalOptions,
-): Promise<void> {
-  const opts = parseOptions(argv, {});
-  if (opts._.length > 0) {
-    throw new CliError(
-      "unexpected_args",
-      "ingest-link reads its payload from stdin",
-      {
-        exitCode: 2,
-      },
-    );
-  }
-  let payload: CompletedLinkPayload;
-  try {
-    payload = await readCompletedLinkPayload();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new CliError("invalid_payload", message);
-  }
-  const store = new ResearchStore(dbPath);
-  try {
-    const result = await ingestPrescrapedLink(store, payload);
-    writeByFormat("ingest-link", result, globals, humanMutation, {
-      readOnly: false,
-    });
-    if (!result.success) process.exitCode = result.root_success ? 2 : 1;
-  } finally {
-    store.close();
-  }
 }
 
 function parseDeleteRequest(argv: string[]): DeleteRequest {

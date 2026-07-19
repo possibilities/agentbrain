@@ -28,44 +28,18 @@ function temp(): { dir: string; db: string } {
   return { dir, db: join(dir, "research.db") };
 }
 
-function permanentFailurePath(dir: string): string {
-  const bin = join(dir, "fake-scrapectl");
-  mkdirSync(bin);
-  const executable = join(bin, "scrapectl");
-  writeFileSync(
-    executable,
-    "#!/bin/sh\nprintf '%s\\n' 'invalid input URL fixture' >&2\nexit 2\n",
-  );
-  chmodSync(executable, 0o755);
-  return `${bin}:${originalPath}`;
-}
-
 function decode(value: Uint8Array | string): string {
   return typeof value === "string" ? value : new TextDecoder().decode(value);
 }
 
 function run(
-  entrypoint: "agentbrain" | "legacy",
   args: readonly string[],
-  options: { db: string; input?: unknown; env?: Record<string, string> },
+  options: { db: string; env?: Record<string, string> },
 ) {
   return Bun.spawnSync({
-    cmd: [
-      "bun",
-      "run",
-      entrypoint === "agentbrain"
-        ? "src/cli.ts"
-        : "src/research-ingest-link.ts",
-      ...args,
-      "--db",
-      options.db,
-    ],
+    cmd: ["bun", "run", "src/cli.ts", ...args, "--db", options.db],
     cwd: REPO,
     env: { ...process.env, ...options.env },
-    stdin:
-      options.input === undefined
-        ? undefined
-        : new TextEncoder().encode(JSON.stringify(options.input)),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -74,7 +48,6 @@ function run(
 test("CLI ingest queues durably while context and guarded delete keep command metadata", () => {
   const { dir, db } = temp();
   const ingest = run(
-    "agentbrain",
     [
       "ingest",
       "Citation-ready agent memory",
@@ -99,6 +72,9 @@ test("CLI ingest queues durably while context and guarded delete keep command me
   expect(
     store.db.query("SELECT COUNT(*) AS count FROM documents").get(),
   ).toEqual({ count: 0 });
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM resources").get(),
+  ).toEqual({ count: 0 });
   const seeded = store.upsertDocument({
     sourceType: "text",
     sourceUri: "fixture:materialized",
@@ -109,7 +85,6 @@ test("CLI ingest queues durably while context and guarded delete keep command me
   store.close();
 
   const context = run(
-    "agentbrain",
     ["context", "agent memory", "--max-chars", "500", "--json"],
     { db },
   );
@@ -127,7 +102,6 @@ test("CLI ingest queues durably while context and guarded delete keep command me
   expect(contextPayload.data.hits[0].citation).toContain("document_id:");
 
   const refused = run(
-    "agentbrain",
     ["delete", "--document-id", String(seeded.document_id), "--json"],
     { db },
   );
@@ -138,7 +112,6 @@ test("CLI ingest queues durably while context and guarded delete keep command me
   });
 
   const deleted = run(
-    "agentbrain",
     [
       "delete",
       "--document-id",
@@ -157,61 +130,6 @@ test("CLI ingest queues durably while context and guarded delete keep command me
   });
 });
 
-test("agentbrain ingest-link uses the normal envelope", () => {
-  const { db } = temp();
-  const proc = run("agentbrain", ["ingest-link", "--json"], {
-    db,
-    input: {
-      url: "https://example.com/root",
-      markdown: "# Completed root",
-      source: "agentbot",
-    },
-  });
-  expect(proc.exitCode).toBe(0);
-  expect(JSON.parse(decode(proc.stdout))).toMatchObject({
-    ok: true,
-    command: "ingest-link",
-    meta: { read_only: false },
-    data: {
-      success: true,
-      root_success: true,
-      linked_count: 0,
-    },
-  });
-});
-
-test("legacy adapter emits exact bare success fields and exit 0", () => {
-  const { db } = temp();
-  const proc = run("legacy", ["--json"], {
-    db,
-    input: {
-      url: "https://example.com/root",
-      markdown: "# Root",
-      source: "agentbot",
-    },
-  });
-  expect(proc.exitCode).toBe(0);
-  expect(decode(proc.stderr)).toBe("");
-  const payload = JSON.parse(decode(proc.stdout));
-  expect(Object.keys(payload)).toEqual([
-    "success",
-    "root_success",
-    "root",
-    "ingest",
-    "artifact_path",
-    "linked_results",
-    "linked_count",
-    "linked_failed_count",
-  ]);
-  expect(payload).toMatchObject({
-    success: true,
-    root_success: true,
-    linked_count: 0,
-  });
-  expect(payload.ok).toBeUndefined();
-  expect(payload.data).toBeUndefined();
-});
-
 test("invalid ingest and delete argv never initialize a database", () => {
   for (const [args, code] of [
     [["ingest", "--json"], "bad_source"],
@@ -225,7 +143,7 @@ test("invalid ingest and delete argv never initialize a database", () => {
     [["delete", "--document-id", "1", "--json"], "confirmation_required"],
   ] as const) {
     const state = temp();
-    const proc = run("agentbrain", args, { db: state.db });
+    const proc = run(args, { db: state.db });
     expect(proc.exitCode).toBe(2);
     expect(existsSync(state.db)).toBe(false);
     expect(JSON.parse(decode(proc.stdout))).toMatchObject({
@@ -236,7 +154,6 @@ test("invalid ingest and delete argv never initialize a database", () => {
 
   const missingDeleteState = temp();
   const missingDelete = run(
-    "agentbrain",
     ["delete", "--document-id", "1", "--confirm", "delete", "--json"],
     { db: missingDeleteState.db },
   );
@@ -246,153 +163,6 @@ test("invalid ingest and delete argv never initialize a database", () => {
     ok: false,
     error: { code: "db_not_found" },
   });
-});
-
-test("invalid and oversized completed-link input never initializes a database", () => {
-  const invalidState = temp();
-  const invalid = run("agentbrain", ["ingest-link", "--json"], {
-    db: invalidState.db,
-    input: { url: "https://example.com" },
-  });
-  expect(invalid.exitCode).toBe(1);
-  expect(existsSync(invalidState.db)).toBe(false);
-
-  const oversizedState = temp();
-  const oversized = run("agentbrain", ["ingest-link", "--json"], {
-    db: oversizedState.db,
-    input: {
-      url: "https://example.com",
-      markdown: "x".repeat(5_000_001),
-    },
-  });
-  expect(oversized.exitCode).toBe(1);
-  expect(JSON.parse(decode(oversized.stdout)).error.message).toContain(
-    "markdown exceeds",
-  );
-  expect(existsSync(oversizedState.db)).toBe(false);
-});
-
-test("malformed URLs and wrong optional types never open native or legacy DBs", () => {
-  for (const entrypoint of ["agentbrain", "legacy"] as const) {
-    for (const input of [
-      { url: "file:///tmp/not-http", markdown: "body" },
-      { url: "https://example.com", markdown: "body", title: 42 },
-    ]) {
-      const state = temp();
-      const proc = run(
-        entrypoint,
-        entrypoint === "agentbrain" ? ["ingest-link", "--json"] : [],
-        { db: state.db, input },
-      );
-      expect(proc.exitCode).toBe(1);
-      expect(existsSync(state.db)).toBe(false);
-      const payload = JSON.parse(decode(proc.stdout));
-      if (entrypoint === "agentbrain") {
-        expect(payload).toMatchObject({
-          ok: false,
-          error: { code: "invalid_payload" },
-        });
-      } else {
-        expect(payload).toMatchObject({
-          success: false,
-          root_success: false,
-          error_kind: "invalid_payload",
-        });
-      }
-    }
-  }
-});
-
-test("legacy help exits zero without stdin or database initialization", () => {
-  const state = temp();
-  const help = run("legacy", ["--help"], { db: state.db });
-  expect(help.exitCode).toBe(0);
-  expect(decode(help.stdout)).toContain("Usage:");
-  expect(existsSync(state.db)).toBe(false);
-});
-
-test("native ingest-link completes its root without synchronous child work", () => {
-  const state = temp();
-  const partial = run("agentbrain", ["ingest-link", "--json"], {
-    db: state.db,
-    env: { PATH: permanentFailurePath(state.dir) },
-    input: {
-      url: "https://x.com/example/status/998",
-      markdown: "post",
-      structured: { links: [{ url: "http://127.0.0.1/private" }] },
-      source: "agentbot",
-    },
-  });
-  expect(partial.exitCode).toBe(0);
-  expect(JSON.parse(decode(partial.stdout))).toMatchObject({
-    ok: true,
-    data: {
-      success: true,
-      root_success: true,
-      linked_count: 0,
-      linked_failed_count: 0,
-    },
-  });
-});
-
-test("legacy adapter rejects invalid input and never synchronously extracts children", () => {
-  const invalidState = temp();
-  const invalid = run("legacy", [], {
-    db: invalidState.db,
-    input: { url: "https://example.com" },
-  });
-  expect(invalid.exitCode).toBe(1);
-  expect(existsSync(invalidState.db)).toBe(false);
-  expect(JSON.parse(decode(invalid.stdout))).toMatchObject({
-    success: false,
-    root_success: false,
-    error_kind: "invalid_payload",
-  });
-
-  const partialState = temp();
-  const partial = run("legacy", [], {
-    db: partialState.db,
-    env: { PATH: permanentFailurePath(partialState.dir) },
-    input: {
-      url: "https://x.com/example/status/999",
-      markdown: "post",
-      structured: { links: [{ url: "http://127.0.0.1/private" }] },
-      source: "agentbot",
-    },
-  });
-  expect(partial.exitCode).toBe(0);
-  const payload = JSON.parse(decode(partial.stdout));
-  expect(payload).toMatchObject({
-    success: true,
-    root_success: true,
-    linked_count: 0,
-    linked_failed_count: 0,
-  });
-  expect(payload.linked_results).toEqual([]);
-});
-
-test("legacy artifact failure exits 2 with root committed and optional metadata", () => {
-  const { dir, db } = temp();
-  const blockedDataHome = join(dir, "not-a-directory");
-  writeFileSync(blockedDataHome, "block mkdir");
-  const proc = run("legacy", [], {
-    db,
-    input: {
-      url: "https://example.com/artifact",
-      markdown: "committed root",
-      save_markdown_copy: true,
-    },
-    env: { XDG_DATA_HOME: blockedDataHome },
-  });
-  expect(proc.exitCode).toBe(2);
-  const payload = JSON.parse(decode(proc.stdout));
-  expect(payload).toMatchObject({
-    success: false,
-    root_success: true,
-    artifact_path: null,
-  });
-  expect(typeof payload.artifact_error).toBe("string");
-  expect(existsSync(db)).toBe(true);
 });
 
 test("PATH Scrapectl uses explicit X argv and sanitizes nonzero errors", async () => {

@@ -6,13 +6,13 @@ usage() {
   cat <<'EOF'
 Usage: scripts/install.sh [--install|--uninstall|--help]
 
-Install creates the agentbrain and research-ingest-link commands plus one owned
-user LaunchAgent for `agentbrain worker`. Agentbrain owns the durable SQLite
-queue and index; the worker leases admitted ingestion jobs from that queue. This
-installer does not create or enable recurring remote sources.
+Install creates the agentbrain command plus one owned user LaunchAgent for
+`agentbrain worker`. Agentbrain owns the durable SQLite queue and index; the
+worker leases admitted ingestion jobs from that queue.
+The installer does not create or enable recurring remote sources.
 
-Uninstall gracefully unloads and removes only the owned LaunchAgent and command
-links. It preserves the database, Artifacts, and private worker log.
+Uninstall gracefully unloads and removes only the owned LaunchAgent and known
+command links. It preserves the database, Artifacts, and private worker log.
 EOF
 }
 
@@ -39,7 +39,7 @@ BIN_DIR="${AGENTBRAIN_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 LAUNCH_AGENTS_DIR="${AGENTBRAIN_INSTALL_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 STATE_DIR="${AGENTBRAIN_INSTALL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agentbrain}"
 AGENTBRAIN_SOURCE="$ROOT/src/cli.ts"
-ADAPTER_SOURCE="$ROOT/src/research-ingest-link.ts"
+RETIRED_ADAPTER_SOURCE="$ROOT/src/research-ingest-link.ts"
 PLIST_SOURCE="$ROOT/system/Library/LaunchAgents/agentbrain.worker.plist"
 SERVICE_DEST="$LAUNCH_AGENTS_DIR/agentbrain.worker.plist"
 LOG_PATH="$STATE_DIR/worker.log"
@@ -66,7 +66,7 @@ canonical_path() {
 }
 
 AGENTBRAIN_CANONICAL="$(canonical_path "$AGENTBRAIN_SOURCE")"
-ADAPTER_CANONICAL="$(canonical_path "$ADAPTER_SOURCE")"
+RETIRED_ADAPTER_CANONICAL="$(canonical_path "$RETIRED_ADAPTER_SOURCE")"
 LEGACY_CANONICAL="$(canonical_path "$EXPECTED_LEGACY_SOURCE")"
 
 symlink_is_owned() {
@@ -86,7 +86,6 @@ symlink_is_owned() {
 check_destination() {
   local destination="$1"
   local expected="$2"
-  local allow_legacy="$3"
 
   if [[ ! -e "$destination" && ! -L "$destination" ]]; then
     return 0
@@ -98,12 +97,17 @@ check_destination() {
   if symlink_is_owned "$destination" "$expected"; then
     return 0
   fi
-  if [[ "$allow_legacy" == yes ]] && symlink_is_owned "$destination" "$LEGACY_CANONICAL"; then
-    return 0
-  fi
 
   echo "refusing to overwrite unrelated symlink: $destination -> $(readlink "$destination")" >&2
   return 1
+}
+
+remove_known_retired_link() {
+  local destination="$BIN_DIR/research-ingest-link"
+  if symlink_is_owned "$destination" "$RETIRED_ADAPTER_CANONICAL" ||
+    symlink_is_owned "$destination" "$LEGACY_CANONICAL"; then
+    rm -f "$destination"
+  fi
 }
 
 service_is_owned() {
@@ -198,7 +202,6 @@ preflight_owned_removal() {
 
 if [[ "$ACTION" == uninstall ]]; then
   preflight_owned_removal "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL"
-  preflight_owned_removal "$BIN_DIR/research-ingest-link" "$ADAPTER_CANONICAL"
   check_service_destination
   check_loaded_service
 
@@ -211,15 +214,12 @@ if [[ "$ACTION" == uninstall ]]; then
   if symlink_is_owned "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL"; then
     rm -f "$BIN_DIR/agentbrain"
   fi
-  if symlink_is_owned "$BIN_DIR/research-ingest-link" "$ADAPTER_CANONICAL"; then
-    rm -f "$BIN_DIR/research-ingest-link"
-  fi
+  remove_known_retired_link
   printf 'uninstalled owned Agentbrain commands and service\n'
   exit 0
 fi
 
-check_destination "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL" no
-check_destination "$BIN_DIR/research-ingest-link" "$ADAPTER_CANONICAL" yes
+check_destination "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL"
 check_service_destination
 check_private_paths
 check_loaded_service
@@ -228,7 +228,7 @@ mkdir -p "$BIN_DIR" "$LAUNCH_AGENTS_DIR" "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 touch "$LOG_PATH"
 chmod 600 "$LOG_PATH"
-chmod +x "$AGENTBRAIN_SOURCE" "$ADAPTER_SOURCE"
+chmod +x "$AGENTBRAIN_SOURCE"
 
 BUN_BIN="$(command -v bun)"
 SERVICE_PATH="$(dirname "$BUN_BIN"):$BIN_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -272,8 +272,8 @@ if service_is_owned || [[ "$LOADED_SERVICE_STATE" == owned ]]; then
 fi
 mv -f "$TEMP_PLIST" "$SERVICE_DEST"
 trap - EXIT
+remove_known_retired_link
 ln -sfn "$AGENTBRAIN_SOURCE" "$BIN_DIR/agentbrain"
-ln -sfn "$ADAPTER_SOURCE" "$BIN_DIR/research-ingest-link"
 
 if launchctl_available; then
   "$LAUNCHCTL" bootstrap "gui/$(id -u)" "$SERVICE_DEST"
@@ -282,4 +282,3 @@ else
   printf 'installed %s (launchctl unavailable; service not loaded)\n' "$SERVICE_DEST"
 fi
 printf 'installed %s -> %s\n' "$BIN_DIR/agentbrain" "$AGENTBRAIN_SOURCE"
-printf 'installed %s -> %s\n' "$BIN_DIR/research-ingest-link" "$ADAPTER_SOURCE"
