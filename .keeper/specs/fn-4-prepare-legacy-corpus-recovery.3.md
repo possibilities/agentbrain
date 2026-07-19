@@ -1,4 +1,14 @@
 ## Description
+**AUDIT-SEVERE FIX ROUND — read this block before anything else.** A prior worker landed this task's implementation as `a25265c` and the close audit CONFIRMED SEVERE defects in it. The implementation is ALREADY ON THE LANE; your job is NOT to re-implement the task and NOT to re-mark it done on the existing lane state. Your job is to FIX the audited defects, prove the fixes, and only then mark done with NEW commit evidence.
+
+Read the persisted finding first: `/Users/mike/code/agentbrain/.keeper/state/audits/fn-4-prepare-legacy-corpus-recovery/tasks/fn-4-prepare-legacy-corpus-recovery.3.json`. Ground-truth every item. The two severe findings, per the audit:
+
+1. `worker.ts:582-586` performs a blind `UPDATE` against the UNIQUE `resources.document_id` — it collides on foreign-resource same-URL re-import (per-resource alias uniqueness plus the resource-scoped identity guard admit that scenario cleanly; it is exactly Acceptance item 5's scenario). Aggravator: the forced `'infra'` failureClass retries uncapped with no dead-letter — a silent retry_wait spin. The shipped AC5 test structurally cannot collide (text-typed fixture); write one that does.
+2. The ~816-line admission fail-closed surface has zero direct tests — add direct coverage for its fail-closed paths.
+
+Thirteen mild findings are persisted alongside; address them only where they intersect the severe fixes. Marking this task done with empty evidence (`commits: []`) or without a test that reproduces the document_id collision is a phantom done and will be reset.
+
+---
 
 **Size:** M
 **Files:** src/recovery.ts, src/admission.ts, src/cli.ts, src/help.ts, src/types.ts, test/recovery.test.ts
@@ -46,7 +56,6 @@ Input is streaming and bounded, generation publication is fail-closed, file acce
 ### Rollout
 
 Use synthetic fixtures and the read-only frozen-generation dry run; live admission is deferred to the operational recovery epic.
-
 ## Acceptance
 
 - [ ] Dry-run verifies one complete generation and reports exactly 1,088 candidate rows, 294 Telegram observations, and the locked disposition counts without writing state or making network calls.
