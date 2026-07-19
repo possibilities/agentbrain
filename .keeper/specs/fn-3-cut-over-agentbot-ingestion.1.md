@@ -54,5 +54,5 @@ Deploy only when `agentbrain submit` is installed; validate with fake CLI first 
 - [ ] Tests assert exact argv (including --json) and the data-field envelope shape, and require no live Telegram, Agentbrain database, Scrapectl, or network.
 - [ ] Agentbot documentation contains no live Linkctl dependency.
 ## Done summary
-
+Cut Agentbot save-links over to agentbrain submit (--kind url --ingress agentbot --collection saved-links), parsing the versioned queued/duplicate envelope and failing loudly on invalid/mismatched/failed output; verified by a provider leg (bun lint/typecheck/test all green, 128 tests pass, no changes needed) since the source commit had already shipped with the correct Task trailer.
 ## Evidence
