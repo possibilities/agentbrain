@@ -27,5 +27,5 @@ Files:
 - [ ] A guard test proves both paths reference the shared definitions so a one-sided edit cannot silently reopen a gap.
 
 ## Done summary
-
+Hoisted the shared sensitive-query token/name/compact sets and JWT regex into apps/scrapectl/scrapectl/redaction.py; handlers/x.py and run_fetch_markdown.py now import the single definitions, and a new guard test asserts both paths reference the same shared objects.
 ## Evidence
