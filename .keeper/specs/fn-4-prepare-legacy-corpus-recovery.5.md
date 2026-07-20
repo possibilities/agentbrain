@@ -65,5 +65,5 @@ Publish only counts, opaque IDs, hashes, and sanitized failures needed for the f
 - [ ] The fan-in lands with both types.ts hunks composed and the backup manifest test referencing the schema constant; the full suite is green.
 
 ## Done summary
-
+Disposable recovery-import rehearsal drives the frozen 1,088-candidate generation end to end through the installed CLI and an operator shell script: dry-run parity, admission (629 jobs), offline worker drain (581 completed, two approved-online blocked/non-runnable, 37 excluded, 459 evidence-only), FTS/collection/citations, verified pre/post-import snapshot restore with generation-identity preservation, rollback + deterministic re-import, and idempotent replay. Hash-mismatch and malformed-artifact cases fail closed with sanitized errors and no state; a forbidden Scrapectl proves zero network. Fan-in landed: backup manifest test asserts RESEARCH_SCHEMA_VERSION and both types.ts hunks compose. bun run check green (142 tests).
 ## Evidence
