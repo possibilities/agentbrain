@@ -41,5 +41,5 @@ Fixtures: a current-version image verifies "current"; an older image verifies "o
 - [ ] Existing backup create/verify behavior for current-version images is unchanged
 
 ## Done summary
-
+Verify report now names the schema version relationship (current, older-migratable, newer-unsupported) against the running schema, and the read-only cache open path rejects older-than-supported schemas with a structured unsupported_schema_version error instead of failing on missing columns.
 ## Evidence
