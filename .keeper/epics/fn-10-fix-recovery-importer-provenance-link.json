@@ -7,7 +7,7 @@
     "fn-4-prepare-legacy-corpus-recovery"
   ],
   "id": "fn-10-fix-recovery-importer-provenance-link",
-  "last_validated_at": null,
+  "last_validated_at": "2026-07-20T09:52:58.022000Z",
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -16,5 +16,5 @@
     "/Users/mike/code/agentbrain",
     "/Users/mike/code/dotfiles"
   ],
-  "updated_at": "2026-07-20T09:52:56.902000Z"
+  "updated_at": "2026-07-20T09:52:58.022000Z"
 }
