@@ -14,5 +14,5 @@ Files: `src/recovery-online.ts`, `test/recovery.integration.test.ts` (and the wo
 - [ ] A test asserts that an active online execution lease fences `recoverExpiredLeases` globally (not only ordinary claims)
 
 ## Done summary
-
+Added direct negative-path tests for every recovery-online prepare-phase gate (corpus mismatch, offline accounting, protected-inventory tamper, scope widening, stale snapshot/quiescence) asserting their onlineError codes, plus a test proving an active online execution lease fences recoverExpiredLeases globally.
 ## Evidence
