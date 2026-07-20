@@ -55,5 +55,5 @@ Version the chunker and rebuild only through explicit ingestion/reindex paths; d
 - [ ] Existing exact-token and non-Markdown lexical tests remain green.
 
 ## Done summary
-
+Replaced blind character chunking for Markdown with deterministic block-aware chunking (headings, paragraphs, lists, code, tables, blockquotes) preserving breadcrumbs and structural provenance, versioned chunker/revision digests, dedup metadata, and safe oversized-block fallbacks; store schema bumped to v7.
 ## Evidence
