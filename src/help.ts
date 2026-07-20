@@ -244,6 +244,15 @@ Options:
   --lease-ms <n>            Attempt lease duration (default: 60000)
   --heartbeat-ms <n>        Active lease heartbeat interval (default: 20000)
   --shutdown-grace-ms <n>   Bounded completion grace after a signal (default: 10000)
+  --run <id>                Pin an operator-controlled Run
+  --authorization-digest <sha256>  Require the persisted authorization digest
+  --allowed-kind <kind>     Require a persisted allowed job kind; repeatable
+
+Scoped execution requires --once and all three scope options. It performs no scheduling,
+rejects policy or cardinality mismatches before claim, and never falls back to ordinary
+queue claims. Offline Runs cannot authorize URL extraction; online Runs authorize exactly
+two URL jobs already bound to that Run and hold a single fenced execution lease. Ordinary
+workers skip every operator-controlled Run.
 
 Materialization happens outside SQLite write transactions. URL jobs delegate a versioned
 extraction envelope to Scrapectl; unknown envelope versions are protocol defects rather
@@ -254,15 +263,18 @@ expiry.
   jobs: `agentbrain jobs — inspect and operate on ingestion jobs
 
 Usage:
-  agentbrain jobs list [--state STATE] [--limit N] [--json]
+  agentbrain jobs list [--state STATE] [--run RUN_ID] [--limit N] [--json]
   agentbrain jobs show JOB_ID [--reveal-content] [--actor NAME] [--json]
+  agentbrain jobs run RUN_ID [--limit N] [--json]
   agentbrain jobs retry JOB_ID [--reason TEXT] [--actor NAME] [--json]
   agentbrain jobs cancel JOB_ID [--reason TEXT] [--actor NAME] [--json]
   agentbrain jobs exclude JOB_ID --reason TEXT [--actor NAME] [--json]
-  agentbrain jobs stats [--json]
+  agentbrain jobs stats [--run RUN_ID] [--json]
 
-List, ordinary show, and stats are structurally read-only and omit durable intent,
-Artifact bodies, raw URLs, query values, worker names, and detailed diagnostics.
+List, ordinary show, Run inspection, and stats are structurally read-only and omit durable
+intent, Run checkpoints, Artifact bodies, raw URLs, query values, worker names, and
+detailed diagnostics. Run inspection reports only opaque IDs and authorization digests,
+state and kind counts, Attempt counts, quiescence, and bounded safe job views.
 --reveal-content explicitly reads Artifact bodies and appends a sensitive-inspection
 audit record. Retry, cancel, and exclude append transitions and preserve all attempts.
 `,
@@ -296,17 +308,30 @@ Artifact reference manifest, verifies each required Artifact digest, and proves 
 can be rebuilt from retained indexed content. The temporary restore is always removed.
 Verification exits 1 if any check fails.
 `,
-  recovery: `agentbrain recovery — frozen legacy recovery admission
+  recovery: `agentbrain recovery — frozen legacy recovery execution
 
 Usage:
   agentbrain recovery import --manifest-generation PATH [options]
+  agentbrain recovery online --manifest-generation PATH --offline-run ID \\
+    --post-offline-snapshot PATH --generation-digest SHA256 \\
+    --approval-digest SHA256 --snapshot-digest SHA256 [--execute] [options]
 
-Options:
+Import options:
   --manifest-generation <path>  Atomic generation pointer, directory, or generation.json
   --artifact-root <path>         Declared root for legacy Markdown; repeatable
   --artifact-store <path>        Destination Artifact store for admitted searchable bodies
+  --authorize-offline            Bind the admitted Run to recovery_offline scoped execution
   --dry-run                      Verify all descriptors, hashes, rows, and frontmatter only
-  --json                         Emit a count-only stable envelope
+
+Online options:
+  --offline-run <id>              Terminal linked offline Run
+  --post-offline-snapshot <path>  Verified rollback snapshot created after offline drain
+  --generation-digest <sha256>    Explicit pinned frozen-generation digest
+  --approval-digest <sha256>      Explicit immutable online-allowlist file digest
+  --snapshot-digest <sha256>      Explicit post-offline snapshot database digest
+  --execute                       Drain eligible work now through Scrapectl; otherwise prepare only
+  --worker-id <id>                Opaque scoped Worker identity
+  --json                          Emit a sanitized stable evidence envelope
 
 The importer accepts only the hash-bound 1,088-row frozen recovery contract. It verifies
 all generation files and approved local Markdown without invoking Scrapectl or any other
@@ -316,10 +341,24 @@ candidate, while only the frontmatter-free body enters the Artifact store.
 Dry-run performs no database or Artifact-store writes. Admission creates one pending
 recovery Run, stable candidate outcomes, 584 ordered legacy-links memberships, body-free
 Secretary observations, 581 runnable offline jobs, 11 blocked jobs, and 37 exclusions.
-The two controlled-online jobs remain blocked until a separate run explicitly authorizes
-egress. Comparison URIs are diagnostic aliases only and never merge candidate outcomes.
-Output contains opaque generation IDs and aggregate counts, never exact candidate URLs,
-private locators, message bodies, credentials, or filesystem paths.
+--authorize-offline immutably binds that Run to the generation digest and the logical
+recovery_offline scope, which selects only its 581 recovery file jobs while rejecting URL
+and unrelated file claims. The two controlled-online jobs remain blocked until a separate
+run explicitly authorizes egress. Comparison URIs are diagnostic aliases only and never
+merge candidate outcomes.
+Output contains opaque generation/candidate/Run/Attempt IDs, bounded states and
+classifications, counts, and snapshot/Artifact hashes, never exact candidate URLs,
+private locators, message bodies, credentials, or unsafe evidence.
+
+Online preparation restore-verifies the pinned post-offline snapshot, rechecks SQLite,
+Artifact, FTS, retrieval, permission, disk, worker-quiescence, offline Run, generation,
+and exact two-candidate approval gates before creating a separate immutable online Run.
+The recovery_online scope maps only its two URL jobs, and ordinary Workers are fenced
+while its concurrency-one execution lease is active. --execute invokes Scrapectl as the
+sole extractor. Item-specific failure leaves the sibling eligible; shared infrastructure,
+authentication, configuration, or integrity failure pauses before another claim. Replay
+skips completed effects and resumes only the same incomplete jobs. Terminal non-success
+is completed_with_review. Snapshot rollback is local-only and cannot undo remote requests.
 `,
   doctor: `agentbrain doctor — operational health checks
 

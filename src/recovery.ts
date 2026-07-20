@@ -178,6 +178,7 @@ export interface VerifiedRecoveryGeneration {
   generationDigest: string;
   generationRoot: string;
   manifestDigest: string;
+  onlineAllowlistDigest: string;
   candidates: VerifiedRecoveryCandidate[];
   onlineAllowlist: string[];
   dispositionCounts: Record<RecoveryDisposition, number>;
@@ -1365,6 +1366,7 @@ function validatedAllowlist(
   value: unknown,
   descriptor: FrozenGenerationDescriptor,
   candidates: Map<string, ReturnType<typeof parseCandidate>>,
+  observations: Map<string, RecoveryObservationEvidence[]>,
 ): string[] {
   if (!isRecord(value)) {
     throw recoveryError(
@@ -1392,7 +1394,12 @@ function validatedAllowlist(
       (id) =>
         typeof id !== "string" ||
         candidates.get(id)?.row.recovery.disposition !==
-          "approved_online_backfill_telegram_human",
+          "approved_online_backfill_telegram_human" ||
+        !observations.has(id) ||
+        observations.get(id)?.length === 0 ||
+        observations
+          .get(id)
+          ?.some((observation) => observation.senderKind !== "human"),
     )
   ) {
     throw recoveryError(
@@ -1557,6 +1564,7 @@ export function readRecoveryGeneration(
     ),
     descriptor,
     parsedCandidates,
+    observations,
   );
   const roots = safeArtifactRoots(options.artifactRoots);
   const candidates: VerifiedRecoveryCandidate[] = [];
@@ -1616,6 +1624,7 @@ export function readRecoveryGeneration(
     generationDigest: descriptor.generation_id.slice(7),
     generationRoot: root,
     manifestDigest: checksums.get("candidate-manifest.jsonl") as string,
+    onlineAllowlistDigest: checksums.get("online-allowlist.json") as string,
     candidates,
     onlineAllowlist: allowlist,
     dispositionCounts,

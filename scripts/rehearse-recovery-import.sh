@@ -119,15 +119,30 @@ agentbrain_json backup create --output "$tmp_dir/pre-import-snapshot" >"$pre_bac
 echo "Phase 2: admission" >&2
 agentbrain_json recovery import \
   --manifest-generation "$generation" \
-  --artifact-root "$artifact_root" >"$import_json"
+  --artifact-root "$artifact_root" \
+  --authorize-offline >"$import_json"
 assert_field "$import_json" "status" "queued"
 assert_field "$import_json" "jobs.created" "629"
 assert_field "$import_json" "effects.candidate_outcomes_created" "1088"
 assert_field "$import_json" "effects.observations_created" "294"
+assert_field "$import_json" "run.operator_controlled" "true"
+assert_field "$import_json" "run.expected_job_count" "581"
+
+offline_run_id="$(bun -e '
+const data = JSON.parse(await Bun.file(process.argv[1]).text()).data;
+process.stdout.write(String(data.run.id));
+' "$import_json")"
+authorization_digest="$(bun -e '
+const data = JSON.parse(await Bun.file(process.argv[1]).text()).data;
+process.stdout.write(String(data.run.authorization_digest));
+' "$import_json")"
 
 # Phase 2: drain only the 581 offline jobs; approved-online jobs stay blocked.
 echo "Phase 2: offline worker drain" >&2
-agentbrain_json worker --once --worker-id rehearsal-drain >"$drain_json"
+agentbrain_json worker --once --worker-id rehearsal-drain \
+  --run "$offline_run_id" \
+  --authorization-digest "$authorization_digest" \
+  --allowed-kind recovery_offline >"$drain_json"
 assert_field "$drain_json" "claimed" "581"
 assert_field "$drain_json" "completed" "581"
 assert_field "$drain_json" "failed" "0"
@@ -162,7 +177,8 @@ assert_field "$verify_json" "verified" "true"
 # Phase 3: idempotent replay creates no new work.
 agentbrain_json recovery import \
   --manifest-generation "$generation" \
-  --artifact-root "$artifact_root" >"$replay_json"
+  --artifact-root "$artifact_root" \
+  --authorize-offline >"$replay_json"
 assert_field "$replay_json" "jobs.created" "0"
 assert_field "$replay_json" "jobs.existing" "629"
 assert_field "$replay_json" "effects.candidate_outcomes_existing" "1088"

@@ -112,6 +112,186 @@ test("job list and show redact intent bodies and unsafe URLs", () => {
   expect(urlShown.stdout).not.toContain("query-secret");
 });
 
+test("Run inspection is bounded to safe opaque policy and lifecycle metadata", () => {
+  const value = fixture();
+  const admitted = admitSubmission(
+    value.store,
+    {
+      version: 1,
+      source: "private Run body needle-run-41",
+      kind: "text",
+      ingress: "cli",
+    },
+    { artifactStore: value.artifacts },
+  );
+  const timestamp = "2026-06-02T00:00:00.000Z";
+  const runId = Number(
+    value.store.db
+      .query(
+        `INSERT INTO runs(run_type, state, checkpoint, created_at, updated_at)
+         VALUES ('controlled_recovery', 'pending', ?, ?, ?)`,
+      )
+      .run(
+        JSON.stringify({
+          exact_url: "https://unsafe.example/private?token=credential-77",
+          body: "checkpoint body needle-run-41",
+        }),
+        timestamp,
+        timestamp,
+      ).lastInsertRowid,
+  );
+  value.store.db
+    .query("UPDATE jobs SET run_id=?, run_at=? WHERE id=?")
+    .run(runId, timestamp, admitted.job_id);
+  const claim = value.store.claimJob({
+    worker: "credential-worker-77",
+    now: new Date(timestamp),
+  });
+  if (!claim.claimed) throw new Error("expected fixture claim");
+  value.store.failAttempt({
+    fencingToken: claim.fencing_token,
+    failureClass: "permanent",
+    summary: "https://unsafe.example/private?token=attempt-secret-88",
+    now: new Date(timestamp),
+  });
+  value.store.authorizeRunScope({
+    runId,
+    mode: "offline",
+    authorizationDigest: "3".repeat(64),
+    allowedKinds: ["text"],
+    expectedJobCount: 1,
+    now: new Date(timestamp),
+  });
+  value.store.close();
+
+  const shown = runCli(value, [
+    "jobs",
+    "run",
+    String(runId),
+    "--limit",
+    "1",
+    "--json",
+  ]);
+  expect(shown.exitCode).toBe(0);
+  expect(shown.stdout).not.toContain("needle-run-41");
+  expect(shown.stdout).not.toContain("unsafe.example");
+  expect(shown.stdout).not.toContain("credential-77");
+  expect(shown.stdout).not.toContain("attempt-secret-88");
+  expect(shown.stdout).not.toContain("credential-worker-77");
+  const payload = jsonOutput<{
+    id: number;
+    operator_controlled: boolean;
+    execution_mode: string;
+    authorization_digest: string;
+    counts: {
+      jobs: number;
+      attempts: number;
+      by_job_state: Record<string, number>;
+      by_failure_class: Record<string, number>;
+    };
+    jobs: Array<{ id: number; attempt_count: number; failure_class: string }>;
+  }>(shown);
+  expect(payload.meta.read_only).toBe(true);
+  expect(payload.data).toMatchObject({
+    id: runId,
+    operator_controlled: true,
+    execution_mode: "offline",
+    authorization_digest: "3".repeat(64),
+    counts: {
+      jobs: 1,
+      attempts: 1,
+      by_job_state: { failed: 1 },
+      by_failure_class: { permanent: 1 },
+    },
+    jobs: [
+      {
+        id: admitted.job_id,
+        attempt_count: 1,
+        failure_class: "permanent",
+      },
+    ],
+  });
+
+  const listed = runCli(value, [
+    "jobs",
+    "list",
+    "--run",
+    String(runId),
+    "--json",
+  ]);
+  expect(listed.exitCode).toBe(0);
+  expect(jsonOutput<Array<{ id: number }>>(listed).data).toEqual([
+    expect.objectContaining({ id: admitted.job_id }),
+  ]);
+});
+
+test("Run stats distinguish expired Attempt leases from active leases", () => {
+  const value = fixture();
+  const timestamp = new Date("2000-01-01T00:00:00.000Z");
+  const runId = Number(
+    value.store.db
+      .query(
+        `INSERT INTO runs(run_type, state, created_at, updated_at)
+         VALUES ('expired_lease_fixture', 'pending', ?, ?)`,
+      )
+      .run(timestamp.toISOString(), timestamp.toISOString()).lastInsertRowid,
+  );
+  value.store.enqueueJob({
+    idempotencyKey: "expired-run-lease",
+    kind: "text",
+    intent: {
+      version: 1,
+      kind: "text",
+      ingress: "test",
+      collections: [],
+      payload: { text: {} },
+      options: { tags: [], force: false, max_bytes: 1 },
+    },
+    runId,
+    now: timestamp,
+  });
+  const scope = {
+    runId,
+    authorizationDigest: "6".repeat(64),
+    allowedKinds: ["text"],
+  };
+  value.store.authorizeRunScope({
+    ...scope,
+    mode: "offline",
+    expectedJobCount: 1,
+    now: timestamp,
+  });
+  const execution = value.store.beginRunScope(scope, {
+    worker: "expired-worker",
+    now: timestamp,
+    leaseMs: 1,
+  });
+  const claim = value.store.claimJob({
+    worker: "expired-worker",
+    scope,
+    executionToken: execution.executionToken,
+    now: timestamp,
+    leaseMs: 1,
+  });
+  if (!claim.claimed) throw new Error("expected expired lease fixture claim");
+  value.store.close();
+
+  const stats = runCli(value, [
+    "jobs",
+    "stats",
+    "--run",
+    String(runId),
+    "--json",
+  ]);
+  expect(stats.exitCode).toBe(0);
+  expect(
+    jsonOutput<{ active_leases: number; stale_leases: number }>(stats).data,
+  ).toMatchObject({
+    active_leases: 0,
+    stale_leases: 1,
+  });
+});
+
 test("explicit Artifact reveal returns content and appends an inspection audit", () => {
   const value = fixture();
   const admitted = admitSubmission(

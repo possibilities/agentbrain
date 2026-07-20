@@ -14,7 +14,7 @@ import type {
   VerifiedRecoveryCandidate,
   VerifiedRecoveryGeneration,
 } from "./recovery";
-import type { ResearchStore } from "./store";
+import { RECOVERY_OFFLINE_SCOPE_KIND, type ResearchStore } from "./store";
 import { normalizeTags } from "./text";
 import type {
   AdmissionStatus,
@@ -550,6 +550,7 @@ export function admitSubmission(
 
 export interface RecoveryAdmissionOptions {
   artifactStore?: ArtifactStore;
+  authorizeOffline?: boolean;
   dryRun?: boolean;
   now?: Date;
 }
@@ -572,6 +573,7 @@ interface RecoveryCandidateEffect {
 }
 
 export const RECOVERY_JOB_PREFIX = "legacy-recovery-candidate:v1:";
+export const RECOVERY_ONLINE_JOB_PREFIX = `${RECOVERY_JOB_PREFIX}online:`;
 
 function recoveryAdmissionError(code: string, message: string): CliError {
   return new CliError(code, message, { exitCode: 2 });
@@ -597,7 +599,9 @@ function recoveryJobState(
   return null;
 }
 
-function recoveryUrlIntent(candidate: VerifiedRecoveryCandidate): string {
+export function recoveryUrlIntent(
+  candidate: VerifiedRecoveryCandidate,
+): string {
   const intent: DurableSubmissionIntent = {
     version: SUBMISSION_VERSION,
     kind: "url",
@@ -1313,6 +1317,11 @@ function recoveryReport(
   generation: VerifiedRecoveryGeneration,
   dryRun: boolean,
   runId: number | null,
+  offlineAuthorization: {
+    authorizationDigest: string;
+    allowedKinds: string[];
+    expectedJobCount: number;
+  } | null,
   effects: {
     outcomesCreated: number;
     outcomesExisting: number;
@@ -1349,7 +1358,14 @@ function recoveryReport(
       artifacts_created: effects.artifactsCreated,
       artifacts_existing: effects.artifactsExisting,
     },
-    run: { id: runId, state: dryRun ? "verified" : "pending" },
+    run: {
+      id: runId,
+      state: dryRun ? "verified" : "pending",
+      operator_controlled: offlineAuthorization !== null,
+      authorization_digest: offlineAuthorization?.authorizationDigest ?? null,
+      allowed_job_kinds: offlineAuthorization?.allowedKinds ?? [],
+      expected_job_count: offlineAuthorization?.expectedJobCount ?? null,
+    },
   };
 }
 
@@ -1359,7 +1375,7 @@ export function admitRecoveryGeneration(
   options: RecoveryAdmissionOptions = {},
 ): RecoveryImportReport {
   if (options.dryRun === true) {
-    return recoveryReport(generation, true, null, {
+    return recoveryReport(generation, true, null, null, {
       outcomesCreated: 0,
       outcomesExisting: 0,
       observationsCreated: 0,
@@ -1406,7 +1422,24 @@ export function admitRecoveryGeneration(
     if (effect.jobCreated) effects.jobsCreated += 1;
     if (effect.jobExisting) effects.jobsExisting += 1;
   }
-  return recoveryReport(generation, false, context.runId, effects);
+  const offlineAuthorization =
+    options.authorizeOffline === true
+      ? store.authorizeRunScope({
+          runId: context.runId,
+          mode: "offline",
+          authorizationDigest: generation.generationDigest,
+          allowedKinds: [RECOVERY_OFFLINE_SCOPE_KIND],
+          expectedJobCount: generation.counts.approved_offline_artifacts,
+          now: options.now,
+        })
+      : null;
+  return recoveryReport(
+    generation,
+    false,
+    context.runId,
+    offlineAuthorization,
+    effects,
+  );
 }
 
 export async function waitForAdmission(

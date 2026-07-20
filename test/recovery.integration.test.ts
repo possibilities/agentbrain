@@ -316,6 +316,54 @@ interface CliResult {
 
 // A forbidden `scrapectl` shim: any invocation records a sentinel and exits
 // non-zero, so a rehearsal that touched the network fails loudly.
+function installSuccessfulScrapectl(binDir: string): string {
+  const log = join(binDir, "online-scrapectl-invocations");
+  const executable = join(binDir, "scrapectl");
+  writeFileSync(
+    executable,
+    `#!/usr/bin/env bun
+import { appendFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+const url = process.argv[3];
+const content = "# Controlled online fixture\\n\\nSynthetic extracted body";
+appendFileSync(${JSON.stringify(log)}, url + "\\n");
+process.stdout.write(JSON.stringify({
+  schema_version: "1",
+  status: "success",
+  requested_url: url,
+  final_url: url,
+  extractor: {
+    name: "scrapectl",
+    version: "test-1",
+    implementation: "synthetic-fixture",
+    implementation_version: "1",
+  },
+  artifacts: [{
+    artifact_type: "document",
+    media_type: "text/markdown",
+    encoding: "utf-8",
+    content,
+    size_bytes: Buffer.byteLength(content),
+    sha256: createHash("sha256").update(content).digest("hex"),
+  }],
+  metadata: {
+    content_type: "web_page",
+    title: "Controlled online fixture",
+    author_name: "",
+    author_handle: "",
+    published_at: "",
+    source_id: "",
+    warnings: [],
+  },
+  relations: [],
+  failure: null,
+}));
+`,
+  );
+  chmodSync(executable, 0o755);
+  return log;
+}
+
 function forbiddenScrapectl(root: string): {
   binDir: string;
   sentinel: string;
@@ -436,7 +484,7 @@ test("disposable rehearsal drives the frozen generation through the installed CL
   expect(preBackup.exitCode, preBackup.stderr).toBe(0);
 
   // Phase 2: real admission into the disposable database.
-  const imported = runCli(importArgs, env);
+  const imported = runCli([...importArgs, "--authorize-offline"], env);
   expect(imported.exitCode, imported.stderr).toBe(0);
   const importData = jsonData(imported);
   expect(importData).toMatchObject({
@@ -447,12 +495,34 @@ test("disposable rehearsal drives the frozen generation through the installed CL
     jobs: { queued: 581, blocked: 11, excluded: 37, created: 629, existing: 0 },
     effects: { candidate_outcomes_created: 1088, observations_created: 294 },
   });
-  expect((importData.run as { id: number }).id).toBeGreaterThan(0);
+  const runId = (importData.run as { id: number }).id;
+  expect(runId).toBeGreaterThan(0);
+  expect(importData.run).toMatchObject({
+    operator_controlled: true,
+    authorization_digest: generationId.slice("sha256-".length),
+    allowed_job_kinds: ["recovery_offline"],
+    expected_job_count: 581,
+  });
   assertSanitized(imported);
 
   // Phase 2: drain only the 581 offline jobs; approved-online jobs stay
   // non-runnable and no extractor is ever invoked.
-  const drain = runCli(["worker", "--once", "--db", dbPath, "--json"], env);
+  const drain = runCli(
+    [
+      "worker",
+      "--once",
+      "--run",
+      String(runId),
+      "--authorization-digest",
+      generationId.slice("sha256-".length),
+      "--allowed-kind",
+      "recovery_offline",
+      "--db",
+      dbPath,
+      "--json",
+    ],
+    env,
+  );
   expect(drain.exitCode, drain.stderr).toBe(0);
   expect(jsonData(drain)).toMatchObject({
     claimed: 581,
@@ -550,8 +620,147 @@ test("disposable rehearsal drives the frozen generation through the installed CL
   ).toBe(1);
   restoredDb.close();
 
+  // Phase 4: a separate linked online Run is authorized by all three pinned
+  // digests and drains only the immutable two-item allowlist. A bad approval
+  // digest fails before the fake Scrapectl can be invoked.
+  const approvalDigest = digest(
+    readFileSync(join(fixture.generationRoot, "online-allowlist.json")),
+  );
+  const snapshotDigest = String(jsonData(postBackup).database_sha256);
+  const onlineArgs = [
+    "recovery",
+    "online",
+    "--manifest-generation",
+    fixture.descriptor,
+    "--artifact-root",
+    fixture.artifactRoot,
+    "--artifact-store",
+    join(dataHome, "agentbrain", "artifacts"),
+    "--offline-run",
+    String(runId),
+    "--post-offline-snapshot",
+    postSnapshot,
+    "--generation-digest",
+    generationId.slice("sha256-".length),
+    "--approval-digest",
+    approvalDigest,
+    "--snapshot-digest",
+    snapshotDigest,
+    "--execute",
+    "--db",
+    dbPath,
+    "--json",
+  ];
+  const wrongGeneration = [...onlineArgs];
+  wrongGeneration[wrongGeneration.indexOf("--generation-digest") + 1] =
+    "0".repeat(64);
+  const generationRejected = runCli(wrongGeneration, env);
+  expect(generationRejected.exitCode).toBe(2);
+  expect(generationRejected.stdout).toContain(
+    "generation digest does not match",
+  );
+
+  const wrongApproval = [...onlineArgs];
+  wrongApproval[wrongApproval.indexOf("--approval-digest") + 1] = "0".repeat(
+    64,
+  );
+  const approvalRejected = runCli(wrongApproval, env);
+  expect(approvalRejected.exitCode).toBe(2);
+  expect(approvalRejected.stdout).toContain("approval digest does not match");
+
+  const wrongSnapshot = [...onlineArgs];
+  wrongSnapshot[wrongSnapshot.indexOf("--snapshot-digest") + 1] = "0".repeat(
+    64,
+  );
+  const snapshotRejected = runCli(wrongSnapshot, env);
+  expect(snapshotRejected.exitCode).toBe(2);
+  expect(snapshotRejected.stdout).toContain(
+    "snapshot failed restore verification",
+  );
+  expect(existsSync(sentinel)).toBe(false);
+
+  const onlineLog = installSuccessfulScrapectl(binDir);
+  const online = runCli(onlineArgs, env);
+  expect(online.exitCode, online.stdout + online.stderr).toBe(0);
+  const onlineData = jsonData(online) as {
+    status: string;
+    candidate_evidence_row_ids: string[];
+    artifact_digests: string[];
+    online_run: {
+      id: number;
+      state: string;
+      counts: { jobs: number; attempts: number; completed: number };
+    };
+    items: Array<{ state: string; attempt_ids: number[] }>;
+  };
+  expect(onlineData).toMatchObject({
+    status: "completed",
+    snapshot: {
+      restore_verified: true,
+      corpus_jobs: 581,
+      corpus_documents: 581,
+    },
+    offline_run: {
+      completed_artifact_jobs: 581,
+      succeeded_attempts: 581,
+    },
+    online_run: {
+      state: "completed",
+      protected_jobs_unchanged: 629,
+      counts: { jobs: 2, attempts: 2, completed: 2 },
+    },
+  });
+  expect(new Set(onlineData.candidate_evidence_row_ids).size).toBe(2);
+  expect(onlineData.items).toHaveLength(2);
+  expect(onlineData.items.every((item) => item.state === "completed")).toBe(
+    true,
+  );
+  expect(onlineData.items.every((item) => item.attempt_ids.length === 1)).toBe(
+    true,
+  );
+  expect(onlineData.artifact_digests).toHaveLength(1);
+  expect(readFileSync(onlineLog, "utf8").trim().split("\n")).toHaveLength(2);
+  assertSanitized(online);
+
+  const onlineDb = new Database(dbPath, { readonly: true });
+  expect(
+    onlineDb
+      .query("SELECT status FROM recovery_online_runs WHERE run_id=?")
+      .get(onlineData.online_run.id),
+  ).toEqual({ status: "completed" });
+  expect(
+    count(
+      onlineDb,
+      `SELECT COUNT(*) AS count FROM attempts a JOIN jobs j ON j.id=a.job_id WHERE j.run_id=${runId}`,
+    ),
+  ).toBe(581);
+  expect(
+    count(
+      onlineDb,
+      `SELECT COUNT(*) AS count FROM attempts a JOIN jobs j ON j.id=a.job_id WHERE j.run_id=${onlineData.online_run.id}`,
+    ),
+  ).toBe(2);
+  expect(
+    count(
+      onlineDb,
+      `SELECT COUNT(*) AS count FROM jobs WHERE run_id=${runId} AND state='blocked'`,
+    ),
+  ).toBe(11);
+  onlineDb.close();
+
+  // Replaying the same authorization performs no duplicate remote or local
+  // effects because both logical jobs are already terminal.
+  const onlineReplay = runCli(onlineArgs, env);
+  expect(onlineReplay.exitCode, onlineReplay.stderr).toBe(0);
+  expect(jsonData(onlineReplay)).toMatchObject({
+    status: "completed",
+    online_run: { counts: { jobs: 2, attempts: 2, completed: 2 } },
+  });
+  expect(readFileSync(onlineLog, "utf8").trim().split("\n")).toHaveLength(2);
+  assertSanitized(onlineReplay);
+
   // Phase 3: idempotent replay against the live database creates no new work.
-  const replay = runCli(importArgs, env);
+  const replay = runCli([...importArgs, "--authorize-offline"], env);
   expect(replay.exitCode, replay.stderr).toBe(0);
   expect(jsonData(replay)).toMatchObject({
     jobs: { created: 0, existing: 629 },

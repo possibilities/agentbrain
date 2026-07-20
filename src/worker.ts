@@ -31,6 +31,7 @@ import type {
   FailureClass,
   Job,
   LifecyclePolicy,
+  OperatorRunScope,
   PromotedUrlExtraction,
   Sensitivity,
 } from "./types";
@@ -91,10 +92,19 @@ export interface WorkerOptions {
   random?: () => number;
   signal?: AbortSignal;
   installSignalHandlers?: boolean;
+  scope?: OperatorRunScope;
 }
 
 export interface WorkerResult {
   worker_id: string;
+  scope: {
+    run_id: number;
+    execution_mode: "offline" | "online";
+    authorization_digest: string;
+    allowed_job_kinds: string[];
+    expected_job_count: number;
+  } | null;
+  scheduled: number;
   recovered: number;
   claimed: number;
   completed: number;
@@ -129,7 +139,8 @@ function parseIntent(job: Job): DurableSubmissionIntent {
     value === null ||
     typeof value !== "object" ||
     (value as { version?: unknown }).version !== 1 ||
-    typeof (value as { kind?: unknown }).kind !== "string"
+    typeof (value as { kind?: unknown }).kind !== "string" ||
+    (value as { kind: string }).kind !== job.kind
   ) {
     throw new Error("ingestion job has an unsupported durable intent");
   }
@@ -854,6 +865,17 @@ export async function runWorker(
       "worker timing options must be positive (shutdown grace may be zero)",
     );
   }
+  if (options.scope !== undefined && !once) {
+    throw new Error("operator-controlled Run scope requires --once");
+  }
+  const scopePolicy =
+    options.scope === undefined
+      ? null
+      : store.beginRunScope(options.scope, {
+          worker: workerId,
+          now: now(),
+          leaseMs,
+        });
 
   let stopping = options.signal?.aborted === true;
   let activeController: AbortController | null = null;
@@ -885,9 +907,22 @@ export async function runWorker(
     now: now(),
     policy: options.policy,
     random: options.random,
+    scope: options.scope,
+    executionToken: scopePolicy?.executionToken,
   }).length;
   const result: WorkerResult = {
     worker_id: workerId,
+    scope:
+      scopePolicy === null
+        ? null
+        : {
+            run_id: scopePolicy.runId,
+            execution_mode: scopePolicy.mode,
+            authorization_digest: scopePolicy.authorizationDigest,
+            allowed_job_kinds: scopePolicy.allowedKinds,
+            expected_job_count: scopePolicy.expectedJobCount,
+          },
+    scheduled: 0,
     recovered,
     claimed: 0,
     completed: 0,
@@ -898,11 +933,25 @@ export async function runWorker(
 
   try {
     while (!stopping) {
+      if (
+        options.scope !== undefined &&
+        scopePolicy !== null &&
+        !store.heartbeatRunScope(options.scope, scopePolicy.executionToken, {
+          now: now(),
+          leaseMs,
+        })
+      ) {
+        throw new Error(
+          "operator-controlled Run execution lease is stale or fenced",
+        );
+      }
       const claim = store.claimJob({
         worker: workerId,
         now: now(),
         leaseMs,
         policy: options.policy,
+        scope: options.scope,
+        executionToken: scopePolicy?.executionToken,
       });
       if (!claim.claimed) {
         if (once) break;
@@ -922,13 +971,22 @@ export async function runWorker(
       let lostLease = false;
       const heartbeat = setInterval(() => {
         try {
+          const heartbeatTime = now();
           const beat = store.heartbeat({
             fencingToken: claim.fencing_token,
-            now: now(),
+            now: heartbeatTime,
             leaseMs,
             policy: options.policy,
           });
-          if (!beat.ok) {
+          const runScopeOk =
+            options.scope === undefined || scopePolicy === null
+              ? true
+              : store.heartbeatRunScope(
+                  options.scope,
+                  scopePolicy.executionToken,
+                  { now: heartbeatTime, leaseMs },
+                );
+          if (!beat.ok || !runScopeOk) {
             lostLease = true;
             controller.abort();
           }
@@ -990,16 +1048,26 @@ export async function runWorker(
           else result.fenced += 1;
           continue;
         }
+        const failureClass = classifyFailure(error);
         const failed = store.failAttempt({
           fencingToken: claim.fencing_token,
-          failureClass: classifyFailure(error),
+          failureClass,
           summary: sanitizeExternalError(error),
           now: now(),
           policy: options.policy,
           random: options.random,
         });
-        if (failed.ok) result.failed += 1;
-        else result.fenced += 1;
+        if (failed.ok) {
+          result.failed += 1;
+          if (
+            options.scope !== undefined &&
+            (failureClass === "infra" || failureClass === "auth_config")
+          ) {
+            break;
+          }
+        } else {
+          result.fenced += 1;
+        }
       } finally {
         clearInterval(heartbeat);
         activeController = null;
@@ -1010,6 +1078,17 @@ export async function runWorker(
       }
     }
   } finally {
+    if (options.scope !== undefined && scopePolicy !== null) {
+      const finishTime = now();
+      store.heartbeatRunScope(options.scope, scopePolicy.executionToken, {
+        now: finishTime,
+        leaseMs,
+      });
+      store.finishRunScope(options.scope, {
+        executionToken: scopePolicy.executionToken,
+        now: finishTime,
+      });
+    }
     options.signal?.removeEventListener("abort", onAbort);
     for (const [signal, handler] of signalHandlers)
       process.off(signal, handler);

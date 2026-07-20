@@ -291,9 +291,9 @@ test("manifest records schema, paths, and Artifact references without content", 
 
 test("verification reports schema version relationships", () => {
   const root = temporaryRoot();
-  const supportedSchemaVersion = 7;
+  const supportedSchemaVersion = 9;
   const olderSchemaVersion = 6;
-  const newerSchemaVersion = 8;
+  const newerSchemaVersion = 10;
 
   const currentFixture = createBackupFixtureWithSchemaVersion(
     root,
@@ -308,7 +308,7 @@ test("verification reports schema version relationships", () => {
   expect(current.schema_version_relationship).toBe("current");
   expect(check(current, "schema_version")).toBe("ok");
   expect(checkDetail(current, "schema_version")).toBe(
-    "schema version 7 matches the manifest",
+    "schema version 9 matches the manifest",
   );
 
   const olderFixture = createBackupFixtureWithSchemaVersion(
@@ -355,7 +355,7 @@ test("read-only cache rejects older schema versions with a structured error", ()
   expect(error).toBeInstanceOf(CliError);
   expect((error as CliError).code).toBe("unsupported_schema_version");
   expect((error as Error).message).toContain(
-    "research cache schema version 1 is older than supported version 7",
+    "research cache schema version 1 is older than supported version 9",
   );
 });
 

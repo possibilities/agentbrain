@@ -9,7 +9,17 @@ import { ResearchCache } from "./db";
 import { CliError } from "./errors";
 import { findExecutable } from "./executable";
 import { RESEARCH_SCHEMA_VERSION, type ResearchStore } from "./store";
-import type { Attempt, Job, JobRecord, JobState, JobTransition } from "./types";
+import type {
+  Attempt,
+  AttemptState,
+  FailureClass,
+  Job,
+  JobRecord,
+  JobState,
+  JobTransition,
+  OperatorRunMode,
+  RunState,
+} from "./types";
 
 const JOB_STATES: readonly JobState[] = [
   "queued",
@@ -21,6 +31,23 @@ const JOB_STATES: readonly JobState[] = [
   "excluded",
   "cancelled",
 ];
+const ATTEMPT_STATES: readonly AttemptState[] = [
+  "leased",
+  "succeeded",
+  "failed",
+  "stale",
+  "cancelled",
+];
+const FAILURE_CLASSES: readonly FailureClass[] = [
+  "infra",
+  "item_transient",
+  "permanent",
+  "auth_config",
+];
+const SAFE_CLASS_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const SAFE_JOB_COLUMNS = `id, kind, state, sensitivity, resource_id, source_id,
+  run_id, attempt_count, item_retry_count, run_at, failure_class, created_at,
+  updated_at`;
 
 export interface SafeJob {
   id: number;
@@ -39,7 +66,11 @@ export interface SafeJob {
 }
 
 export interface SafeJobRecord extends SafeJob {
-  attempts: Array<Omit<Attempt, "worker" | "failure_summary">>;
+  attempts: Array<
+    Omit<Attempt, "worker" | "failure_summary" | "failure_class"> & {
+      failure_class: string | null;
+    }
+  >;
   transitions: Array<Omit<JobTransition, "actor" | "detail" | "reason">>;
 }
 
@@ -64,6 +95,39 @@ export interface JobStats {
   oldest_runnable_at: string | null;
 }
 
+export interface SafeRunRecord {
+  id: number;
+  run_type: string;
+  source_id: number | null;
+  state: RunState;
+  operator_controlled: boolean;
+  execution_mode: OperatorRunMode | null;
+  authorization_digest: string | null;
+  allowed_job_kinds: string[];
+  expected_job_count: number | null;
+  counts: {
+    jobs: number;
+    attempts: number;
+    by_job_state: Record<JobState, number>;
+    by_attempt_state: Record<AttemptState, number>;
+    by_kind: Record<string, number>;
+    by_failure_class: Record<FailureClass, number>;
+  };
+  quiescence: {
+    runnable_due: number;
+    active_leases: number;
+    stale_leases: number;
+    execution_active: boolean;
+    quiescent: boolean;
+  };
+  jobs: SafeJob[];
+  jobs_truncated: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DoctorCheck {
   name: string;
   status: "ok" | "warning" | "failed";
@@ -75,10 +139,19 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
+function safeClass(value: string): string {
+  return SAFE_CLASS_PATTERN.test(value) ? value : "invalid";
+}
+
+function safeFailureClass(value: string | null): string | null {
+  if (value === null) return null;
+  return FAILURE_CLASSES.includes(value as FailureClass) ? value : "invalid";
+}
+
 export function safeJobView(job: Job): SafeJob {
   return {
     id: job.id,
-    kind: job.kind,
+    kind: safeClass(job.kind),
     state: job.state,
     sensitivity: job.sensitivity,
     resource_id: job.resource_id,
@@ -87,7 +160,7 @@ export function safeJobView(job: Job): SafeJob {
     attempt_count: job.attempt_count,
     item_retry_count: job.item_retry_count,
     run_at: job.run_at,
-    failure_class: job.failure_class,
+    failure_class: safeFailureClass(job.failure_class),
     created_at: job.created_at,
     updated_at: job.updated_at,
   };
@@ -97,7 +170,12 @@ function safeRecord(record: JobRecord): SafeJobRecord {
   return {
     ...safeJobView(record),
     attempts: record.attempts.map(
-      ({ worker: _worker, failure_summary: _summary, ...attempt }) => attempt,
+      ({
+        worker: _worker,
+        failure_summary: _summary,
+        failure_class,
+        ...attempt
+      }) => ({ ...attempt, failure_class: safeFailureClass(failure_class) }),
     ),
     transitions: record.transitions.map(
       ({ actor: _actor, detail: _detail, reason: _reason, ...transition }) =>
@@ -115,11 +193,8 @@ export function parseJobState(value: string | undefined): JobState | undefined {
   });
 }
 
-export function listJobs(
-  cache: ResearchCache,
-  options: { state?: JobState; limit?: number } = {},
-): SafeJob[] {
-  const limit = options.limit ?? 100;
+function boundedLimit(value: number | undefined): number {
+  const limit = value ?? 100;
   if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
     throw new CliError(
       "bad_limit",
@@ -129,7 +204,45 @@ export function listJobs(
       },
     );
   }
-  return cache.jobs({ state: options.state }).slice(0, limit).map(safeJobView);
+  return limit;
+}
+
+function jobsFor(
+  cache: ResearchCache,
+  options: { state?: JobState; runId?: number; limit?: number } = {},
+): Job[] {
+  const predicates: string[] = [];
+  const parameters: Array<string | number> = [];
+  if (options.state !== undefined) {
+    predicates.push("state=?");
+    parameters.push(options.state);
+  }
+  if (options.runId !== undefined) {
+    if (!Number.isInteger(options.runId) || options.runId < 1) {
+      throw new CliError("bad_run_id", "Run ID must be a positive integer", {
+        exitCode: 2,
+      });
+    }
+    predicates.push("run_id=?");
+    parameters.push(options.runId);
+  }
+  const where =
+    predicates.length === 0 ? "" : ` WHERE ${predicates.join(" AND ")}`;
+  const limit = options.limit === undefined ? "" : " LIMIT ?";
+  if (options.limit !== undefined) parameters.push(options.limit);
+  return cache.db
+    .query(
+      `SELECT ${SAFE_JOB_COLUMNS} FROM jobs${where} ORDER BY run_at ASC, id ASC${limit}`,
+    )
+    .all(...parameters) as Job[];
+}
+
+export function listJobs(
+  cache: ResearchCache,
+  options: { state?: JobState; runId?: number; limit?: number } = {},
+): SafeJob[] {
+  const limit = boundedLimit(options.limit);
+  return jobsFor(cache, { ...options, limit }).map(safeJobView);
 }
 
 export function showJob(cache: ResearchCache, jobId: number): SafeJobRecord {
@@ -137,6 +250,204 @@ export function showJob(cache: ResearchCache, jobId: number): SafeJobRecord {
   if (record === null)
     throw new CliError("job_not_found", `job ${jobId} not found`);
   return safeRecord(record);
+}
+
+function safeRunPolicy(
+  cache: ResearchCache,
+  runId: number,
+): {
+  mode: OperatorRunMode;
+  authorizationDigest: string;
+  allowedKinds: string[];
+  expectedJobCount: number;
+} | null {
+  const row = cache.db
+    .query(
+      `SELECT mode, authorization_digest, allowed_job_kinds,
+              expected_job_count FROM operator_run_policies WHERE run_id=?`,
+    )
+    .get(runId) as {
+    mode: OperatorRunMode;
+    authorization_digest: string;
+    allowed_job_kinds: string;
+    expected_job_count: number;
+  } | null;
+  if (row === null) return null;
+  let allowedKinds: unknown;
+  try {
+    allowedKinds = JSON.parse(row.allowed_job_kinds);
+  } catch {
+    return null;
+  }
+  if (
+    (row.mode !== "offline" && row.mode !== "online") ||
+    !/^[a-f0-9]{64}$/.test(row.authorization_digest) ||
+    !Array.isArray(allowedKinds) ||
+    allowedKinds.length === 0 ||
+    allowedKinds.some(
+      (kind) => typeof kind !== "string" || !SAFE_CLASS_PATTERN.test(kind),
+    ) ||
+    !Number.isInteger(row.expected_job_count) ||
+    row.expected_job_count < 1
+  ) {
+    return null;
+  }
+  return {
+    mode: row.mode,
+    authorizationDigest: row.authorization_digest,
+    allowedKinds: allowedKinds as string[],
+    expectedJobCount: row.expected_job_count,
+  };
+}
+
+export function showRun(
+  cache: ResearchCache,
+  runId: number,
+  options: { limit?: number; now?: Date } = {},
+): SafeRunRecord {
+  if (!Number.isInteger(runId) || runId < 1) {
+    throw new CliError("bad_run_id", "Run ID must be a positive integer", {
+      exitCode: 2,
+    });
+  }
+  const limit = boundedLimit(options.limit);
+  const now = options.now ?? new Date();
+  const run = cache.db
+    .query(
+      `SELECT id, run_type, source_id, state, started_at, finished_at,
+              created_at, updated_at FROM runs WHERE id=?`,
+    )
+    .get(runId) as {
+    id: number;
+    run_type: string;
+    source_id: number | null;
+    state: RunState;
+    started_at: string | null;
+    finished_at: string | null;
+    created_at: string;
+    updated_at: string;
+  } | null;
+  if (run === null)
+    throw new CliError("run_not_found", `Run ${runId} not found`);
+  const onlineStatus = cache.db
+    .query("SELECT status FROM recovery_online_runs WHERE run_id=?")
+    .get(runId) as { status: string } | null;
+  const effectiveState: RunState =
+    onlineStatus?.status === "completed_with_review"
+      ? "completed_with_review"
+      : run.state;
+
+  const policy = safeRunPolicy(cache, run.id);
+  const operatorControlled =
+    cache.db
+      .query("SELECT run_id FROM operator_run_policies WHERE run_id=?")
+      .get(run.id) !== null;
+  const jobsByState = Object.fromEntries(
+    JOB_STATES.map((state) => [state, 0]),
+  ) as Record<JobState, number>;
+  const stateRows = cache.db
+    .query(
+      "SELECT state, COUNT(*) AS count FROM jobs WHERE run_id=? GROUP BY state",
+    )
+    .all(runId) as Array<{ state: JobState; count: number }>;
+  for (const row of stateRows) {
+    if (row.state in jobsByState) jobsByState[row.state] = row.count;
+  }
+  const attemptsByState = Object.fromEntries(
+    ATTEMPT_STATES.map((state) => [state, 0]),
+  ) as Record<AttemptState, number>;
+  const attemptRows = cache.db
+    .query(
+      `SELECT a.state, COUNT(*) AS count FROM attempts a
+       JOIN jobs j ON j.id=a.job_id WHERE j.run_id=? GROUP BY a.state`,
+    )
+    .all(runId) as Array<{ state: AttemptState; count: number }>;
+  for (const row of attemptRows) {
+    if (row.state in attemptsByState) attemptsByState[row.state] = row.count;
+  }
+  const failures = Object.fromEntries(
+    FAILURE_CLASSES.map((failureClass) => [failureClass, 0]),
+  ) as Record<FailureClass, number>;
+  const failureRows = cache.db
+    .query(
+      `SELECT a.failure_class, COUNT(*) AS count FROM attempts a
+       JOIN jobs j ON j.id=a.job_id
+       WHERE j.run_id=? AND a.failure_class IS NOT NULL GROUP BY a.failure_class`,
+    )
+    .all(runId) as Array<{ failure_class: FailureClass; count: number }>;
+  for (const row of failureRows) {
+    if (row.failure_class in failures) failures[row.failure_class] = row.count;
+  }
+  const kinds: Record<string, number> = {};
+  const kindRows = cache.db
+    .query(
+      "SELECT kind, COUNT(*) AS count FROM jobs WHERE run_id=? GROUP BY kind",
+    )
+    .all(runId) as Array<{ kind: string; count: number }>;
+  for (const row of kindRows) {
+    const kind = safeClass(row.kind);
+    kinds[kind] = (kinds[kind] ?? 0) + row.count;
+  }
+  const leaseRows = cache.db
+    .query(
+      `SELECT a.lease_expires_at FROM attempts a
+       JOIN jobs j ON j.id=a.job_id WHERE j.run_id=? AND a.state='leased'`,
+    )
+    .all(runId) as Array<{ lease_expires_at: string }>;
+  const runnable = cache.db
+    .query(
+      `SELECT COUNT(*) AS count FROM jobs
+       WHERE run_id=? AND state IN ('queued', 'retry_wait') AND run_at<=?`,
+    )
+    .get(runId, now.toISOString()) as { count: number };
+  const executionLease = cache.db
+    .query(
+      `SELECT lease_expires_at FROM operator_run_execution_leases
+       WHERE run_id=?`,
+    )
+    .get(runId) as { lease_expires_at: string } | null;
+  const visibleJobs = jobsFor(cache, { runId, limit });
+  const jobCount = stateRows.reduce((sum, row) => sum + row.count, 0);
+  const attemptCount = attemptRows.reduce((sum, row) => sum + row.count, 0);
+  const staleLeases = leaseRows.filter(
+    (lease) => Date.parse(lease.lease_expires_at) <= now.getTime(),
+  ).length;
+  const activeLeases = leaseRows.length - staleLeases;
+  const executionActive =
+    executionLease !== null &&
+    Date.parse(executionLease.lease_expires_at) > now.getTime();
+  return {
+    id: run.id,
+    run_type: safeClass(run.run_type),
+    source_id: run.source_id,
+    state: effectiveState,
+    operator_controlled: operatorControlled,
+    execution_mode: policy?.mode ?? null,
+    authorization_digest: policy?.authorizationDigest ?? null,
+    allowed_job_kinds: policy?.allowedKinds ?? [],
+    expected_job_count: policy?.expectedJobCount ?? null,
+    counts: {
+      jobs: jobCount,
+      attempts: attemptCount,
+      by_job_state: jobsByState,
+      by_attempt_state: attemptsByState,
+      by_kind: kinds,
+      by_failure_class: failures,
+    },
+    quiescence: {
+      runnable_due: runnable.count,
+      active_leases: activeLeases,
+      stale_leases: staleLeases,
+      execution_active: executionActive,
+      quiescent: activeLeases === 0 && !executionActive,
+    },
+    jobs: visibleJobs.map(safeJobView),
+    jobs_truncated: jobCount > limit,
+    started_at: run.started_at,
+    finished_at: run.finished_at,
+    created_at: run.created_at,
+    updated_at: run.updated_at,
+  };
 }
 
 function artifactDescriptors(intent: unknown): Array<{
@@ -228,8 +539,12 @@ function tableExists(cache: ResearchCache, name: string): boolean {
   );
 }
 
-export function jobStats(cache: ResearchCache, now = new Date()): JobStats {
-  const rows = cache.jobs();
+export function jobStats(
+  cache: ResearchCache,
+  now = new Date(),
+  options: { runId?: number } = {},
+): JobStats {
+  const rows = jobsFor(cache, { runId: options.runId });
   const byState = Object.fromEntries(
     JOB_STATES.map((state) => [state, 0]),
   ) as Record<JobState, number>;
@@ -240,18 +555,27 @@ export function jobStats(cache: ResearchCache, now = new Date()): JobStats {
       Date.parse(row.run_at) <= now.getTime(),
   );
   const leases = tableExists(cache, "attempts")
-    ? (cache.db
-        .query("SELECT lease_expires_at FROM attempts WHERE state='leased'")
-        .all() as Array<{ lease_expires_at: string }>)
+    ? options.runId === undefined
+      ? (cache.db
+          .query("SELECT lease_expires_at FROM attempts WHERE state='leased'")
+          .all() as Array<{ lease_expires_at: string }>)
+      : (cache.db
+          .query(
+            `SELECT a.lease_expires_at FROM attempts a
+             JOIN jobs j ON j.id=a.job_id
+             WHERE a.state='leased' AND j.run_id=?`,
+          )
+          .all(options.runId) as Array<{ lease_expires_at: string }>)
     : [];
+  const staleLeases = leases.filter(
+    (lease) => Date.parse(lease.lease_expires_at) <= now.getTime(),
+  ).length;
   return {
     total: rows.length,
     by_state: byState,
     runnable_due: due.length,
-    active_leases: leases.length,
-    stale_leases: leases.filter(
-      (lease) => Date.parse(lease.lease_expires_at) <= now.getTime(),
-    ).length,
+    active_leases: leases.length - staleLeases,
+    stale_leases: staleLeases,
     oldest_runnable_at: due.map((row) => row.run_at).sort()[0] ?? null,
   };
 }

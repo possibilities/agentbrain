@@ -100,6 +100,8 @@ export interface BackupVerifyResult {
   schema_version: number;
   supported_schema_version: number;
   schema_version_relationship: BackupSchemaVersionRelationship;
+  database_sha256: string;
+  artifact_inventory_sha256: string;
   artifact_count: number;
   artifacts_checked: number;
   checks: BackupCheck[];
@@ -423,7 +425,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readManifest(backupPath: string): BackupManifest {
+export function readBackupManifest(backupPath: string): BackupManifest {
   let raw: unknown;
   try {
     raw = JSON.parse(
@@ -637,7 +639,7 @@ export function verifyBackup(
   options: VerifyBackupOptions = {},
 ): BackupVerifyResult {
   const backupPath = resolve(backup);
-  const manifest = readManifest(backupPath);
+  const manifest = readBackupManifest(backupPath);
   const relationship = schemaVersionRelationship(manifest.schema_version);
   const sourceDatabase = join(backupPath, manifest.database.file);
   const checks: BackupCheck[] = [];
@@ -791,6 +793,10 @@ export function verifyBackup(
     schema_version: manifest.schema_version,
     supported_schema_version: RESEARCH_SCHEMA_VERSION,
     schema_version_relationship: relationship,
+    database_sha256: manifest.database.sha256,
+    artifact_inventory_sha256: createHash("sha256")
+      .update(`${manifest.required_artifact_digests.join("\n")}\n`)
+      .digest("hex"),
     artifact_count: manifest.required_artifact_digests.length,
     artifacts_checked: artifacts.checked,
     checks,
