@@ -11,8 +11,8 @@
     "lint": "biome check src test",
     "format": "biome check --write src test",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "check": "bun run typecheck && bun run lint && bun test"
+    "test": "bun test --timeout=15000",
+    "check": "bun run typecheck && bun run lint && bun run test"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.0",

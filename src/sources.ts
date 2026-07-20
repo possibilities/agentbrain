@@ -1,0 +1,1641 @@
+import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { CliError } from "./errors";
+import { sanitizeExternalError } from "./sanitize";
+import type {
+  KnownSourceKind,
+  Source,
+  SourceAuditEvent,
+  SourceCheckpoint,
+  SourceDefinition,
+  SourceDetail,
+  SourceHealthState,
+  SourceLimits,
+  SourceListItem,
+  SourceManifest,
+  SourceManifestOverlay,
+  SourceRunCounts,
+  SourceRunOutcome,
+  SourceSchedule,
+  SourceStatus,
+  SourceSyncAdmission,
+} from "./source-types";
+import {
+  SOURCE_MANIFEST_VERSION,
+  SOURCE_RUN_INTENT_VERSION,
+} from "./source-types";
+import type { JobState, Run, RunState, Sensitivity } from "./types";
+import { validateHttpUrl } from "./url";
+
+const SOURCE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,99}$/;
+const SOURCE_KIND_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const COLLECTION_PATTERN = /^[a-z0-9][a-z0-9._-]{0,99}$/;
+const X_HANDLE_PATTERN = /^@?[A-Za-z0-9_]{1,20}$/;
+const CREDENTIAL_KEY_PATTERN =
+  /(?:^|[_-])(access[_-]?token|api[_-]?key|authorization|bearer|cookie|credential|password|private[_-]?key|refresh[_-]?token|secret|session|signature|token)(?:$|[_-])/i;
+const CREDENTIAL_QUERY_PATTERN =
+  /^(?:access[_-]?key|api[_-]?key|auth|authorization|cookie|password|secret|session|signature|token)$/i;
+const SENSITIVITIES = new Set<Sensitivity>([
+  "public",
+  "normal",
+  "sensitive",
+  "private",
+]);
+const KNOWN_SOURCE_KIND_SET = new Set<KnownSourceKind>([
+  "blog_feed",
+  "blog_source",
+  "x_account",
+]);
+const MAX_SOURCES = 1_000;
+const MAX_DEFINITION_BYTES = 128 * 1024;
+const SOURCE_COLUMNS = `id, source_type, identifier, display_name, enabled,
+  sensitivity, schedule, checkpoint, definition_version, definition,
+  definition_hash, collections, limits, credential_refs, paused, pause_reason,
+  health_state, health_detail, last_evaluated_at, last_success_at, next_due_at,
+  created_at, updated_at`;
+const SOURCE_RUN_COLUMNS = `id, run_type, source_id, state, checkpoint,
+  attempted_cursor, committed_checkpoint, warnings, discovered_count,
+  admitted_count, suppressed_count, terminal_outcome, source_definition_version,
+  schedule_key, scheduled_for, started_at, finished_at, created_at, updated_at`;
+
+interface SourceRow extends Source {
+  definition: string;
+}
+
+interface RunRow {
+  id: number;
+  state: RunState;
+  terminal_outcome: SourceRunOutcome | null;
+  warnings: string;
+  discovered_count: number;
+  admitted_count: number;
+  suppressed_count: number;
+  created_at: string;
+  finished_at: string | null;
+}
+
+function sourceError(code: string, message: string): CliError {
+  return new CliError(code, message, { exitCode: 2 });
+}
+
+function record(value: unknown, name: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw sourceError("bad_source_manifest", `${name} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requiredString(value: unknown, name: string, maxLength = 500): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw sourceError(
+      "bad_source_manifest",
+      `${name} must be a non-empty string`,
+    );
+  }
+  const normalized = value.trim();
+  if (Array.from(normalized).length > maxLength) {
+    throw sourceError("bad_source_manifest", `${name} is too long`);
+  }
+  return normalized;
+}
+
+function positiveInteger(
+  value: unknown,
+  name: string,
+  maximum: number,
+): number {
+  if (
+    !Number.isInteger(value) ||
+    (value as number) < 1 ||
+    (value as number) > maximum
+  ) {
+    throw sourceError(
+      "bad_source_manifest",
+      `${name} must be an integer between 1 and ${maximum}`,
+    );
+  }
+  return value as number;
+}
+
+function cadenceSeconds(value: unknown): number {
+  if (typeof value === "number") {
+    return positiveInteger(value, "schedule cadence", 31 * 24 * 60 * 60);
+  }
+  if (typeof value !== "string") {
+    throw sourceError(
+      "bad_source_manifest",
+      "schedule cadence must be hourly, daily, an ISO duration, or a bounded duration",
+    );
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "hourly") return 60 * 60;
+  if (normalized === "daily") return 24 * 60 * 60;
+  const compact = normalized.match(/^(\d+)(s|m|h|d)$/);
+  if (compact !== null) {
+    const multiplier = { s: 1, m: 60, h: 3_600, d: 86_400 }[
+      compact[2] as "s" | "m" | "h" | "d"
+    ];
+    return positiveInteger(
+      Number(compact[1]) * multiplier,
+      "schedule cadence",
+      31 * 24 * 60 * 60,
+    );
+  }
+  const iso = normalized.match(/^pt(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+  if (iso !== null) {
+    const seconds =
+      Number(iso[1] ?? 0) * 3_600 +
+      Number(iso[2] ?? 0) * 60 +
+      Number(iso[3] ?? 0);
+    return positiveInteger(seconds, "schedule cadence", 31 * 24 * 60 * 60);
+  }
+  throw sourceError(
+    "bad_source_manifest",
+    `unsupported schedule cadence '${value}'`,
+  );
+}
+
+function parseSchedule(value: unknown): SourceSchedule {
+  const schedule = record(value, "source schedule");
+  const cadence =
+    schedule.cadence_seconds ??
+    (typeof schedule.cadence_minutes === "number"
+      ? schedule.cadence_minutes * 60
+      : undefined) ??
+    schedule.cadence ??
+    schedule.every;
+  return { cadence_seconds: cadenceSeconds(cadence) };
+}
+
+function parseLimits(value: unknown): SourceLimits {
+  const limits = record(value, "source limits");
+  return {
+    max_items_per_run: positiveInteger(
+      limits.max_items_per_run ?? limits.max_items,
+      "limits.max_items_per_run",
+      10_000,
+    ),
+    max_pages_per_run: positiveInteger(
+      limits.max_pages_per_run ?? limits.max_pages,
+      "limits.max_pages_per_run",
+      100,
+    ),
+  };
+}
+
+function credentialFree(value: unknown, path: string): void {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      credentialFree(value[index], `${path}[${index}]`);
+    }
+    return;
+  }
+  if (value === null || typeof value !== "object") {
+    if (typeof value === "string" && /^https?:\/\//i.test(value)) {
+      const url = validateHttpUrl(value);
+      for (const name of url.searchParams.keys()) {
+        if (
+          CREDENTIAL_QUERY_PATTERN.test(name) ||
+          CREDENTIAL_KEY_PATTERN.test(name)
+        ) {
+          throw sourceError(
+            "source_contains_credential",
+            `${path} contains a credential-shaped URL query value; use credential_refs`,
+          );
+        }
+      }
+    }
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (CREDENTIAL_KEY_PATTERN.test(key)) {
+      throw sourceError(
+        "source_contains_credential",
+        `${path}.${key} must be represented by credential_refs, not stored inline`,
+      );
+    }
+    credentialFree(child, `${path}.${key}`);
+  }
+}
+
+function parseCredentialRefs(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw sourceError(
+      "bad_source_manifest",
+      "credential_refs must be an array",
+    );
+  }
+  const refs = value.map((item, index) => {
+    const ref = requiredString(item, `credential_refs[${index}]`, 256);
+    if (!/^[A-Za-z][A-Za-z0-9+._:/@-]{0,255}$/.test(ref) || ref.includes("=")) {
+      throw sourceError(
+        "bad_source_manifest",
+        "credential_refs entries must be opaque reference names, never credential values",
+      );
+    }
+    return ref;
+  });
+  if (new Set(refs).size !== refs.length) {
+    throw sourceError(
+      "bad_source_manifest",
+      "credential_refs contains duplicates",
+    );
+  }
+  return refs;
+}
+
+function parseCollections(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw sourceError("bad_source_manifest", "collections must be an array");
+  }
+  const collections = value.map((item, index) => {
+    const collection = requiredString(item, `collections[${index}]`, 100);
+    if (!COLLECTION_PATTERN.test(collection)) {
+      throw sourceError(
+        "bad_source_manifest",
+        `collections[${index}] must be a stable lowercase slug`,
+      );
+    }
+    return collection;
+  });
+  if (new Set(collections).size !== collections.length) {
+    throw sourceError("bad_source_manifest", "collections contains duplicates");
+  }
+  return collections;
+}
+
+function validateKnownPayload(
+  kind: string,
+  payload: Record<string, unknown>,
+): void {
+  if (kind === "blog_feed" || kind === "blog_source") {
+    const homepage = payload.homepage_url;
+    const feed = payload.feed_url;
+    if (homepage === undefined && feed === undefined) {
+      throw sourceError(
+        "bad_source_manifest",
+        `${kind} payload requires homepage_url or feed_url`,
+      );
+    }
+    if (homepage !== undefined)
+      validateHttpUrl(requiredString(homepage, "payload.homepage_url", 2_000));
+    if (feed !== undefined)
+      validateHttpUrl(requiredString(feed, "payload.feed_url", 2_000));
+    return;
+  }
+  if (kind === "x_account") {
+    const handle = requiredString(payload.handle, "payload.handle", 21);
+    if (!X_HANDLE_PATTERN.test(handle)) {
+      throw sourceError(
+        "bad_source_manifest",
+        "x_account payload.handle is invalid",
+      );
+    }
+    if (payload.account_id !== undefined) {
+      const accountId = requiredString(
+        payload.account_id,
+        "payload.account_id",
+        100,
+      );
+      if (!/^[A-Za-z0-9._:-]+$/.test(accountId)) {
+        throw sourceError(
+          "bad_source_manifest",
+          "x_account payload.account_id is invalid",
+        );
+      }
+    }
+    if (payload.profile_url !== undefined) {
+      validateHttpUrl(
+        requiredString(payload.profile_url, "payload.profile_url", 2_000),
+      );
+    }
+  }
+}
+
+export function isExecutableSourceKind(kind: string): kind is KnownSourceKind {
+  return KNOWN_SOURCE_KIND_SET.has(kind as KnownSourceKind);
+}
+
+export function validateSourceDefinition(value: unknown): SourceDefinition {
+  const input = record(value, "source definition");
+  const id = requiredString(input.id, "source id", 100);
+  if (!SOURCE_ID_PATTERN.test(id)) {
+    throw sourceError(
+      "bad_source_manifest",
+      "source id must use 1-100 lowercase letters, numbers, dots, underscores, or hyphens",
+    );
+  }
+  const version = positiveInteger(
+    input.version,
+    `source ${id} version`,
+    1_000_000,
+  );
+  const kind = requiredString(input.kind, `source ${id} kind`, 64);
+  if (!SOURCE_KIND_PATTERN.test(kind)) {
+    throw sourceError("bad_source_manifest", `source ${id} kind is invalid`);
+  }
+  if (typeof input.enabled !== "boolean") {
+    throw sourceError(
+      "bad_source_manifest",
+      `source ${id} enabled must be boolean`,
+    );
+  }
+  const sensitivity = requiredString(
+    input.sensitivity,
+    `source ${id} sensitivity`,
+    20,
+  ) as Sensitivity;
+  if (!SENSITIVITIES.has(sensitivity)) {
+    throw sourceError(
+      "bad_source_manifest",
+      `source ${id} sensitivity must be public, normal, sensitive, or private`,
+    );
+  }
+  const payload = record(input.payload, `source ${id} payload`);
+  credentialFree(payload, `source ${id} payload`);
+  validateKnownPayload(kind, payload);
+  const definition: SourceDefinition = {
+    id,
+    version,
+    kind,
+    display_name:
+      input.display_name === undefined
+        ? id
+        : requiredString(input.display_name, `source ${id} display_name`),
+    enabled: input.enabled,
+    payload,
+    schedule: parseSchedule(input.schedule),
+    limits: parseLimits(input.limits),
+    collections: parseCollections(input.collections),
+    sensitivity,
+    credential_refs: parseCredentialRefs(input.credential_refs ?? []),
+  };
+  if (
+    Buffer.byteLength(JSON.stringify(definition), "utf8") > MAX_DEFINITION_BYTES
+  ) {
+    throw sourceError(
+      "bad_source_manifest",
+      `source ${id} definition is too large`,
+    );
+  }
+  return definition;
+}
+
+function manifestVersion(input: Record<string, unknown>, name: string): number {
+  const version = input.schema_version ?? input.version;
+  if (version !== SOURCE_MANIFEST_VERSION) {
+    throw sourceError(
+      "unsupported_source_manifest_version",
+      `${name} schema_version must be ${SOURCE_MANIFEST_VERSION}`,
+    );
+  }
+  return SOURCE_MANIFEST_VERSION;
+}
+
+function rawManifest(value: unknown, name: string): Record<string, unknown>[] {
+  const manifest = record(value, name);
+  manifestVersion(manifest, name);
+  if (!Array.isArray(manifest.sources)) {
+    throw sourceError(
+      "bad_source_manifest",
+      `${name}.sources must be an array`,
+    );
+  }
+  if (manifest.sources.length > MAX_SOURCES) {
+    throw sourceError(
+      "bad_source_manifest",
+      `${name}.sources exceeds the ${MAX_SOURCES}-source limit`,
+    );
+  }
+  return manifest.sources.map((source, index) =>
+    record(source, `${name}.sources[${index}]`),
+  );
+}
+
+function assertUniqueIds(
+  sources: readonly Record<string, unknown>[],
+  name: string,
+): void {
+  const seen = new Set<string>();
+  for (const [index, source] of sources.entries()) {
+    const id = requiredString(source.id, `${name}.sources[${index}].id`, 100);
+    if (seen.has(id)) {
+      throw sourceError(
+        "duplicate_source_id",
+        `duplicate stable source id '${id}'`,
+      );
+    }
+    seen.add(id);
+  }
+}
+
+function deepMerge(
+  base: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+): Record<string, unknown> {
+  const output: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    const previous = output[key];
+    output[key] =
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      previous !== null &&
+      typeof previous === "object" &&
+      !Array.isArray(previous)
+        ? deepMerge(
+            previous as Record<string, unknown>,
+            value as Record<string, unknown>,
+          )
+        : value;
+  }
+  return output;
+}
+
+export function mergeSourceOverlay(
+  manifestValue: unknown,
+  overlayValue?: unknown,
+): SourceManifest {
+  const base = rawManifest(manifestValue, "source manifest");
+  assertUniqueIds(base, "source manifest");
+  let merged = base;
+  if (overlayValue !== undefined) {
+    const overlay = rawManifest(overlayValue, "source overlay");
+    assertUniqueIds(overlay, "source overlay");
+    const positions = new Map(
+      merged.map((source, index) => [String(source.id), index] as const),
+    );
+    merged = merged.map((source) => ({ ...source }));
+    for (const item of overlay) {
+      const id = String(item.id);
+      const position = positions.get(id);
+      if (position === undefined) {
+        positions.set(id, merged.length);
+        merged.push(item);
+        continue;
+      }
+      const combined = deepMerge(merged[position], item);
+      if (
+        item.kind !== undefined &&
+        merged[position].kind !== undefined &&
+        item.kind !== merged[position].kind
+      ) {
+        throw sourceError(
+          "source_identity_mismatch",
+          `source overlay cannot change kind for stable source id '${id}'`,
+        );
+      }
+      combined.id = id;
+      merged[position] = combined;
+    }
+  }
+  const sources = merged.map(validateSourceDefinition);
+  return { schema_version: SOURCE_MANIFEST_VERSION, sources };
+}
+
+export function validateSourceManifest(value: unknown): SourceManifest {
+  return mergeSourceOverlay(value);
+}
+
+export function readSourceManifest(
+  manifestPath: string,
+  overlayPath?: string,
+): SourceManifest {
+  let manifest: unknown;
+  let overlay: unknown;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (overlayPath !== undefined) {
+      overlay = JSON.parse(readFileSync(overlayPath, "utf8"));
+    }
+  } catch (error) {
+    throw sourceError(
+      "bad_source_manifest",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  return mergeSourceOverlay(manifest, overlay);
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, stableValue(child)]),
+  );
+}
+
+export function sourceDefinitionHash(definition: SourceDefinition): string {
+  return createHash("sha256")
+    .update(JSON.stringify(stableValue(definition)))
+    .digest("hex");
+}
+
+export function sourceCadenceMs(schedule: SourceSchedule): number {
+  return schedule.cadence_seconds * 1_000;
+}
+
+function parseJson<T>(value: string | null, fallback: T): T {
+  if (value === null) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function fallbackDefinition(row: SourceRow): SourceDefinition {
+  const parsed = parseJson<Partial<SourceDefinition>>(row.definition, {});
+  return {
+    id: row.identifier,
+    version: row.definition_version,
+    kind: row.source_type,
+    display_name: row.display_name ?? row.identifier,
+    enabled: Boolean(row.enabled),
+    payload:
+      parsed.payload !== null &&
+      typeof parsed.payload === "object" &&
+      !Array.isArray(parsed.payload)
+        ? parsed.payload
+        : {},
+    schedule: parsed.schedule ??
+      parseJson<SourceSchedule | null>(row.schedule, null) ?? {
+        cadence_seconds: 86_400,
+      },
+    limits: parsed.limits ??
+      parseJson<SourceLimits | null>(row.limits, null) ?? {
+        max_items_per_run: 1,
+        max_pages_per_run: 1,
+      },
+    collections: parsed.collections ?? parseJson<string[]>(row.collections, []),
+    sensitivity: row.sensitivity,
+    credential_refs:
+      parsed.credential_refs ?? parseJson<string[]>(row.credential_refs, []),
+  };
+}
+
+function sourceRows(db: Database, stableId?: string): SourceRow[] {
+  const columns = `id, source_type, identifier, display_name, enabled,
+    sensitivity, schedule, checkpoint, definition_version, definition,
+    definition_hash, collections, limits, credential_refs, paused, pause_reason,
+    health_state, health_detail, last_evaluated_at, last_success_at, next_due_at,
+    created_at, updated_at`;
+  return (
+    stableId === undefined
+      ? db.query(`SELECT ${columns} FROM sources ORDER BY identifier ASC`).all()
+      : db
+          .query(
+            `SELECT ${columns} FROM sources WHERE identifier=? ORDER BY id ASC`,
+          )
+          .all(stableId)
+  ) as SourceRow[];
+}
+
+function listItem(row: SourceRow): SourceListItem {
+  const definition = fallbackDefinition(row);
+  return {
+    id: row.identifier,
+    database_id: row.id,
+    version: row.definition_version,
+    kind: row.source_type,
+    display_name: row.display_name ?? row.identifier,
+    enabled: Boolean(row.enabled),
+    paused: Boolean(row.paused),
+    executable: isExecutableSourceKind(row.source_type),
+    schedule: definition.schedule,
+    sensitivity: row.sensitivity,
+    collections: definition.collections,
+    limits: definition.limits,
+    credential_reference_count: definition.credential_refs.length,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function latestCheckpoint(
+  db: Database,
+  sourceId: number,
+): { run_id: number; committed_at: string } | null {
+  return db
+    .query(
+      `SELECT run_id, committed_at FROM source_checkpoints
+       WHERE source_id=? ORDER BY id DESC LIMIT 1`,
+    )
+    .get(sourceId) as { run_id: number; committed_at: string } | null;
+}
+
+function detail(db: Database, row: SourceRow): SourceDetail {
+  const definition = fallbackDefinition(row);
+  const checkpoint = latestCheckpoint(db, row.id);
+  return {
+    ...listItem(row),
+    payload: definition.payload,
+    pause_reason: row.pause_reason,
+    health: {
+      state: row.health_state,
+      detail: row.health_detail,
+      last_evaluated_at: row.last_evaluated_at,
+      last_success_at: row.last_success_at,
+      next_due_at: row.next_due_at,
+    },
+    checkpoint: {
+      present: row.checkpoint !== null,
+      run_id: checkpoint?.run_id ?? null,
+      committed_at: checkpoint?.committed_at ?? null,
+    },
+  };
+}
+
+export function listSources(db: Database): SourceListItem[] {
+  return sourceRows(db).map(listItem);
+}
+
+export function showSource(db: Database, stableId: string): SourceDetail {
+  const rows = sourceRows(db, stableId);
+  if (rows.length === 0) {
+    throw new CliError("source_not_found", `source '${stableId}' not found`);
+  }
+  if (rows.length > 1) {
+    throw new CliError(
+      "duplicate_source_id",
+      `stable source id '${stableId}' is not unique in durable state`,
+    );
+  }
+  return detail(db, rows[0]);
+}
+
+function sourceRunCounts(row: RunRow): SourceRunCounts {
+  return {
+    discovered: row.discovered_count,
+    admitted: row.admitted_count,
+    suppressed: row.suppressed_count,
+  };
+}
+
+function status(db: Database, row: SourceRow, now: Date): SourceStatus {
+  const current = detail(db, row);
+  const latest = db
+    .query(
+      `SELECT id, state, terminal_outcome, warnings, discovered_count,
+              admitted_count, suppressed_count, created_at, finished_at
+       FROM runs WHERE source_id=? AND run_type='source_sync'
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(row.id) as RunRow | null;
+  return {
+    ...current,
+    due:
+      current.enabled &&
+      !current.paused &&
+      current.executable &&
+      row.next_due_at !== null &&
+      Date.parse(row.next_due_at) <= now.getTime(),
+    latest_run:
+      latest === null
+        ? null
+        : {
+            id: latest.id,
+            state: latest.state,
+            outcome: latest.terminal_outcome,
+            warnings: parseJson<unknown[]>(latest.warnings, []).length,
+            counts: sourceRunCounts(latest),
+            created_at: latest.created_at,
+            finished_at: latest.finished_at,
+          },
+  };
+}
+
+export function sourceStatuses(
+  db: Database,
+  options: { sourceId?: string; now?: Date } = {},
+): SourceStatus[] {
+  const rows = sourceRows(db, options.sourceId);
+  if (options.sourceId !== undefined && rows.length === 0) {
+    throw new CliError(
+      "source_not_found",
+      `source '${options.sourceId}' not found`,
+    );
+  }
+  return rows.map((row) => status(db, row, options.now ?? new Date()));
+}
+
+export interface SourceApplyResult {
+  source_id: string;
+  database_id: number;
+  version: number;
+  created: boolean;
+  changed: boolean;
+}
+
+function limitCodePoints(value: string, limit: number): string {
+  return Array.from(value).slice(0, limit).join("");
+}
+
+export class SourceRegistry {
+  readonly db: Database;
+
+  constructor(store: { readonly db: Database }) {
+    this.db = store.db;
+  }
+
+  applySourceManifest(
+    manifest: SourceManifest,
+    options: { actor?: string; reason?: string; now?: Date } = {},
+  ): Array<{
+    source_id: string;
+    database_id: number;
+    version: number;
+    created: boolean;
+    changed: boolean;
+  }> {
+    if (manifest.schema_version !== SOURCE_MANIFEST_VERSION) {
+      throw new CliError(
+        "unsupported_source_manifest_version",
+        `source manifest schema_version must be ${SOURCE_MANIFEST_VERSION}`,
+        { exitCode: 2 },
+      );
+    }
+    const definitions = manifest.sources.map(validateSourceDefinition);
+    if (
+      new Set(definitions.map((definition) => definition.id)).size !==
+      definitions.length
+    ) {
+      throw new CliError(
+        "duplicate_source_id",
+        "source manifest contains a duplicate stable source id",
+        { exitCode: 2 },
+      );
+    }
+    const actor = this.validatedSourceActor(options.actor ?? "manifest");
+    const reason = this.validatedSourceReason(
+      options.reason ?? "manifest_apply",
+    );
+    const timestamp = (options.now ?? new Date()).toISOString();
+    const transaction = this.db.transaction(() =>
+      definitions.map((definition) =>
+        this.applySourceDefinition(definition, actor, reason, timestamp),
+      ),
+    );
+    return transaction.immediate();
+  }
+
+  applySourceDefinitions(
+    definitions: readonly SourceDefinition[],
+    options: { actor?: string; reason?: string; now?: Date } = {},
+  ): SourceApplyResult[] {
+    return this.applySourceManifest(
+      {
+        schema_version: SOURCE_MANIFEST_VERSION,
+        sources: [...definitions],
+      },
+      options,
+    );
+  }
+
+  sourceAuditEvents(stableSourceId: string): SourceAuditEvent[] {
+    const source = this.requireSource(stableSourceId);
+    return this.db
+      .query(
+        `SELECT id, source_id, action, actor, reason, definition_version,
+                definition_hash, created_at
+         FROM source_audit_events WHERE source_id=? ORDER BY id ASC`,
+      )
+      .all(source.id) as SourceAuditEvent[];
+  }
+
+  sourceCheckpoints(stableSourceId: string): SourceCheckpoint[] {
+    const source = this.requireSource(stableSourceId);
+    return this.db
+      .query(
+        `SELECT id, source_id, run_id, definition_version, value, committed_at
+         FROM source_checkpoints WHERE source_id=? ORDER BY id ASC`,
+      )
+      .all(source.id) as SourceCheckpoint[];
+  }
+
+  pauseSource(input: {
+    sourceId: string;
+    actor?: string;
+    reason?: string;
+    now?: Date;
+  }): Source {
+    return this.setSourcePaused({ ...input, paused: true });
+  }
+
+  resumeSource(input: {
+    sourceId: string;
+    actor?: string;
+    reason?: string;
+    now?: Date;
+  }): Source {
+    return this.setSourcePaused({ ...input, paused: false });
+  }
+
+  syncSource(input: {
+    sourceId: string;
+    dueOnly?: boolean;
+    dryRun?: boolean;
+    now?: Date;
+  }): SourceSyncAdmission {
+    const now = input.now ?? new Date();
+    const transaction = this.db.transaction(() =>
+      this.admitSourceSync(
+        this.requireSource(input.sourceId),
+        now,
+        input.dueOnly ?? false,
+        input.dryRun ?? false,
+      ),
+    );
+    return transaction.immediate();
+  }
+
+  syncDueSources(
+    input: { dryRun?: boolean; now?: Date; limit?: number } = {},
+  ): SourceSyncAdmission[] {
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+    const limit = input.limit ?? 1_000;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new CliError(
+        "bad_source_limit",
+        "source schedule evaluation limit must be an integer from 1 to 1000",
+        { exitCode: 2 },
+      );
+    }
+    const transaction = this.db.transaction(() => {
+      const sources = this.db
+        .query(
+          `SELECT ${SOURCE_COLUMNS} FROM sources
+           WHERE enabled=1 AND paused=0 AND next_due_at IS NOT NULL
+             AND next_due_at<=?
+           ORDER BY next_due_at ASC, identifier ASC LIMIT ?`,
+        )
+        .all(timestamp, limit) as Source[];
+      return sources.map((source) =>
+        isExecutableSourceKind(source.source_type)
+          ? this.admitSourceSync(source, now, true, input.dryRun ?? false)
+          : {
+              source_id: source.identifier,
+              source_database_id: source.id,
+              status: "unsupported" as const,
+              run_id: null,
+              job_id: null,
+              scheduled_for: source.next_due_at,
+              dry_run: input.dryRun ?? false,
+            },
+      );
+    });
+    return transaction.immediate();
+  }
+
+  startSourceRun(input: {
+    runId: number;
+    attemptedCursor?: unknown;
+    now?: Date;
+  }): Run {
+    const timestamp = (input.now ?? new Date()).toISOString();
+    const attemptedCursor =
+      input.attemptedCursor === undefined
+        ? null
+        : this.sourceStateJson(input.attemptedCursor, "attempted cursor");
+    const transaction = this.db.transaction((): Run => {
+      const run = this.requireSourceRun(input.runId);
+      if (run.terminal_outcome !== null) {
+        throw new CliError(
+          "source_run_terminal",
+          `source Run ${input.runId} is already terminal`,
+        );
+      }
+      if (run.state !== "pending" && run.state !== "active") {
+        throw new CliError(
+          "source_run_not_startable",
+          `source Run ${input.runId} cannot start from ${run.state}`,
+        );
+      }
+      this.db
+        .query(
+          `UPDATE runs SET state='active', started_at=COALESCE(started_at, ?),
+             attempted_cursor=COALESCE(?, attempted_cursor), updated_at=?
+           WHERE id=?`,
+        )
+        .run(timestamp, attemptedCursor, timestamp, input.runId);
+      return this.requireSourceRun(input.runId);
+    });
+    return transaction.immediate();
+  }
+
+  recordSourceRunProgress(input: {
+    runId: number;
+    attemptedCursor?: unknown;
+    warnings?: readonly string[];
+    counts?: SourceRunCounts;
+    now?: Date;
+  }): Run {
+    const timestamp = (input.now ?? new Date()).toISOString();
+    const transaction = this.db.transaction((): Run => {
+      const run = this.requireSourceRun(input.runId);
+      if (run.terminal_outcome !== null) {
+        throw new CliError(
+          "source_run_terminal",
+          `source Run ${input.runId} is already terminal`,
+        );
+      }
+      const counts = input.counts ?? {
+        discovered: run.discovered_count,
+        admitted: run.admitted_count,
+        suppressed: run.suppressed_count,
+      };
+      this.validateSourceRunCounts(counts);
+      const warnings = this.validatedSourceWarnings(
+        input.warnings ?? this.parseSourceWarnings(run.warnings),
+      );
+      const attemptedCursor =
+        input.attemptedCursor === undefined
+          ? run.attempted_cursor
+          : this.sourceStateJson(input.attemptedCursor, "attempted cursor");
+      this.db
+        .query(
+          `UPDATE runs SET attempted_cursor=?, warnings=?, discovered_count=?,
+             admitted_count=?, suppressed_count=?, updated_at=? WHERE id=?`,
+        )
+        .run(
+          attemptedCursor,
+          JSON.stringify(warnings),
+          counts.discovered,
+          counts.admitted,
+          counts.suppressed,
+          timestamp,
+          input.runId,
+        );
+      return this.requireSourceRun(input.runId);
+    });
+    return transaction.immediate();
+  }
+
+  finishSourceRun(input: {
+    runId: number;
+    outcome: SourceRunOutcome;
+    attemptedCursor?: unknown;
+    checkpoint?: unknown;
+    warnings?: readonly string[];
+    counts?: SourceRunCounts;
+    healthDetail?: string;
+    now?: Date;
+  }): Run {
+    if (
+      !["success", "partial", "failed", "cancelled"].includes(input.outcome)
+    ) {
+      throw new CliError("bad_source_outcome", "invalid source Run outcome", {
+        exitCode: 2,
+      });
+    }
+    const timestamp = (input.now ?? new Date()).toISOString();
+    const transaction = this.db.transaction((): Run => {
+      const run = this.requireSourceRun(input.runId);
+      if (run.terminal_outcome !== null) {
+        if (run.terminal_outcome === input.outcome) return run;
+        throw new CliError(
+          "source_run_terminal",
+          `source Run ${input.runId} is already terminal`,
+        );
+      }
+      const counts = input.counts ?? {
+        discovered: run.discovered_count,
+        admitted: run.admitted_count,
+        suppressed: run.suppressed_count,
+      };
+      this.validateSourceRunCounts(counts);
+      const warnings = this.validatedSourceWarnings(
+        input.warnings ?? this.parseSourceWarnings(run.warnings),
+      );
+      const attemptedCursor =
+        input.attemptedCursor === undefined
+          ? run.attempted_cursor
+          : this.sourceStateJson(input.attemptedCursor, "attempted cursor");
+      let checkpoint: string | null = null;
+      if (input.checkpoint !== undefined) {
+        if (
+          input.outcome !== "success" ||
+          warnings.length !== 0 ||
+          counts.discovered !== counts.admitted + counts.suppressed
+        ) {
+          throw new CliError(
+            "unsafe_checkpoint",
+            "a checkpoint requires a complete successful discovery window with every observation admitted or suppressed",
+          );
+        }
+        checkpoint = this.sourceStateJson(input.checkpoint, "checkpoint");
+        this.db
+          .query(
+            `INSERT INTO source_checkpoints(
+               source_id, run_id, definition_version, value, committed_at
+             ) VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(
+            run.source_id,
+            run.id,
+            run.source_definition_version,
+            checkpoint,
+            timestamp,
+          );
+      }
+      const state =
+        input.outcome === "failed"
+          ? "failed"
+          : input.outcome === "cancelled"
+            ? "cancelled"
+            : "completed";
+      this.db
+        .query(
+          `UPDATE runs SET state=?, attempted_cursor=?,
+             committed_checkpoint=COALESCE(?, committed_checkpoint), warnings=?,
+             discovered_count=?, admitted_count=?, suppressed_count=?,
+             terminal_outcome=?, finished_at=?, updated_at=? WHERE id=?`,
+        )
+        .run(
+          state,
+          attemptedCursor,
+          checkpoint,
+          JSON.stringify(warnings),
+          counts.discovered,
+          counts.admitted,
+          counts.suppressed,
+          input.outcome,
+          timestamp,
+          timestamp,
+          run.id,
+        );
+      const healthState: SourceHealthState =
+        input.outcome === "success" && warnings.length === 0
+          ? "healthy"
+          : input.outcome === "partial" || warnings.length > 0
+            ? "warning"
+            : "unhealthy";
+      const healthDetail =
+        input.healthDetail === undefined
+          ? (warnings[0] ?? input.outcome)
+          : limitCodePoints(sanitizeExternalError(input.healthDetail), 500);
+      this.db
+        .query(
+          `UPDATE sources SET checkpoint=COALESCE(?, checkpoint),
+             health_state=?, health_detail=?, last_evaluated_at=?,
+             last_success_at=CASE WHEN ?='success' THEN ? ELSE last_success_at END,
+             updated_at=? WHERE id=?`,
+        )
+        .run(
+          checkpoint,
+          healthState,
+          healthDetail,
+          timestamp,
+          input.outcome,
+          timestamp,
+          timestamp,
+          run.source_id,
+        );
+      return this.requireSourceRun(input.runId);
+    });
+    return transaction.immediate();
+  }
+
+  commitSourceCheckpoint(input: {
+    runId: number;
+    checkpoint: unknown;
+    attemptedCursor?: unknown;
+    warnings?: readonly string[];
+    counts?: SourceRunCounts;
+    now?: Date;
+  }): Run {
+    return this.finishSourceRun({
+      ...input,
+      outcome: "success",
+    });
+  }
+
+  private applySourceDefinition(
+    input: SourceDefinition,
+    actor: string,
+    reason: string,
+    timestamp: string,
+  ): {
+    source_id: string;
+    database_id: number;
+    version: number;
+    created: boolean;
+    changed: boolean;
+  } {
+    const definition = validateSourceDefinition(input);
+    const definitionJson = JSON.stringify(definition);
+    const definitionHash = sourceDefinitionHash(definition);
+    const existing = this.loadSource(definition.id);
+    if (existing !== null && existing.source_type !== definition.kind) {
+      throw new CliError(
+        "source_identity_mismatch",
+        `stable source id '${definition.id}' is already bound to kind '${existing.source_type}'`,
+        { exitCode: 2 },
+      );
+    }
+    if (existing !== null && existing.definition_hash === definitionHash) {
+      return {
+        source_id: definition.id,
+        database_id: existing.id,
+        version: existing.definition_version,
+        created: false,
+        changed: false,
+      };
+    }
+    if (
+      existing !== null &&
+      existing.definition_hash.length > 0 &&
+      definition.version <= existing.definition_version
+    ) {
+      throw new CliError(
+        "source_version_conflict",
+        `source '${definition.id}' changed without a higher definition version`,
+        { exitCode: 2 },
+      );
+    }
+
+    let sourceId: number;
+    let created = false;
+    if (existing === null) {
+      const inserted = this.db
+        .query(
+          `INSERT INTO sources(
+             source_type, identifier, display_name, enabled, sensitivity,
+             schedule, checkpoint, definition_version, definition,
+             definition_hash, collections, limits, credential_refs, paused,
+             health_state, next_due_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 'never', ?, ?, ?)`,
+        )
+        .run(
+          definition.kind,
+          definition.id,
+          definition.display_name,
+          definition.enabled ? 1 : 0,
+          definition.sensitivity,
+          JSON.stringify(definition.schedule),
+          definition.version,
+          definitionJson,
+          definitionHash,
+          JSON.stringify(definition.collections),
+          JSON.stringify(definition.limits),
+          JSON.stringify(definition.credential_refs),
+          timestamp,
+          timestamp,
+          timestamp,
+        );
+      sourceId = Number(inserted.lastInsertRowid);
+      created = true;
+    } else {
+      sourceId = existing.id;
+      const nextDueAt =
+        !existing.enabled && definition.enabled
+          ? timestamp
+          : (existing.next_due_at ?? timestamp);
+      this.db
+        .query(
+          `UPDATE sources SET display_name=?, enabled=?, sensitivity=?,
+             schedule=?, definition_version=?, definition=?, definition_hash=?,
+             collections=?, limits=?, credential_refs=?, next_due_at=?,
+             updated_at=? WHERE id=?`,
+        )
+        .run(
+          definition.display_name,
+          definition.enabled ? 1 : 0,
+          definition.sensitivity,
+          JSON.stringify(definition.schedule),
+          definition.version,
+          definitionJson,
+          definitionHash,
+          JSON.stringify(definition.collections),
+          JSON.stringify(definition.limits),
+          JSON.stringify(definition.credential_refs),
+          nextDueAt,
+          timestamp,
+          sourceId,
+        );
+    }
+    this.db
+      .query(
+        `INSERT INTO source_definition_versions(
+           source_id, definition_version, definition_hash, definition, created_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        sourceId,
+        definition.version,
+        definitionHash,
+        definitionJson,
+        timestamp,
+      );
+    this.db
+      .query(
+        `INSERT INTO source_audit_events(
+           source_id, action, actor, reason, definition_version,
+           definition_hash, created_at
+         ) VALUES (?, 'config_applied', ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        sourceId,
+        actor,
+        reason,
+        definition.version,
+        definitionHash,
+        timestamp,
+      );
+    return {
+      source_id: definition.id,
+      database_id: sourceId,
+      version: definition.version,
+      created,
+      changed: true,
+    };
+  }
+
+  private setSourcePaused(input: {
+    sourceId: string;
+    paused: boolean;
+    actor?: string;
+    reason?: string;
+    now?: Date;
+  }): Source {
+    const actor = this.validatedSourceActor(input.actor ?? "operator");
+    const reason = this.validatedSourceReason(
+      input.reason ?? (input.paused ? "operator_pause" : "operator_resume"),
+    );
+    const timestamp = (input.now ?? new Date()).toISOString();
+    const transaction = this.db.transaction((): Source => {
+      const source = this.requireSource(input.sourceId);
+      this.db
+        .query(
+          `UPDATE sources SET paused=?, pause_reason=?,
+             next_due_at=CASE
+               WHEN ?=0 AND next_due_at IS NULL THEN ? ELSE next_due_at
+             END,
+             updated_at=? WHERE id=?`,
+        )
+        .run(
+          input.paused ? 1 : 0,
+          input.paused ? reason : null,
+          input.paused ? 1 : 0,
+          timestamp,
+          timestamp,
+          source.id,
+        );
+      this.db
+        .query(
+          `INSERT INTO source_audit_events(
+             source_id, action, actor, reason, definition_version,
+             definition_hash, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          source.id,
+          input.paused ? "paused" : "resumed",
+          actor,
+          reason,
+          source.definition_version,
+          source.definition_hash,
+          timestamp,
+        );
+      return this.requireSource(input.sourceId);
+    });
+    return transaction.immediate();
+  }
+
+  private admitSourceSync(
+    source: Source,
+    now: Date,
+    dueOnly: boolean,
+    dryRun: boolean,
+  ): SourceSyncAdmission {
+    const timestamp = now.toISOString();
+    const base = {
+      source_id: source.identifier,
+      source_database_id: source.id,
+      run_id: null,
+      job_id: null,
+      scheduled_for: source.next_due_at,
+      dry_run: dryRun,
+    };
+    if (!source.enabled) return { ...base, status: "disabled" };
+    if (source.paused) return { ...base, status: "paused" };
+    if (!isExecutableSourceKind(source.source_type)) {
+      return { ...base, status: "unsupported" };
+    }
+    if (
+      dueOnly &&
+      (source.next_due_at === null ||
+        Date.parse(source.next_due_at) > now.getTime())
+    ) {
+      return { ...base, status: "not_due" };
+    }
+    const active = this.db
+      .query(
+        `SELECT r.id AS run_id, j.id AS job_id, r.scheduled_for
+         FROM runs r LEFT JOIN jobs j ON j.run_id=r.id AND j.kind='source_sync'
+         WHERE r.source_id=? AND r.run_type='source_sync'
+           AND r.state IN ('pending', 'active')
+         ORDER BY r.id DESC LIMIT 1`,
+      )
+      .get(source.id) as {
+      run_id: number;
+      job_id: number | null;
+      scheduled_for: string | null;
+    } | null;
+    if (active !== null) {
+      return {
+        ...base,
+        status: "duplicate",
+        run_id: active.run_id,
+        job_id: active.job_id,
+        scheduled_for: active.scheduled_for,
+      };
+    }
+    const scheduleKey = dueOnly
+      ? `catchup:${source.next_due_at}`
+      : `manual:${timestamp}`;
+    const scheduledFor = dueOnly ? source.next_due_at : timestamp;
+    const prior = this.db
+      .query(
+        `SELECT r.id AS run_id, j.id AS job_id
+         FROM runs r LEFT JOIN jobs j ON j.run_id=r.id AND j.kind='source_sync'
+         WHERE r.source_id=? AND r.run_type='source_sync' AND r.schedule_key=?`,
+      )
+      .get(source.id, scheduleKey) as {
+      run_id: number;
+      job_id: number | null;
+    } | null;
+    if (prior !== null) {
+      return {
+        ...base,
+        status: "duplicate",
+        run_id: prior.run_id,
+        job_id: prior.job_id,
+        scheduled_for: scheduledFor,
+      };
+    }
+    if (dryRun) {
+      return {
+        ...base,
+        status: "would_queue",
+        scheduled_for: scheduledFor,
+      };
+    }
+
+    const insertedRun = this.db
+      .query(
+        `INSERT INTO runs(
+           run_type, source_id, state, checkpoint, attempted_cursor,
+           committed_checkpoint, warnings, discovered_count, admitted_count,
+           suppressed_count, terminal_outcome, source_definition_version,
+           schedule_key, scheduled_for, created_at, updated_at
+         ) VALUES (
+           'source_sync', ?, 'pending', ?, NULL, NULL, '[]', 0, 0, 0,
+           NULL, ?, ?, ?, ?, ?
+         )`,
+      )
+      .run(
+        source.id,
+        source.checkpoint,
+        source.definition_version,
+        scheduleKey,
+        scheduledFor,
+        timestamp,
+        timestamp,
+      );
+    const runId = Number(insertedRun.lastInsertRowid);
+    const intent = {
+      version: SOURCE_RUN_INTENT_VERSION,
+      kind: "source_sync" as const,
+      source_id: source.id,
+      stable_source_id: source.identifier,
+      source_kind: source.source_type,
+      source_definition_version: source.definition_version,
+      run_id: runId,
+    };
+    const insertedJob = this.db
+      .query(
+        `INSERT INTO jobs(
+           idempotency_key, kind, intent, source_id, run_id, state,
+           sensitivity, run_at, created_at, updated_at
+         ) VALUES (?, 'source_sync', ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+      )
+      .run(
+        `source-sync:v1:${source.id}:${scheduleKey}`,
+        JSON.stringify(intent),
+        source.id,
+        runId,
+        source.sensitivity,
+        timestamp,
+        timestamp,
+        timestamp,
+      );
+    const jobId = Number(insertedJob.lastInsertRowid);
+    this.recordTransition(
+      jobId,
+      null,
+      null,
+      "queued",
+      "source-scheduler",
+      "source_sync_admitted",
+      null,
+      timestamp,
+    );
+    if (dueOnly) {
+      const schedule = JSON.parse(source.schedule ?? "{}") as {
+        cadence_seconds?: unknown;
+      };
+      if (
+        typeof schedule.cadence_seconds !== "number" ||
+        !Number.isInteger(schedule.cadence_seconds) ||
+        schedule.cadence_seconds < 1
+      ) {
+        throw new CliError(
+          "invalid_source_schedule",
+          `source '${source.identifier}' has invalid durable schedule state`,
+        );
+      }
+      const nextDueAt = new Date(
+        now.getTime() +
+          sourceCadenceMs(schedule as { cadence_seconds: number }),
+      ).toISOString();
+      this.db
+        .query("UPDATE sources SET next_due_at=?, updated_at=? WHERE id=?")
+        .run(nextDueAt, timestamp, source.id);
+    }
+    return {
+      source_id: source.identifier,
+      source_database_id: source.id,
+      status: "queued",
+      run_id: runId,
+      job_id: jobId,
+      scheduled_for: scheduledFor,
+      dry_run: false,
+    };
+  }
+
+  private loadSource(stableSourceId: string): Source | null {
+    return this.db
+      .query(`SELECT ${SOURCE_COLUMNS} FROM sources WHERE identifier=?`)
+      .get(stableSourceId) as Source | null;
+  }
+
+  private requireSource(stableSourceId: string): Source {
+    const sourceId = String(stableSourceId ?? "").trim();
+    if (sourceId.length === 0) {
+      throw new CliError("bad_source_id", "source ID is required", {
+        exitCode: 2,
+      });
+    }
+    const source = this.loadSource(sourceId);
+    if (source === null) {
+      throw new CliError("source_not_found", `source '${sourceId}' not found`);
+    }
+    return source;
+  }
+
+  private requireSourceRun(runId: number): Run {
+    if (!Number.isInteger(runId) || runId < 1) {
+      throw new CliError("bad_run_id", "source Run ID must be positive", {
+        exitCode: 2,
+      });
+    }
+    const run = this.db
+      .query(`SELECT ${SOURCE_RUN_COLUMNS} FROM runs WHERE id=?`)
+      .get(runId) as Run | null;
+    if (
+      run === null ||
+      run.run_type !== "source_sync" ||
+      run.source_id === null
+    ) {
+      throw new CliError(
+        "source_run_not_found",
+        `source Run ${runId} not found`,
+      );
+    }
+    return run;
+  }
+
+  private sourceStateJson(value: unknown, name: string): string {
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      serialized = undefined;
+    }
+    if (
+      serialized === undefined ||
+      Buffer.byteLength(serialized, "utf8") > 64 * 1024
+    ) {
+      throw new CliError(
+        "bad_source_state",
+        `${name} must be bounded JSON state`,
+        { exitCode: 2 },
+      );
+    }
+    return serialized;
+  }
+
+  private validateSourceRunCounts(counts: SourceRunCounts): void {
+    if (
+      !Number.isInteger(counts.discovered) ||
+      !Number.isInteger(counts.admitted) ||
+      !Number.isInteger(counts.suppressed) ||
+      counts.discovered < 0 ||
+      counts.admitted < 0 ||
+      counts.suppressed < 0 ||
+      counts.admitted + counts.suppressed > counts.discovered
+    ) {
+      throw new CliError(
+        "bad_source_counts",
+        "source Run counts must be non-negative and cannot account for more observations than were discovered",
+        { exitCode: 2 },
+      );
+    }
+  }
+
+  private parseSourceWarnings(value: string): string[] {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) &&
+        parsed.every((warning) => typeof warning === "string")
+        ? parsed
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private validatedSourceWarnings(warnings: readonly string[]): string[] {
+    if (warnings.length > 100) {
+      throw new CliError(
+        "bad_source_warnings",
+        "source Run warnings exceed the 100-warning limit",
+        { exitCode: 2 },
+      );
+    }
+    return warnings.map((warning) =>
+      limitCodePoints(sanitizeExternalError(warning), 500),
+    );
+  }
+
+  private validatedSourceActor(value: string): string {
+    const actor = String(value ?? "").trim();
+    if (actor.length === 0 || actor.length > 100) {
+      throw new CliError(
+        "bad_source_actor",
+        "source audit actor must contain 1-100 characters",
+        { exitCode: 2 },
+      );
+    }
+    return actor;
+  }
+
+  private validatedSourceReason(value: string): string {
+    const reason = limitCodePoints(sanitizeExternalError(value), 500).trim();
+    if (reason.length === 0) {
+      throw new CliError(
+        "bad_source_reason",
+        "source audit reason is required",
+        {
+          exitCode: 2,
+        },
+      );
+    }
+    return reason;
+  }
+
+  private recordTransition(
+    jobId: number,
+    attemptId: number | null,
+    fromState: JobState | null,
+    toState: JobState,
+    actor: string,
+    reason: string | null,
+    detail: string | null,
+    timestamp: string,
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO job_transitions(
+           job_id, attempt_id, from_state, to_state, actor, reason, detail, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        jobId,
+        attemptId,
+        fromState,
+        toState,
+        actor,
+        reason,
+        detail,
+        timestamp,
+      );
+  }
+}
+
+export type { SourceManifestOverlay };

@@ -46,7 +46,7 @@ import type {
   Sensitivity,
 } from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 9;
+export const RESEARCH_SCHEMA_VERSION = 10;
 
 /**
  * Default lease and retry policy. Durations are policy, not identity: callers
@@ -715,6 +715,78 @@ const MIGRATION_V9 = `
   UPDATE meta SET value='9' WHERE key='schema_version';
 `;
 
+const MIGRATION_V10 = `
+  ALTER TABLE sources ADD COLUMN definition_version INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE sources ADD COLUMN definition TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE sources ADD COLUMN definition_hash TEXT NOT NULL DEFAULT '';
+  ALTER TABLE sources ADD COLUMN collections TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE sources ADD COLUMN limits TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE sources ADD COLUMN credential_refs TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE sources ADD COLUMN paused INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE sources ADD COLUMN pause_reason TEXT;
+  ALTER TABLE sources ADD COLUMN health_state TEXT NOT NULL DEFAULT 'never';
+  ALTER TABLE sources ADD COLUMN health_detail TEXT;
+  ALTER TABLE sources ADD COLUMN last_evaluated_at TEXT;
+  ALTER TABLE sources ADD COLUMN last_success_at TEXT;
+  ALTER TABLE sources ADD COLUMN next_due_at TEXT;
+
+  ALTER TABLE runs ADD COLUMN attempted_cursor TEXT;
+  ALTER TABLE runs ADD COLUMN committed_checkpoint TEXT;
+  ALTER TABLE runs ADD COLUMN warnings TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE runs ADD COLUMN discovered_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE runs ADD COLUMN admitted_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE runs ADD COLUMN suppressed_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE runs ADD COLUMN terminal_outcome TEXT;
+  ALTER TABLE runs ADD COLUMN source_definition_version INTEGER;
+  ALTER TABLE runs ADD COLUMN schedule_key TEXT;
+  ALTER TABLE runs ADD COLUMN scheduled_for TEXT;
+
+  CREATE UNIQUE INDEX idx_sources_stable_id ON sources(identifier);
+  CREATE UNIQUE INDEX idx_source_runs_schedule
+    ON runs(source_id, schedule_key)
+    WHERE run_type='source_sync' AND schedule_key IS NOT NULL;
+  CREATE UNIQUE INDEX idx_source_runs_active
+    ON runs(source_id)
+    WHERE run_type='source_sync' AND state IN ('pending', 'active');
+
+  CREATE TABLE source_definition_versions (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+    definition_version INTEGER NOT NULL CHECK (definition_version >= 1),
+    definition_hash TEXT NOT NULL,
+    definition TEXT NOT NULL CHECK (json_valid(definition)),
+    created_at TEXT NOT NULL,
+    UNIQUE(source_id, definition_version),
+    UNIQUE(source_id, definition_hash)
+  );
+
+  CREATE TABLE source_audit_events (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+    action TEXT NOT NULL CHECK (action IN ('config_applied', 'paused', 'resumed')),
+    actor TEXT NOT NULL,
+    reason TEXT,
+    definition_version INTEGER NOT NULL,
+    definition_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_source_audit_events_source
+    ON source_audit_events(source_id, id);
+
+  CREATE TABLE source_checkpoints (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+    run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id) ON DELETE RESTRICT,
+    definition_version INTEGER NOT NULL,
+    value TEXT NOT NULL CHECK (json_valid(value)),
+    committed_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_source_checkpoints_source
+    ON source_checkpoints(source_id, id);
+
+  UPDATE meta SET value='10' WHERE key='schema_version';
+`;
+
 const MEDIA_TYPE_PATTERN =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[ -~]+)?$/;
 const JOB_KIND_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -950,7 +1022,12 @@ export class ResearchStore {
     try {
       this.rejectUnsupportedExistingSchema();
       try {
-        this.db.exec("PRAGMA journal_mode=WAL;");
+        const journal = this.db.query("PRAGMA journal_mode").get() as {
+          journal_mode: string;
+        };
+        if (journal.journal_mode.toLowerCase() !== "wal") {
+          this.db.exec("PRAGMA journal_mode=WAL;");
+        }
       } catch {
         // WAL may be unavailable on unusual filesystems; transactions still work.
       }
@@ -3284,6 +3361,17 @@ export class ResearchStore {
   }
 
   private initializeSchema(): void {
+    const hasMeta = this.db
+      .query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='meta' LIMIT 1",
+      )
+      .get();
+    if (hasMeta !== null) {
+      const current = this.db
+        .query("SELECT value FROM meta WHERE key='schema_version'")
+        .get() as { value: string } | null;
+      if (Number(current?.value) === RESEARCH_SCHEMA_VERSION) return;
+    }
     this.db
       .transaction(() => {
         this.db.exec(SCHEMA_V1);
@@ -3311,6 +3399,7 @@ export class ResearchStore {
         if (version < 7) this.db.exec(MIGRATION_V7);
         if (version < 8) this.db.exec(MIGRATION_V8);
         if (version < 9) this.db.exec(MIGRATION_V9);
+        if (version < 10) this.db.exec(MIGRATION_V10);
       })
       .immediate();
   }
