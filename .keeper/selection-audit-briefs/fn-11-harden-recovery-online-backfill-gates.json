@@ -1,0 +1,55 @@
+{
+  "auditable_tasks": [
+    {
+      "assigned_model": "opus",
+      "assigned_tier": "xhigh",
+      "config_hash": "e25a324bf07c0da4907c9c0d1da473e08fa7b22bffe1eb773c9f57005cb43c93",
+      "constraint": null,
+      "diff_stats": {
+        "commit_count": 1,
+        "deletions": 1,
+        "files_changed": 2,
+        "insertions": 325
+      },
+      "done_summary": "Added direct negative-path tests for every recovery-online prepare-phase gate (corpus mismatch, offline accounting, protected-inventory tamper, scope widening, stale snapshot/quiescence) asserting their onlineError codes, plus a test proving an active online execution lease fences recoverExpiredLeases globally.",
+      "input_hash": "ab28689ec899fced63e523292cfbfd14ec8d0981b362a3832f0faf2e50b54870",
+      "model": "opus",
+      "spec_chars": 2053,
+      "spec_md": "## Description\n\nFrom audit finding F1 (Should fix) plus merged F5 (Test Gaps bullet 2). The fail-closed prepare-phase gates in `src/recovery-online.ts` that guard the irreversible online-egress backfill are covered only on the happy path and three digest-mismatch cases (`test/recovery.integration.test.ts`); the tamper/divergence gates have no direct negative test. Evidence path (Phase 2): grep of `test/recovery.integration.test.ts` in commit c7508fa finds no assertion of the codes `recovery_offline_accounting_mismatch` (hardcoded total gate, recovery-online.ts:333), `recovery_snapshot_corpus_mismatch`, `recovery_protected_jobs_changed` / `assertProtectedInventory`, `recovery_scope_widened`, `recovery_snapshot_stale`, or `assertQuiescent`. Merged F5: no direct assertion that an active online execution lease globally fences ordinary lease recovery (`recoverExpiredLeases`), only ordinary claims.\n\nFiles: `src/recovery-online.ts`, `test/recovery.integration.test.ts` (and the worker lease-recovery path in `src/worker.ts` for the F5 fence assertion).\n\n## Acceptance\n\n- [ ] A negative test mutates the live-vs-snapshot corpus and asserts `recovery_snapshot_corpus_mismatch`\n- [ ] A negative test breaks the offline accounting and asserts `recovery_offline_accounting_mismatch`\n- [ ] A negative test tampers protected inventory and asserts `recovery_protected_jobs_changed`\n- [ ] A negative test widens scope and asserts `recovery_scope_widened`\n- [ ] A negative test injects a post-snapshot job / non-quiescent worker and asserts `recovery_snapshot_stale` / the quiescence gate\n- [ ] A test asserts that an active online execution lease fences `recoverExpiredLeases` globally (not only ordinary claims)\n\n## Done summary\nAdded direct negative-path tests for every recovery-online prepare-phase gate (corpus mismatch, offline accounting, protected-inventory tamper, scope widening, stale snapshot/quiescence) asserting their onlineError codes, plus a test proving an active online execution lease fences recoverExpiredLeases globally.\n## Evidence\n",
+      "task_id": "fn-11-harden-recovery-online-backfill-gates.1",
+      "tier": "xhigh",
+      "title": "Negative tests for prepare gates"
+    },
+    {
+      "assigned_model": "opus",
+      "assigned_tier": "xhigh",
+      "config_hash": "e25a324bf07c0da4907c9c0d1da473e08fa7b22bffe1eb773c9f57005cb43c93",
+      "constraint": null,
+      "diff_stats": {
+        "commit_count": 1,
+        "deletions": 7,
+        "files_changed": 2,
+        "insertions": 7
+      },
+      "done_summary": "Reverted the unconditional upstream_unavailable to infra/infrastructure reclassification in envelopeFailure back to item_transient/item, restoring bounded-retry-then-permanent-failure semantics for ordinary URL jobs on a persistent upstream outage; the existing table-driven test in test/scrapectl.test.ts directly asserts the restored classification.",
+      "input_hash": "ab28689ec899fced63e523292cfbfd14ec8d0981b362a3832f0faf2e50b54870",
+      "model": "opus",
+      "spec_chars": 1721,
+      "spec_md": "## Description\n\nFrom audit finding F2 (Consider). `src/scrapectl.ts:978-980` (commit c7508fa) reclassifies `upstream_unavailable` from `item_transient`/`item` to `infra`/`infrastructure`. Confirmed against the audited blob: the reclassification is unconditional, so it applies to every URL extraction job system-wide, not just the recovery drain it shipped with. Ordinary URL jobs hitting `upstream_unavailable` now take infra backoff and no longer consume the item-retry budget toward permanent failure - risking unbounded retry on a persistent upstream outage instead of failing out. The commit message and done summary describe recovery-only intent; the code change is global.\n\nFiles: `src/scrapectl.ts`, `test/scrapectl.test.ts`.\n\nResolve in one of two directions: (a) scope the infra reclassification to the recovery execution context so ordinary URL jobs retain their prior item-transient semantics, or (b) confirm the global change is intended and guard ordinary jobs against unbounded retry on a persistent outage (cap/permanent-failure path), documenting the deliberate blast radius.\n\n## Acceptance\n\n- [ ] `upstream_unavailable` retry semantics for ordinary URL jobs are either restored to item-transient or given a bounded-retry / permanent-failure path\n- [ ] The chosen direction is covered by a test in `test/scrapectl.test.ts`\n\n## Done summary\nReverted the unconditional upstream_unavailable to infra/infrastructure reclassification in envelopeFailure back to item_transient/item, restoring bounded-retry-then-permanent-failure semantics for ordinary URL jobs on a persistent upstream outage; the existing table-driven test in test/scrapectl.test.ts directly asserts the restored classification.\n## Evidence\n",
+      "task_id": "fn-11-harden-recovery-online-backfill-gates.2",
+      "tier": "xhigh",
+      "title": "Scope upstream_unavailable retry reclassification"
+    }
+  ],
+  "created_at": "2026-07-20T23:16:53.384000Z",
+  "epic_id": "fn-11-harden-recovery-online-backfill-gates",
+  "excluded_tasks": [],
+  "primary_repo": "/Users/mike/code/agentbrain",
+  "schema_version": 2,
+  "selection_config_hash": "e25a324bf07c0da4907c9c0d1da473e08fa7b22bffe1eb773c9f57005cb43c93",
+  "selection_input_hash": "ab28689ec899fced63e523292cfbfd14ec8d0981b362a3832f0faf2e50b54870",
+  "selector": {
+    "harness": "subagent",
+    "model": "plan:model-selector"
+  }
+}
