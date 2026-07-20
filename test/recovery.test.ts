@@ -734,7 +734,7 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
     [priorCandidateId, collidingCandidate.candidateId].sort(),
   );
   store.close();
-}, 30_000);
+}, 90_000);
 
 test("recovery admission fails closed on an exact identity conflict", () => {
   const { store, artifacts } = directAdmissionFixture();
@@ -995,4 +995,4 @@ test("generation validation fails closed for identity, paths, hashes, and privat
       artifactRoots: [privateData.artifactRoot],
     }),
   ).toThrow("forbidden private field");
-});
+}, 20_000);

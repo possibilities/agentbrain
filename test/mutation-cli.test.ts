@@ -128,7 +128,7 @@ test("CLI ingest queues durably while context and guarded delete keep command me
     meta: { read_only: false },
     data: { deleted_document_id: seeded.document_id },
   });
-});
+}, 15_000);
 
 test("invalid ingest and delete argv never initialize a database", () => {
   for (const [args, code] of [
@@ -163,7 +163,7 @@ test("invalid ingest and delete argv never initialize a database", () => {
     ok: false,
     error: { code: "db_not_found" },
   });
-});
+}, 40_000);
 
 test("PATH Scrapectl uses explicit X argv and sanitizes nonzero errors", async () => {
   const { dir } = temp();

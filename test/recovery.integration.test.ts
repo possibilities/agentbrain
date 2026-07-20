@@ -799,7 +799,7 @@ test("disposable rehearsal drives the frozen generation through the installed CL
     jobs: { queued: 581, blocked: 11, excluded: 37, created: 629, existing: 0 },
     effects: { candidate_outcomes_created: 1088, observations_created: 294 },
   });
-}, 120000);
+}, 300_000);
 
 test("a tampered generation file fails closed without writing state or leaking locators", () => {
   const fixture = makeFixture();

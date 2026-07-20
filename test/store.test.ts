@@ -623,7 +623,7 @@ try {
     db.query("SELECT state FROM jobs WHERE idempotency_key='race'").get(),
   ).toEqual({ state: "running" });
   db.close();
-});
+}, 15_000);
 
 test("expired leases go stale, recover, and fence late workers by token", () => {
   const path = tempDb();

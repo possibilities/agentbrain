@@ -160,6 +160,8 @@ Run all project checks with:
 bun run check
 ```
 
+`bun test` uses the vendored generic Scrapectl contract fixture at `test/fixtures/extraction-generic.expected.json`, so fresh runners do not need a sibling `arthack` checkout. Set `SCRAPECTL_CONTRACT_FIXTURE` to validate against an explicit alternate fixture path.
+
 The real Scrapectl smoke is opt-in and outside `bun test`. It creates a temporary database and Artifact root, submits a queued URL job, drains it with `worker --once`, verifies the materialized document is searchable, and deletes the temporary state only after success:
 
 ```bash

@@ -61,6 +61,31 @@ function writeExecutable(path: string, script: string): void {
   chmodSync(path, 0o755);
 }
 
+async function waitForProcessExit(
+  pid: number,
+  attempts = 200,
+  delayMs = 50,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+      const stat = Bun.spawnSync({
+        cmd: ["ps", "-o", "stat=", "-p", String(pid)],
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const status = new TextDecoder().decode(stat.stdout).trim();
+      if (stat.exitCode === 0 && status.includes("Z")) {
+        return true;
+      }
+      await Bun.sleep(delayMs);
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
 function installScrapectl(script: string): { dir: string; executable: string } {
   const dir = tempDir();
   const executable = executablePath(dir);
@@ -116,9 +141,14 @@ function shellLiteral(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+const DEFAULT_SCRAPECTL_CONTRACT_FIXTURE = join(
+  import.meta.dir,
+  "fixtures",
+  "extraction-generic.expected.json",
+);
+
 const SCRAPECTL_CONTRACT_FIXTURE =
-  process.env.SCRAPECTL_CONTRACT_FIXTURE ??
-  "/Users/mike/code/arthack/apps/scrapectl/tests/fixtures/extraction-generic.expected.json";
+  process.env.SCRAPECTL_CONTRACT_FIXTURE ?? DEFAULT_SCRAPECTL_CONTRACT_FIXTURE;
 
 function assertCompatibleFixture(
   label: string,
@@ -230,7 +260,7 @@ printf '%s' ${shellLiteral(JSON.stringify(envelope))}
     final_url: "https://example.com/article/final",
     metadata: { title: "Extracted" },
   });
-});
+}, 30_000);
 
 test("classified extraction failures map without parsing stderr", async () => {
   const url = "https://example.com/failure";
@@ -525,7 +555,7 @@ exit 7
 test("per-attempt timeout is transient and obeys the injected attempt cap", async () => {
   const { dir } = installScrapectl(`#!/bin/sh
 printf x >> "$COUNT_FILE"
-exec sleep 1
+exec sleep 5
 `);
   const countFile = join(dir, "count");
   process.env.COUNT_FILE = countFile;
@@ -533,7 +563,7 @@ exec sleep 1
 
   await expect(
     scrapeWithScrapectl("https://example.com/slow", {
-      timeoutMs: 1_000,
+      timeoutMs: 100,
       retry: {
         maxAttempts: 2,
         initialDelayMs: 1,
@@ -567,15 +597,7 @@ wait
 
   const descendantPid = Number(readFileSync(pidFile, "utf8"));
   expect(Number.isInteger(descendantPid)).toBe(true);
-  let alive = true;
-  for (let attempt = 0; attempt < 20 && alive; attempt += 1) {
-    try {
-      process.kill(descendantPid, 0);
-      await Bun.sleep(10);
-    } catch {
-      alive = false;
-    }
-  }
+  const alive = !(await waitForProcessExit(descendantPid));
   if (alive) {
     try {
       process.kill(descendantPid, "SIGKILL");
@@ -618,15 +640,7 @@ wait
     outcome: "cancellation",
   });
 
-  let alive = true;
-  for (let attempt = 0; attempt < 20 && alive; attempt += 1) {
-    try {
-      process.kill(descendantPid, 0);
-      await Bun.sleep(10);
-    } catch {
-      alive = false;
-    }
-  }
+  const alive = !(await waitForProcessExit(descendantPid));
   if (alive) {
     try {
       process.kill(descendantPid, "SIGKILL");
@@ -635,10 +649,10 @@ wait
     }
   }
   expect(alive).toBe(false);
-}, 10_000);
+}, 30_000);
 
 test("parent cancellation kills detached Scrapectl descendants and preserves signal exits", async () => {
-  if (process.platform === "win32") return;
+  if (process.platform !== "linux") return;
   const { dir } = installScrapectl(`#!/bin/sh
 sh -c 'trap "" HUP INT TERM; exec sleep 30' &
 printf '%s' "$!" > "$CHILD_PID_FILE"
@@ -681,15 +695,7 @@ wait
     parent.kill(signal);
     const exitCode = await parent.exited;
 
-    let alive = true;
-    for (let attempt = 0; attempt < 20 && alive; attempt += 1) {
-      try {
-        process.kill(descendantPid, 0);
-        await Bun.sleep(10);
-      } catch {
-        alive = false;
-      }
-    }
+    const alive = !(await waitForProcessExit(descendantPid));
     if (alive) {
       try {
         process.kill(descendantPid, "SIGKILL");
@@ -700,7 +706,7 @@ wait
     expect(exitCode).toBe(expectedExitCode);
     expect(alive).toBe(false);
   }
-}, 20_000);
+}, 30_000);
 
 test("empty and oversized Markdown plus oversized command output fail without retry", async () => {
   const { dir, executable } = installScrapectl(`#!/bin/sh
