@@ -10,9 +10,20 @@ import {
   type IngestSourceType,
   SKIP_DIRS,
 } from "./ingest";
+import type {
+  VerifiedRecoveryCandidate,
+  VerifiedRecoveryGeneration,
+} from "./recovery";
 import type { ResearchStore } from "./store";
 import { normalizeTags } from "./text";
-import type { AdmissionStatus, AdmissionWaitStatus, JobState } from "./types";
+import type {
+  AdmissionStatus,
+  AdmissionWaitStatus,
+  JobState,
+  RecoveryDisposition,
+  RecoveryImportReport,
+  Sensitivity,
+} from "./types";
 import { normalizedWebUrl } from "./url";
 
 export const SUBMISSION_VERSION = 1 as const;
@@ -41,7 +52,7 @@ interface ArtifactPayload {
   content_digest: string;
   byte_size: number;
   media_type: string;
-  artifact_role: "original";
+  artifact_role: "original" | "imported_markdown";
 }
 
 export interface DurableSubmissionIntent {
@@ -535,6 +546,867 @@ export function admitSubmission(
     intent_hash: intentHash,
     state: admitted.job.state,
   };
+}
+
+export interface RecoveryAdmissionOptions {
+  artifactStore?: ArtifactStore;
+  dryRun?: boolean;
+  now?: Date;
+}
+
+interface RecoveryAdmissionContext {
+  sourceId: number;
+  runId: number;
+  collectionId: number;
+  timestamp: string;
+}
+
+interface RecoveryCandidateEffect {
+  outcomeCreated: boolean;
+  observationsCreated: number;
+  observationsExisting: number;
+  artifactCreated: boolean;
+  artifactExisting: boolean;
+  jobCreated: boolean;
+  jobExisting: boolean;
+}
+
+export const RECOVERY_JOB_PREFIX = "legacy-recovery-candidate:v1:";
+
+function recoveryAdmissionError(code: string, message: string): CliError {
+  return new CliError(code, message, { exitCode: 2 });
+}
+
+function recoveryJobState(
+  disposition: RecoveryDisposition,
+): "queued" | "blocked" | "excluded" | null {
+  if (disposition === "import_offline") return "queued";
+  if (
+    disposition === "approved_online_backfill_telegram_human" ||
+    disposition === "review_fetch" ||
+    disposition === "review_retry"
+  ) {
+    return "blocked";
+  }
+  if (
+    disposition === "exclude_infrastructure" ||
+    disposition === "exclude_probable_test"
+  ) {
+    return "excluded";
+  }
+  return null;
+}
+
+function recoveryUrlIntent(candidate: VerifiedRecoveryCandidate): string {
+  const intent: DurableSubmissionIntent = {
+    version: SUBMISSION_VERSION,
+    kind: "url",
+    ingress: "legacy-recovery",
+    collections: candidate.catalogPosition === null ? [] : ["legacy-links"],
+    payload: { url: { url: candidate.sourceUri } },
+    options: {
+      tags: ["legacy-recovery"],
+      force: false,
+      max_bytes: 5_000_000,
+    },
+  };
+  return canonicalSubmissionIntent(intent);
+}
+
+function recoveryFileIntent(
+  candidate: VerifiedRecoveryCandidate,
+  contentDigest: string,
+  byteSize: number,
+): string {
+  if (candidate.artifact === null) {
+    throw recoveryAdmissionError(
+      "recovery_artifact_missing",
+      `candidate ${candidate.candidateId} has no approved offline Artifact`,
+    );
+  }
+  const intent: DurableSubmissionIntent = {
+    version: SUBMISSION_VERSION,
+    kind: "file",
+    ingress: "legacy-recovery",
+    collections: candidate.catalogPosition === null ? [] : ["legacy-links"],
+    payload: {
+      file: {
+        content_digest: contentDigest,
+        byte_size: byteSize,
+        media_type: "text/markdown; charset=utf-8",
+        artifact_role: "imported_markdown",
+      },
+    },
+    options: {
+      title: candidate.artifact.summary,
+      tags: ["legacy-recovery"],
+      force: false,
+      max_bytes: Math.max(1, byteSize),
+    },
+  };
+  return canonicalSubmissionIntent(intent);
+}
+
+function ensureRecoveryContext(
+  store: ResearchStore,
+  generation: VerifiedRecoveryGeneration,
+  timestamp: string,
+): RecoveryAdmissionContext {
+  const transaction = store.db.transaction((): RecoveryAdmissionContext => {
+    store.db
+      .query(
+        `INSERT OR IGNORE INTO sources(
+           source_type, identifier, display_name, enabled, sensitivity,
+           created_at, updated_at
+         ) VALUES ('frozen_recovery_generation', ?, NULL, 0, 'normal', ?, ?)`,
+      )
+      .run(generation.generationId, timestamp, timestamp);
+    const source = store.db
+      .query(
+        "SELECT id FROM sources WHERE source_type='frozen_recovery_generation' AND identifier=?",
+      )
+      .get(generation.generationId) as { id: number } | null;
+    if (source === null) {
+      throw recoveryAdmissionError(
+        "recovery_admission_failed",
+        "the frozen recovery generation Source could not be admitted",
+      );
+    }
+    const checkpoint = JSON.stringify({
+      generation_id: generation.generationId,
+      manifest_digest: generation.manifestDigest,
+    });
+    let run = store.db
+      .query(
+        `SELECT id, checkpoint FROM runs
+         WHERE run_type='legacy_recovery_import' AND source_id=?
+         ORDER BY id LIMIT 1`,
+      )
+      .get(source.id) as { id: number; checkpoint: string | null } | null;
+    if (run === null) {
+      const inserted = store.db
+        .query(
+          `INSERT INTO runs(
+             run_type, source_id, state, checkpoint, created_at, updated_at
+           ) VALUES ('legacy_recovery_import', ?, 'pending', ?, ?, ?)`,
+        )
+        .run(source.id, checkpoint, timestamp, timestamp);
+      run = { id: Number(inserted.lastInsertRowid), checkpoint };
+    } else if (run.checkpoint !== checkpoint) {
+      throw recoveryAdmissionError(
+        "mixed_recovery_generation",
+        "the existing recovery run has a different frozen checkpoint",
+      );
+    }
+    store.db
+      .query(
+        `INSERT OR IGNORE INTO collections(
+           slug, title, sensitivity, created_at, updated_at
+         ) VALUES ('legacy-links', 'Legacy links', 'normal', ?, ?)`,
+      )
+      .run(timestamp, timestamp);
+    const collection = store.db
+      .query("SELECT id FROM collections WHERE slug='legacy-links'")
+      .get() as { id: number } | null;
+    if (collection === null) {
+      throw recoveryAdmissionError(
+        "recovery_admission_failed",
+        "the legacy-links Collection could not be admitted",
+      );
+    }
+    return {
+      sourceId: source.id,
+      runId: run.id,
+      collectionId: collection.id,
+      timestamp,
+    };
+  });
+  return transaction.immediate();
+}
+
+function sensitivityRank(value: Sensitivity): number {
+  return ["public", "normal", "sensitive", "private"].indexOf(value);
+}
+
+function ensureRecoveryResource(
+  store: ResearchStore,
+  candidate: VerifiedRecoveryCandidate,
+  timestamp: string,
+): number {
+  const candidateResource = store.db
+    .query(
+      "SELECT id, sensitivity FROM resources WHERE key_type='recovery_candidate' AND key_value=?",
+    )
+    .get(candidate.candidateId) as {
+    id: number;
+    sensitivity: Sensitivity;
+  } | null;
+  const exactOwners = store.db
+    .query(
+      `SELECT DISTINCT r.id, r.sensitivity
+       FROM resources r
+       JOIN resource_aliases ra ON ra.resource_id=r.id
+       WHERE ra.alias_type='legacy_exact_url' AND ra.locator=?
+       ORDER BY r.id`,
+    )
+    .all(candidate.sourceUri) as Array<{
+    id: number;
+    sensitivity: Sensitivity;
+  }>;
+  if (exactOwners.length > 1) {
+    throw recoveryAdmissionError(
+      "recovery_identity_conflict",
+      `candidate ${candidate.candidateId} exact identity belongs to multiple Resources`,
+    );
+  }
+
+  let resource = exactOwners[0] ?? candidateResource;
+  if (
+    candidateResource !== null &&
+    resource !== null &&
+    candidateResource.id !== resource.id
+  ) {
+    const candidateAliases = store.db
+      .query(
+        `SELECT locator FROM resource_aliases
+         WHERE resource_id=? AND alias_type='legacy_exact_url'`,
+      )
+      .all(candidateResource.id) as Array<{ locator: string }>;
+    if (candidateAliases.length > 0) {
+      throw recoveryAdmissionError(
+        "recovery_identity_conflict",
+        `candidate ${candidate.candidateId} conflicts with an existing exact identity owner`,
+      );
+    }
+  }
+  if (resource === null) {
+    const inserted = store.db
+      .query(
+        `INSERT INTO resources(
+           key_type, key_value, kind, sensitivity, created_at, updated_at
+         ) VALUES ('recovery_candidate', ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        candidate.candidateId,
+        candidate.sourceType,
+        candidate.sensitivity,
+        timestamp,
+        timestamp,
+      );
+    resource = {
+      id: Number(inserted.lastInsertRowid),
+      sensitivity: candidate.sensitivity,
+    };
+  } else if (
+    sensitivityRank(candidate.sensitivity) >
+    sensitivityRank(resource.sensitivity)
+  ) {
+    store.db
+      .query("UPDATE resources SET sensitivity=?, updated_at=? WHERE id=?")
+      .run(candidate.sensitivity, timestamp, resource.id);
+  }
+  const exactAliases = store.db
+    .query(
+      `SELECT locator FROM resource_aliases
+       WHERE resource_id=? AND alias_type='legacy_exact_url'`,
+    )
+    .all(resource.id) as Array<{ locator: string }>;
+  if (exactAliases.some((alias) => alias.locator !== candidate.sourceUri)) {
+    throw recoveryAdmissionError(
+      "recovery_identity_conflict",
+      `candidate ${candidate.candidateId} is already bound to another exact identity`,
+    );
+  }
+  store.db
+    .query(
+      `INSERT INTO resource_aliases(
+         resource_id, alias_type, locator, evidence, first_observed_at,
+         last_observed_at
+       ) VALUES (?, 'legacy_exact_url', ?, 'frozen recovery candidate', ?, ?)
+       ON CONFLICT(resource_id, alias_type, locator) DO UPDATE SET
+         last_observed_at=excluded.last_observed_at`,
+    )
+    .run(resource.id, candidate.sourceUri, timestamp, timestamp);
+  store.db
+    .query(
+      `INSERT INTO resource_aliases(
+         resource_id, alias_type, locator, evidence, first_observed_at,
+         last_observed_at
+       ) VALUES (?, 'comparison_uri', ?, 'diagnostic comparison only', ?, ?)
+       ON CONFLICT(resource_id, alias_type, locator) DO UPDATE SET
+         last_observed_at=excluded.last_observed_at`,
+    )
+    .run(resource.id, candidate.comparisonUri, timestamp, timestamp);
+  return resource.id;
+}
+
+function ensureCandidateOutcome(
+  store: ResearchStore,
+  generation: VerifiedRecoveryGeneration,
+  candidate: VerifiedRecoveryCandidate,
+  resourceId: number,
+  timestamp: string,
+): boolean {
+  const existing = store.db
+    .query(
+      `SELECT id, raw_metadata FROM provenance
+       WHERE resource_id=? AND evidence_type='recovery_candidate_outcome'
+       ORDER BY id`,
+    )
+    .all(resourceId) as Array<{ id: number; raw_metadata: string | null }>;
+  const base = {
+    schema_version: 1,
+    candidate_evidence_row_id: candidate.candidateId,
+    disposition: candidate.disposition,
+    confidence: candidate.confidence,
+    reasons: candidate.reasons,
+    catalog_position: candidate.catalogPosition,
+    summary: candidate.artifact?.summary ?? null,
+    provenance_counts: candidate.provenanceCounts,
+  };
+  const matching: Array<{
+    id: number;
+    metadata: Record<string, unknown>;
+  }> = [];
+  for (const row of existing) {
+    let metadata: unknown;
+    try {
+      metadata = JSON.parse(row.raw_metadata ?? "null");
+    } catch {
+      throw recoveryAdmissionError(
+        "recovery_identity_conflict",
+        `candidate ${candidate.candidateId} has malformed durable outcome evidence`,
+      );
+    }
+    if (
+      metadata === null ||
+      typeof metadata !== "object" ||
+      typeof (metadata as Record<string, unknown>).candidate_evidence_row_id !==
+        "string"
+    ) {
+      throw recoveryAdmissionError(
+        "recovery_identity_conflict",
+        `candidate ${candidate.candidateId} has malformed durable outcome evidence`,
+      );
+    }
+    if (
+      (metadata as Record<string, unknown>).candidate_evidence_row_id ===
+      candidate.candidateId
+    ) {
+      matching.push({
+        id: row.id,
+        metadata: metadata as Record<string, unknown>,
+      });
+    }
+  }
+  if (matching.length > 1) {
+    throw recoveryAdmissionError(
+      "recovery_identity_conflict",
+      `candidate ${candidate.candidateId} has duplicate durable outcomes`,
+    );
+  }
+  if (matching.length === 0) {
+    store.db
+      .query(
+        `INSERT INTO provenance(
+           resource_id, evidence_type, ingress, raw_metadata, observed_at
+         ) VALUES (?, 'recovery_candidate_outcome', 'legacy-recovery', ?, ?)`,
+      )
+      .run(
+        resourceId,
+        JSON.stringify({ ...base, generation_ids: [generation.generationId] }),
+        timestamp,
+      );
+    return true;
+  }
+  const previous = matching[0].metadata;
+  if (previous.disposition !== candidate.disposition) {
+    throw recoveryAdmissionError(
+      "recovery_identity_conflict",
+      `candidate ${candidate.candidateId} conflicts with its durable outcome`,
+    );
+  }
+  const previousGenerations = Array.isArray(previous.generation_ids)
+    ? previous.generation_ids.filter(
+        (value): value is string => typeof value === "string",
+      )
+    : [];
+  const generations = [
+    ...new Set([...previousGenerations, generation.generationId]),
+  ].sort();
+  store.db
+    .query("UPDATE provenance SET raw_metadata=? WHERE id=?")
+    .run(
+      JSON.stringify({ ...base, generation_ids: generations }),
+      matching[0].id,
+    );
+  return false;
+}
+
+function ensureCatalogMembership(
+  store: ResearchStore,
+  candidate: VerifiedRecoveryCandidate,
+  resourceId: number,
+  context: RecoveryAdmissionContext,
+): void {
+  if (candidate.catalogPosition === null) return;
+  const byPosition = store.db
+    .query(
+      `SELECT resource_id, external_ref FROM collection_memberships
+       WHERE collection_id=? AND position=?`,
+    )
+    .get(context.collectionId, candidate.catalogPosition) as {
+    resource_id: number;
+    external_ref: string | null;
+  } | null;
+  const externalRef = `link-${String(candidate.catalogPosition).padStart(5, "0")}`;
+  if (
+    byPosition !== null &&
+    (byPosition.resource_id !== resourceId ||
+      byPosition.external_ref !== externalRef)
+  ) {
+    throw recoveryAdmissionError(
+      "recovery_catalog_conflict",
+      `catalog position ${candidate.catalogPosition} conflicts with existing evidence`,
+    );
+  }
+  const byResource = store.db
+    .query(
+      `SELECT position, external_ref FROM collection_memberships
+       WHERE collection_id=? AND resource_id=?`,
+    )
+    .get(context.collectionId, resourceId) as {
+    position: number | null;
+    external_ref: string | null;
+  } | null;
+  if (
+    byResource !== null &&
+    (byResource.position !== candidate.catalogPosition ||
+      byResource.external_ref !== externalRef)
+  ) {
+    throw recoveryAdmissionError(
+      "recovery_catalog_conflict",
+      `candidate ${candidate.candidateId} conflicts with existing catalog evidence`,
+    );
+  }
+  store.db
+    .query(
+      `INSERT OR IGNORE INTO collection_memberships(
+         collection_id, resource_id, position, external_ref, added_at
+       ) VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(
+      context.collectionId,
+      resourceId,
+      candidate.catalogPosition,
+      externalRef,
+      context.timestamp,
+    );
+}
+
+function ensureObservations(
+  store: ResearchStore,
+  candidate: VerifiedRecoveryCandidate,
+  resourceId: number,
+  context: RecoveryAdmissionContext,
+): { created: number; existing: number } {
+  let created = 0;
+  let existing = 0;
+  for (const observation of candidate.observations) {
+    const row = store.db
+      .query(
+        `SELECT id FROM observations
+         WHERE resource_id=? AND ingress='agentbot-secretary'
+           AND observed_locator=? AND parent_resource_id IS NULL`,
+      )
+      .get(resourceId, observation.observationId);
+    if (row === null) {
+      store.db
+        .query(
+          `INSERT INTO observations(
+             resource_id, source_id, run_id, ingress, observed_locator,
+             suppressed, observed_at
+           ) VALUES (?, ?, ?, 'agentbot-secretary', ?, 0, ?)`,
+        )
+        .run(
+          resourceId,
+          context.sourceId,
+          context.runId,
+          observation.observationId,
+          context.timestamp,
+        );
+      created += 1;
+    } else {
+      existing += 1;
+    }
+    const evidenceType = `secretary_observation:${observation.observationId}`;
+    const provenance = store.db
+      .query(
+        `SELECT id FROM provenance
+         WHERE resource_id=? AND evidence_type=?`,
+      )
+      .get(resourceId, evidenceType);
+    if (provenance === null) {
+      store.db
+        .query(
+          `INSERT INTO provenance(
+             resource_id, evidence_type, source_id, run_id, ingress,
+             raw_metadata, observed_at
+           ) VALUES (?, ?, ?, ?, 'agentbot-secretary', ?, ?)`,
+        )
+        .run(
+          resourceId,
+          evidenceType,
+          context.sourceId,
+          context.runId,
+          JSON.stringify({
+            schema_version: 1,
+            observation_id: observation.observationId,
+            fields: observation.fields,
+            observed_in: observation.observedIn,
+            sender_kind: observation.senderKind,
+            soft_deleted_provenance: observation.softDeletedProvenance,
+          }),
+          context.timestamp,
+        );
+    }
+  }
+  return { created, existing };
+}
+
+function ensureImportedArtifact(
+  store: ResearchStore,
+  candidate: VerifiedRecoveryCandidate,
+  resourceId: number,
+  context: RecoveryAdmissionContext,
+  stored: StoredArtifact,
+): { created: boolean; existing: boolean } {
+  if (candidate.artifact === null) {
+    throw recoveryAdmissionError(
+      "recovery_artifact_missing",
+      `candidate ${candidate.candidateId} has no approved Artifact`,
+    );
+  }
+  let artifact = store.db
+    .query(
+      `SELECT id, media_type, byte_size, storage_path FROM artifacts
+       WHERE content_hash=? AND artifact_role='imported_markdown'`,
+    )
+    .get(stored.contentDigest) as {
+    id: number;
+    media_type: string;
+    byte_size: number;
+    storage_path: string | null;
+  } | null;
+  let created = false;
+  if (artifact === null) {
+    const inserted = store.db
+      .query(
+        `INSERT INTO artifacts(
+           content_hash, media_type, byte_size, artifact_role, sensitivity,
+           storage_path, created_at
+         ) VALUES (?, 'text/markdown; charset=utf-8', ?,
+                   'imported_markdown', ?, ?, ?)`,
+      )
+      .run(
+        stored.contentDigest,
+        stored.byteSize,
+        candidate.sensitivity,
+        stored.storagePath,
+        context.timestamp,
+      );
+    artifact = {
+      id: Number(inserted.lastInsertRowid),
+      media_type: "text/markdown; charset=utf-8",
+      byte_size: stored.byteSize,
+      storage_path: stored.storagePath,
+    };
+    created = true;
+  } else if (
+    artifact.media_type !== "text/markdown; charset=utf-8" ||
+    artifact.byte_size !== stored.byteSize ||
+    artifact.storage_path !== stored.storagePath
+  ) {
+    throw recoveryAdmissionError(
+      "recovery_artifact_conflict",
+      `candidate ${candidate.candidateId} conflicts with stored Artifact metadata`,
+    );
+  }
+  store.db
+    .query(
+      `INSERT OR IGNORE INTO resource_artifacts(
+         resource_id, artifact_id, observed_at
+       ) VALUES (?, ?, ?)`,
+    )
+    .run(resourceId, artifact.id, context.timestamp);
+  const provenance = store.db
+    .query(
+      `SELECT id FROM provenance
+       WHERE resource_id=? AND evidence_type='legacy_markdown_import'
+         AND artifact_id=?`,
+    )
+    .get(resourceId, artifact.id);
+  if (provenance === null) {
+    store.db
+      .query(
+        `INSERT INTO provenance(
+           resource_id, evidence_type, source_id, run_id, artifact_id, ingress,
+           raw_metadata, observed_at
+         ) VALUES (?, 'legacy_markdown_import', ?, ?, ?, 'legacy-recovery', ?, ?)`,
+      )
+      .run(
+        resourceId,
+        context.sourceId,
+        context.runId,
+        artifact.id,
+        JSON.stringify({
+          schema_version: 1,
+          candidate_evidence_row_id: candidate.candidateId,
+          source_sha256: candidate.artifact.sourceDigest,
+          source_byte_size: candidate.artifact.sourceByteSize,
+          summary: candidate.artifact.summary,
+          frontmatter_removed: true,
+        }),
+        context.timestamp,
+      );
+  }
+  return { created, existing: !created };
+}
+
+function ensureRecoveryJob(
+  store: ResearchStore,
+  candidate: VerifiedRecoveryCandidate,
+  resourceId: number,
+  context: RecoveryAdmissionContext,
+  stored: StoredArtifact | null,
+): { created: boolean; existing: boolean } {
+  const targetState = recoveryJobState(candidate.disposition);
+  if (targetState === null) return { created: false, existing: false };
+  const intent =
+    targetState === "queued"
+      ? recoveryFileIntent(
+          candidate,
+          (stored as StoredArtifact).contentDigest,
+          (stored as StoredArtifact).byteSize,
+        )
+      : recoveryUrlIntent(candidate);
+  const kind = targetState === "queued" ? "file" : "url";
+  const idempotencyKey = `${RECOVERY_JOB_PREFIX}${candidate.candidateId}`;
+  const existing = store.db
+    .query(
+      `SELECT id, kind, intent, resource_id FROM jobs
+       WHERE idempotency_key=?`,
+    )
+    .get(idempotencyKey) as {
+    id: number;
+    kind: string;
+    intent: string | null;
+    resource_id: number | null;
+  } | null;
+  if (existing !== null) {
+    if (
+      existing.kind !== kind ||
+      existing.intent !== intent ||
+      existing.resource_id !== resourceId
+    ) {
+      throw recoveryAdmissionError(
+        "recovery_idempotency_conflict",
+        `candidate ${candidate.candidateId} conflicts with an existing ingestion job`,
+      );
+    }
+    return { created: false, existing: true };
+  }
+  const blockReason =
+    targetState === "blocked"
+      ? `recovery disposition ${candidate.disposition}`
+      : null;
+  const inserted = store.db
+    .query(
+      `INSERT INTO jobs(
+         idempotency_key, kind, intent, resource_id, source_id, run_id, state,
+         sensitivity, run_at, block_reason, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      idempotencyKey,
+      kind,
+      intent,
+      resourceId,
+      context.sourceId,
+      context.runId,
+      targetState,
+      candidate.sensitivity,
+      context.timestamp,
+      blockReason,
+      context.timestamp,
+      context.timestamp,
+    );
+  store.db
+    .query(
+      `INSERT INTO job_transitions(
+         job_id, from_state, to_state, actor, reason, detail, created_at
+       ) VALUES (?, NULL, ?, 'legacy-recovery', 'admitted', NULL, ?)`,
+    )
+    .run(Number(inserted.lastInsertRowid), targetState, context.timestamp);
+  return { created: true, existing: false };
+}
+
+function admitRecoveryCandidate(
+  store: ResearchStore,
+  generation: VerifiedRecoveryGeneration,
+  candidate: VerifiedRecoveryCandidate,
+  context: RecoveryAdmissionContext,
+  artifactStore: ArtifactStore,
+): RecoveryCandidateEffect {
+  const stored =
+    candidate.disposition === "import_offline" && candidate.artifact !== null
+      ? artifactStore.captureBytes(candidate.artifact.body, {
+          expectedDigest: candidate.artifact.bodyDigest,
+          maxBytes: candidate.artifact.bodyByteSize,
+        })
+      : null;
+  const transaction = store.db.transaction((): RecoveryCandidateEffect => {
+    const resourceId = ensureRecoveryResource(
+      store,
+      candidate,
+      context.timestamp,
+    );
+    const outcomeCreated = ensureCandidateOutcome(
+      store,
+      generation,
+      candidate,
+      resourceId,
+      context.timestamp,
+    );
+    ensureCatalogMembership(store, candidate, resourceId, context);
+    const observations = ensureObservations(
+      store,
+      candidate,
+      resourceId,
+      context,
+    );
+    const artifact =
+      stored === null
+        ? { created: false, existing: false }
+        : ensureImportedArtifact(store, candidate, resourceId, context, stored);
+    const job = ensureRecoveryJob(
+      store,
+      candidate,
+      resourceId,
+      context,
+      stored,
+    );
+    return {
+      outcomeCreated,
+      observationsCreated: observations.created,
+      observationsExisting: observations.existing,
+      artifactCreated: artifact.created,
+      artifactExisting: artifact.existing,
+      jobCreated: job.created,
+      jobExisting: job.existing,
+    };
+  });
+  return transaction.immediate();
+}
+
+function recoveryReport(
+  generation: VerifiedRecoveryGeneration,
+  dryRun: boolean,
+  runId: number | null,
+  effects: {
+    outcomesCreated: number;
+    outcomesExisting: number;
+    observationsCreated: number;
+    observationsExisting: number;
+    artifactsCreated: number;
+    artifactsExisting: number;
+    jobsCreated: number;
+    jobsExisting: number;
+  },
+): RecoveryImportReport {
+  return {
+    schema_version: 1,
+    status: dryRun ? "verified" : "queued",
+    dry_run: dryRun,
+    generation_id: generation.generationId,
+    counts: { ...generation.counts },
+    dispositions: { ...generation.dispositionCounts },
+    jobs: {
+      queued: generation.counts.approved_offline_artifacts,
+      blocked:
+        generation.counts.approved_online_jobs +
+        generation.counts.blocked_review_jobs,
+      excluded: generation.counts.excluded_candidates,
+      evidence_only: generation.counts.evidence_only_candidates,
+      created: effects.jobsCreated,
+      existing: effects.jobsExisting,
+    },
+    effects: {
+      candidate_outcomes_created: effects.outcomesCreated,
+      candidate_outcomes_existing: effects.outcomesExisting,
+      observations_created: effects.observationsCreated,
+      observations_existing: effects.observationsExisting,
+      artifacts_created: effects.artifactsCreated,
+      artifacts_existing: effects.artifactsExisting,
+    },
+    run: { id: runId, state: dryRun ? "verified" : "pending" },
+  };
+}
+
+export function admitRecoveryGeneration(
+  store: ResearchStore | null,
+  generation: VerifiedRecoveryGeneration,
+  options: RecoveryAdmissionOptions = {},
+): RecoveryImportReport {
+  if (options.dryRun === true) {
+    return recoveryReport(generation, true, null, {
+      outcomesCreated: 0,
+      outcomesExisting: 0,
+      observationsCreated: 0,
+      observationsExisting: 0,
+      artifactsCreated: 0,
+      artifactsExisting: 0,
+      jobsCreated: 0,
+      jobsExisting: 0,
+    });
+  }
+  if (store === null) {
+    throw recoveryAdmissionError(
+      "recovery_admission_failed",
+      "a writable Index owner is required for recovery admission",
+    );
+  }
+  const timestamp = (options.now ?? new Date()).toISOString();
+  const context = ensureRecoveryContext(store, generation, timestamp);
+  const artifactStore = options.artifactStore ?? new ArtifactStore();
+  const effects = {
+    outcomesCreated: 0,
+    outcomesExisting: 0,
+    observationsCreated: 0,
+    observationsExisting: 0,
+    artifactsCreated: 0,
+    artifactsExisting: 0,
+    jobsCreated: 0,
+    jobsExisting: 0,
+  };
+  for (const candidate of generation.candidates) {
+    const effect = admitRecoveryCandidate(
+      store,
+      generation,
+      candidate,
+      context,
+      artifactStore,
+    );
+    if (effect.outcomeCreated) effects.outcomesCreated += 1;
+    else effects.outcomesExisting += 1;
+    effects.observationsCreated += effect.observationsCreated;
+    effects.observationsExisting += effect.observationsExisting;
+    if (effect.artifactCreated) effects.artifactsCreated += 1;
+    if (effect.artifactExisting) effects.artifactsExisting += 1;
+    if (effect.jobCreated) effects.jobsCreated += 1;
+    if (effect.jobExisting) effects.jobsExisting += 1;
+  }
+  return recoveryReport(generation, false, context.runId, effects);
 }
 
 export async function waitForAdmission(

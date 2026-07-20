@@ -160,6 +160,7 @@ export async function ingestSource(
       sourceUri,
       title: options.title || titleFromMarkdown(sourceUri, scraped.markdown),
       content: scraped.markdown,
+      mediaType: "text/markdown",
       tags: options.tags,
       notes: options.notes,
       force: options.force,

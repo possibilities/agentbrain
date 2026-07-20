@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import type { DurableSubmissionIntent } from "./admission";
+import { type DurableSubmissionIntent, RECOVERY_JOB_PREFIX } from "./admission";
 import {
   ArtifactStore,
   ArtifactStoreError,
@@ -48,6 +48,7 @@ export interface MaterializedDocument {
   content: string;
   tags?: string[];
   notes?: string;
+  mediaType?: string;
   artifactDigest?: string;
   resourceKey?: { type: string; value: string };
   aliases?: Array<{ type: string; locator: string; evidence: string }>;
@@ -386,6 +387,7 @@ function urlDocument(
       (extraction.metadata.title ||
         titleFromMarkdown(sourceUri, extraction.artifacts[0].content)),
     content: extraction.artifacts[0].content,
+    mediaType: record.artifact.media_type,
     tags: intent.options.tags,
     notes: intent.options.notes,
     resourceKey,
@@ -497,6 +499,7 @@ export const defaultMaterializer: JobMaterializer = async (
           ? "Pasted note"
           : `Captured Artifact ${artifact.content_digest.slice(0, 12)}`),
       content,
+      mediaType: artifact.media_type,
       artifactDigest: artifact.content_digest,
       ...common,
     };
@@ -546,50 +549,104 @@ function applyDocuments(
   let firstResourceId: number | null = null;
   const timestamp = observedAt.toISOString();
   for (const [index, document] of documents.entries()) {
+    const recoveryJob =
+      intent.ingress === "legacy-recovery" &&
+      job.idempotency_key.startsWith(RECOVERY_JOB_PREFIX);
+    const recoveryResource =
+      recoveryJob && job.resource_id !== null
+        ? (store.db
+            .query(
+              `SELECT r.id, r.kind, r.sensitivity, ra.locator
+               FROM resources r
+               JOIN resource_aliases ra ON ra.resource_id=r.id
+                 AND ra.alias_type='legacy_exact_url'
+               WHERE r.id=?`,
+            )
+            .get(job.resource_id) as {
+            id: number;
+            kind: string;
+            sensitivity: Sensitivity;
+            locator: string;
+          } | null)
+        : null;
+    if (recoveryJob && recoveryResource === null) {
+      throw new Error("legacy recovery job has no exact Resource identity");
+    }
     const indexed = store.upsertDocument({
-      sourceType: document.sourceType,
-      sourceUri: document.sourceUri,
+      sourceType: recoveryResource?.kind ?? document.sourceType,
+      sourceUri: recoveryResource?.locator ?? document.sourceUri,
       title: document.title,
       content: document.content,
       tags: document.tags,
       notes: document.notes,
+      mediaType: document.mediaType ?? document.artifact?.mediaType,
+      revisionDigest:
+        document.artifactDigest ?? document.artifact?.contentDigest,
       force: intent.options.force,
     });
-    const resourceKey = document.resourceKey ?? {
-      type: "ingestion_job_item",
-      value: `${job.id}:${index + 1}`,
-    };
-    store.db
-      .query(
-        `INSERT INTO resources(
-           key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(key_type, key_value) DO UPDATE SET
-           document_id=excluded.document_id,
-           sensitivity=CASE
-             WHEN (SELECT rank FROM sensitivity_levels WHERE level=excluded.sensitivity) >
-                  (SELECT rank FROM sensitivity_levels WHERE level=resources.sensitivity)
-             THEN excluded.sensitivity ELSE resources.sensitivity END,
-           updated_at=excluded.updated_at`,
-      )
-      .run(
-        resourceKey.type,
-        resourceKey.value,
-        job.kind,
-        job.sensitivity,
-        indexed.document_id,
-        timestamp,
-        timestamp,
-      );
-    const resource = store.db
-      .query(
-        "SELECT id, sensitivity FROM resources WHERE key_type=? AND key_value=?",
-      )
-      .get(resourceKey.type, resourceKey.value) as {
-      id: number;
-      sensitivity: Sensitivity;
-    };
-    if (firstResourceId === null) firstResourceId = resource.id;
+    let resource: { id: number; sensitivity: Sensitivity };
+    if (recoveryResource !== null) {
+      const documentOwner = store.db
+        .query("SELECT id, sensitivity FROM resources WHERE document_id=?")
+        .get(indexed.document_id) as {
+        id: number;
+        sensitivity: Sensitivity;
+      } | null;
+      if (documentOwner === null || documentOwner.id === recoveryResource.id) {
+        store.db
+          .query("UPDATE resources SET document_id=?, updated_at=? WHERE id=?")
+          .run(indexed.document_id, timestamp, recoveryResource.id);
+        resource = recoveryResource;
+      } else {
+        const sensitivity =
+          SENSITIVITY_RANK[recoveryResource.sensitivity] >
+          SENSITIVITY_RANK[documentOwner.sensitivity]
+            ? recoveryResource.sensitivity
+            : documentOwner.sensitivity;
+        store.db
+          .query("UPDATE resources SET sensitivity=?, updated_at=? WHERE id=?")
+          .run(sensitivity, timestamp, documentOwner.id);
+        resource = { id: documentOwner.id, sensitivity };
+      }
+    } else {
+      const resourceKey = document.resourceKey ?? {
+        type: "ingestion_job_item",
+        value: `${job.id}:${index + 1}`,
+      };
+      store.db
+        .query(
+          `INSERT INTO resources(
+             key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(key_type, key_value) DO UPDATE SET
+             document_id=excluded.document_id,
+             sensitivity=CASE
+               WHEN (SELECT rank FROM sensitivity_levels WHERE level=excluded.sensitivity) >
+                    (SELECT rank FROM sensitivity_levels WHERE level=resources.sensitivity)
+               THEN excluded.sensitivity ELSE resources.sensitivity END,
+             updated_at=excluded.updated_at`,
+        )
+        .run(
+          resourceKey.type,
+          resourceKey.value,
+          job.kind,
+          job.sensitivity,
+          indexed.document_id,
+          timestamp,
+          timestamp,
+        );
+      resource = store.db
+        .query(
+          "SELECT id, sensitivity FROM resources WHERE key_type=? AND key_value=?",
+        )
+        .get(resourceKey.type, resourceKey.value) as {
+        id: number;
+        sensitivity: Sensitivity;
+      };
+    }
+    if (firstResourceId === null) {
+      firstResourceId = recoveryResource?.id ?? resource.id;
+    }
     const aliases = [
       {
         type: "materialized_uri",
@@ -880,7 +937,6 @@ export async function runWorker(
           controller.abort();
         }
       }, heartbeatMs);
-      let completing = false;
       try {
         const intent = parseIntent(claim.job);
         const documents = await materialize(claim.job, intent, {
@@ -892,7 +948,6 @@ export async function runWorker(
           result.fenced += 1;
           continue;
         }
-        completing = true;
         const completionTime = now();
         const completed = store.completeJob({
           fencingToken: claim.fencing_token,
@@ -937,7 +992,7 @@ export async function runWorker(
         }
         const failed = store.failAttempt({
           fencingToken: claim.fencing_token,
-          failureClass: completing ? "infra" : classifyFailure(error),
+          failureClass: classifyFailure(error),
           summary: sanitizeExternalError(error),
           now: now(),
           policy: options.policy,

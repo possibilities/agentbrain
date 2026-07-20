@@ -290,3 +290,39 @@ test("typed retrieval filters, deduplicates resources, and keeps relations separ
   ).toEqual(counts);
   after.close();
 });
+
+test("Markdown retrieval includes heading breadcrumbs without changing text token search", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-query-markdown-"));
+  tempDirs.push(dir);
+  const path = join(dir, "research.db");
+  const store = new ResearchStore(path);
+  const markdown = store.upsertDocument({
+    sourceType: "file",
+    sourceUri: "/vault/structured.md",
+    content: `# Parent Breadcrumb\n\n## Child Section\n\nleafexacttoken appears here.`,
+  });
+  const text = store.upsertDocument({
+    sourceType: "text",
+    sourceUri: "text:exact-token",
+    content: "nonmarkdownexacttoken remains searchable",
+  });
+  store.close();
+
+  const cache = new ResearchCache(path);
+  const context = cache.context({
+    query: "leafexacttoken",
+    maxChars: 1000,
+  });
+  expect(context.hits).toHaveLength(1);
+  expect(context.hits[0]).toMatchObject({
+    document_id: markdown.document_id,
+  });
+  expect(context.hits[0].content).toStartWith(
+    "# Parent Breadcrumb\n## Child Section\n\n",
+  );
+  expect(
+    cache.search({ query: "nonmarkdownexacttoken", mode: "all" }).results[0]
+      .document_id,
+  ).toBe(text.document_id);
+  cache.close();
+});

@@ -39,6 +39,14 @@ export const COMMANDS = [
     summary: "Check database, Artifact, lease, and provider health",
   },
   {
+    name: "backup",
+    summary: "Create and verify private SQLite recovery snapshots",
+  },
+  {
+    name: "recovery",
+    summary: "Verify and durably admit a frozen legacy recovery generation",
+  },
+  {
     name: "delete",
     summary: "Delete one selected document with explicit confirmation",
   },
@@ -85,6 +93,9 @@ Agent defaults:
 Search/get/stats/tags/sources/context use structurally read-only SQLite connections.
 Agentbrain submit is the durable admission boundary. Accepted intents are queued before any
 extraction or indexing; Scrapectl remains the sole URL extraction and network boundary.
+Backup creation uses a SQLite-consistent snapshot and never copies a live WAL file.
+Recovery import verifies the complete frozen generation and local Artifact hashes before
+admission; --dry-run writes no database or Artifact state and performs no network work.
 Use --help on any command for command-specific options. Job inspection omits durable
 intent bodies and URLs unless jobs show is given the audited --reveal-content option.
 `;
@@ -254,6 +265,61 @@ List, ordinary show, and stats are structurally read-only and omit durable inten
 Artifact bodies, raw URLs, query values, worker names, and detailed diagnostics.
 --reveal-content explicitly reads Artifact bodies and appends a sensitive-inspection
 audit record. Retry, cancel, and exclude append transitions and preserve all attempts.
+`,
+  backup: `agentbrain backup — create and verify recovery snapshots
+
+Usage:
+  agentbrain backup create <backup-path> [--artifact-root PATH] [--json]
+  agentbrain backup create --output <backup-path> [--artifact-root PATH] [--json]
+  agentbrain backup verify <backup-path> [--artifact-root PATH] [--json]
+  agentbrain backup verify --backup <backup-path> [--artifact-root PATH] [--json]
+
+Subcommands:
+  create              Publish a private, SQLite-consistent backup bundle
+  verify              Restore into isolation and run all recovery checks
+
+Options:
+  --output <path>      Backup destination for create; it must not already exist
+  --backup <path>      Backup bundle to verify
+  --artifact-root <p>  Artifact store to check (default: configured local store on
+                       create; source path recorded in the manifest on verify)
+
+The bundle contains database.sqlite and a body-free manifest with schema, timestamps,
+source paths, configuration, and required Artifact digests/references. Creation uses
+SQLite VACUUM INTO through the Index owner's writable store, so committed WAL state is
+captured without stopping the Worker permanently. Publication is atomic and never
+replaces an existing backup.
+
+Verification never opens or migrates the source database. It copies snapshot bytes into
+a private temporary restore, runs SQLite integrity and schema checks, reconciles the
+Artifact reference manifest, verifies each required Artifact digest, and proves that FTS
+can be rebuilt from retained indexed content. The temporary restore is always removed.
+Verification exits 1 if any check fails.
+`,
+  recovery: `agentbrain recovery — frozen legacy recovery admission
+
+Usage:
+  agentbrain recovery import --manifest-generation PATH [options]
+
+Options:
+  --manifest-generation <path>  Atomic generation pointer, directory, or generation.json
+  --artifact-root <path>         Declared root for legacy Markdown; repeatable
+  --artifact-store <path>        Destination Artifact store for admitted searchable bodies
+  --dry-run                      Verify all descriptors, hashes, rows, and frontmatter only
+  --json                         Emit a count-only stable envelope
+
+The importer accepts only the hash-bound 1,088-row frozen recovery contract. It verifies
+all generation files and approved local Markdown without invoking Scrapectl or any other
+network backend. Linkctl frontmatter is parsed locally; its exact URL must match the
+candidate, while only the frontmatter-free body enters the Artifact store.
+
+Dry-run performs no database or Artifact-store writes. Admission creates one pending
+recovery Run, stable candidate outcomes, 584 ordered legacy-links memberships, body-free
+Secretary observations, 581 runnable offline jobs, 11 blocked jobs, and 37 exclusions.
+The two controlled-online jobs remain blocked until a separate run explicitly authorizes
+egress. Comparison URIs are diagnostic aliases only and never merge candidate outcomes.
+Output contains opaque generation IDs and aggregate counts, never exact candidate URLs,
+private locators, message bodies, credentials, or filesystem paths.
 `,
   doctor: `agentbrain doctor — operational health checks
 

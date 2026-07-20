@@ -12,11 +12,16 @@ import { isSafeArtifactStoragePath, SHA256_DIGEST_PATTERN } from "./artifacts";
 import { CliError } from "./errors";
 import { sanitizeExternalError } from "./sanitize";
 import {
+  chunkMarkdown,
   chunkText,
+  cleanMarkdown,
   cleanText,
   codePointLength,
+  isMarkdownContent,
+  MARKDOWN_CHUNKER_VERSION,
   normalizeTags,
   sha256Text,
+  TEXT_CHUNKER_VERSION,
 } from "./text";
 import type {
   Artifact,
@@ -36,7 +41,7 @@ import type {
   Sensitivity,
 } from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 6;
+export const RESEARCH_SCHEMA_VERSION = 7;
 
 /**
  * Default lease and retry policy. Durations are policy, not identity: callers
@@ -89,6 +94,8 @@ export interface UpsertDocumentInput {
   content: string;
   tags?: unknown;
   notes?: string | null;
+  mediaType?: string | null;
+  revisionDigest?: string | null;
   force?: boolean;
 }
 
@@ -522,6 +529,35 @@ const MIGRATION_V6 = `
   UPDATE meta SET value='6' WHERE key='schema_version';
 `;
 
+const MIGRATION_V7 = `
+  ALTER TABLE documents ADD COLUMN revision_digest TEXT NOT NULL DEFAULT '';
+  ALTER TABLE chunks ADD COLUMN structural_anchor TEXT NOT NULL DEFAULT '';
+  ALTER TABLE chunks ADD COLUMN heading_path TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE chunks ADD COLUMN start_line INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE chunks ADD COLUMN end_line INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE chunks ADD COLUMN block_types TEXT NOT NULL DEFAULT '["text"]';
+  ALTER TABLE chunks ADD COLUMN revision_digest TEXT NOT NULL DEFAULT '';
+  ALTER TABLE chunks ADD COLUMN chunker_version TEXT NOT NULL DEFAULT 'legacy-v1';
+  ALTER TABLE chunks ADD COLUMN chunk_digest TEXT NOT NULL DEFAULT '';
+  ALTER TABLE chunks ADD COLUMN duplicate_ordinal INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE chunks ADD COLUMN chunk_identity TEXT NOT NULL DEFAULT '';
+  UPDATE documents SET revision_digest=content_hash WHERE revision_digest='';
+  UPDATE chunks SET
+    structural_anchor='legacy:' || chunk_index,
+    revision_digest=(
+      SELECT documents.content_hash FROM documents WHERE documents.id=chunks.document_id
+    ),
+    chunk_digest='legacy:' || id,
+    duplicate_ordinal=chunk_index,
+    chunk_identity='legacy:' || document_id || ':' || chunk_index
+  WHERE chunk_identity='';
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_identity
+    ON chunks(document_id, chunk_identity);
+  CREATE INDEX IF NOT EXISTS idx_chunks_digest
+    ON chunks(document_id, chunk_digest, duplicate_ordinal);
+  UPDATE meta SET value='7' WHERE key='schema_version';
+`;
+
 const MEDIA_TYPE_PATTERN =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[ -~]+)?$/;
 
@@ -639,16 +675,42 @@ export class ResearchStore {
     this.db.close();
   }
 
+  /**
+   * Create a transactionally consistent, standalone SQLite image. VACUUM INTO
+   * takes its own read snapshot, so committed WAL state is included while
+   * concurrent readers and the Index owner's later writes may continue.
+   * The caller must provide a new path and is responsible for atomic
+   * publication of the completed image.
+   */
+  createConsistentSnapshot(destinationPath: string): void {
+    this.db.query("VACUUM main INTO ?").run(destinationPath);
+  }
+
   upsertDocument(input: UpsertDocumentInput): UpsertDocumentResult {
-    const content = cleanText(input.content);
+    const sourceType = (input.sourceType || "unknown").trim().toLowerCase();
+    const sourceUri = String(input.sourceUri || "").trim();
+    if (sourceUri.length === 0) throw new Error("source_uri is required");
+    const markdown = isMarkdownContent({
+      sourceType,
+      sourceUri,
+      mediaType: input.mediaType,
+      content: input.content,
+    });
+    const content = markdown
+      ? cleanMarkdown(input.content)
+      : cleanText(input.content);
     if (content.length === 0) throw new Error("no extractable text content");
     const tags = normalizeTags(input.tags);
     const tagsJson = pythonStyleTagJson(tags);
     const hash = sha256Text(content);
+    const revisionDigest = input.revisionDigest?.trim().toLowerCase() || hash;
+    if (!SHA256_DIGEST_PATTERN.test(revisionDigest)) {
+      throw new Error("revision_digest must be a lowercase SHA-256 digest");
+    }
+    const chunkerVersion = markdown
+      ? MARKDOWN_CHUNKER_VERSION
+      : TEXT_CHUNKER_VERSION;
     const sizeChars = codePointLength(content);
-    const sourceType = (input.sourceType || "unknown").trim().toLowerCase();
-    const sourceUri = String(input.sourceUri || "").trim();
-    if (sourceUri.length === 0) throw new Error("source_uri is required");
     const title = limitCodePoints(
       (input.title || titleFromSource(sourceUri) || "Untitled").trim(),
       500,
@@ -658,19 +720,29 @@ export class ResearchStore {
     const transaction = this.db.transaction((): UpsertDocumentResult => {
       const existing = this.db
         .query(
-          "SELECT id, title, tags, notes, content_hash FROM documents WHERE source_type=? AND source_uri=?",
+          `SELECT id, title, tags, notes, content_hash, revision_digest,
+                  (SELECT COUNT(*) FROM chunks c WHERE c.document_id=documents.id) AS chunk_count,
+                  (SELECT COUNT(*) FROM chunks c
+                   WHERE c.document_id=documents.id AND c.chunker_version=?) AS generation_count
+           FROM documents WHERE source_type=? AND source_uri=?`,
         )
-        .get(sourceType, sourceUri) as {
+        .get(chunkerVersion, sourceType, sourceUri) as {
         id: number;
         title: string | null;
         tags: string;
         notes: string | null;
         content_hash: string;
+        revision_digest: string;
+        chunk_count: number;
+        generation_count: number;
       } | null;
 
       if (
         existing !== null &&
         existing.content_hash === hash &&
+        existing.revision_digest === revisionDigest &&
+        existing.chunk_count > 0 &&
+        existing.generation_count === existing.chunk_count &&
         existing.title === title &&
         existing.tags === tagsJson &&
         (existing.notes ?? "") === notes &&
@@ -702,7 +774,8 @@ export class ResearchStore {
         this.db
           .query(
             `UPDATE documents
-             SET title=?, tags=?, notes=?, content=?, content_hash=?, size_chars=?, updated_at=?
+             SET title=?, tags=?, notes=?, content=?, content_hash=?, revision_digest=?,
+                 size_chars=?, updated_at=?
              WHERE id=?`,
           )
           .run(
@@ -711,6 +784,7 @@ export class ResearchStore {
             notes,
             content,
             hash,
+            revisionDigest,
             sizeChars,
             timestamp,
             documentId,
@@ -721,8 +795,8 @@ export class ResearchStore {
           .query(
             `INSERT INTO documents(
                source_type, source_uri, title, tags, notes, content, content_hash,
-               size_chars, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               revision_digest, size_chars, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             sourceType,
@@ -732,6 +806,7 @@ export class ResearchStore {
             notes,
             content,
             hash,
+            revisionDigest,
             sizeChars,
             timestamp,
             timestamp,
@@ -739,14 +814,36 @@ export class ResearchStore {
         documentId = Number(inserted.lastInsertRowid);
       }
 
-      const chunks = chunkText(content);
+      const chunks = markdown
+        ? chunkMarkdown(content, undefined, revisionDigest)
+        : chunkText(content, undefined, undefined, revisionDigest);
       for (const [index, chunk] of chunks.entries()) {
         const inserted = this.db
           .query(
-            `INSERT INTO chunks(document_id, chunk_index, start_char, end_char, content)
-             VALUES (?, ?, ?, ?, ?)`,
+            `INSERT INTO chunks(
+               document_id, chunk_index, start_char, end_char, content,
+               structural_anchor, heading_path, start_line, end_line, block_types,
+               revision_digest, chunker_version, chunk_digest, duplicate_ordinal,
+               chunk_identity
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run(documentId, index, chunk.start, chunk.end, chunk.content);
+          .run(
+            documentId,
+            index,
+            chunk.start,
+            chunk.end,
+            chunk.content,
+            chunk.structuralAnchor,
+            JSON.stringify(chunk.headingPath),
+            chunk.startLine,
+            chunk.endLine,
+            JSON.stringify(chunk.blockTypes),
+            revisionDigest,
+            chunk.chunkerVersion,
+            chunk.chunkDigest,
+            chunk.duplicateOrdinal,
+            chunk.chunkIdentity,
+          );
         const chunkId = Number(inserted.lastInsertRowid);
         this.db
           .query(
@@ -1545,6 +1642,8 @@ export class ResearchStore {
       tags: input.tags,
       notes: input.notes,
       content,
+      mediaType: artifact.media_type,
+      revisionDigest: artifact.content_hash,
       force: true,
     });
     if (input.resourceId !== undefined) {
@@ -2298,6 +2397,7 @@ export class ResearchStore {
         if (version < 4) this.db.exec(MIGRATION_V4);
         if (version < 5) this.db.exec(MIGRATION_V5);
         if (version < 6) this.db.exec(MIGRATION_V6);
+        if (version < 7) this.db.exec(MIGRATION_V7);
       })
       .immediate();
   }

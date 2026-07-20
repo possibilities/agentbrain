@@ -822,6 +822,12 @@ export class ResearchCache {
         `research cache schema version ${version} is newer than supported version ${RESEARCH_SCHEMA_VERSION}`,
       );
     }
+    if (version < RESEARCH_SCHEMA_VERSION) {
+      throw new CliError(
+        "unsupported_schema_version",
+        `research cache schema version ${version} is older than supported version ${RESEARCH_SCHEMA_VERSION}`,
+      );
+    }
   }
 
   private tableExists(name: string): boolean {

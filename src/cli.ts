@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import {
   type AdmissionResult,
+  admitRecoveryGeneration,
   admitSubmission,
   DEFAULT_WAIT_TIMEOUT_MS,
   SUBMISSION_VERSION,
@@ -15,6 +16,8 @@ import {
   parseOptions,
   parseTopLevel,
 } from "./args";
+import { ArtifactStore, defaultArtifactRoot } from "./artifacts";
+import { createBackup, verifyBackup } from "./backup";
 import { ResearchCache } from "./db";
 import { CliError } from "./errors";
 import { errorEnvelope, formatList, writeByFormat, writeJson } from "./format";
@@ -30,6 +33,7 @@ import {
   safeJobView,
   showJob,
 } from "./jobs";
+import { readRecoveryGeneration } from "./recovery";
 import {
   humanChunk,
   humanContext,
@@ -149,6 +153,16 @@ async function runParsed(
 
   if (command === "jobs") {
     await runJobs(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);
+    return;
+  }
+
+  if (command === "backup") {
+    runBackup(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);
+    return;
+  }
+
+  if (command === "recovery") {
+    runRecovery(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);
     return;
   }
 
@@ -607,6 +621,163 @@ async function runJobs(
       data,
       globals,
       (value) => `${JSON.stringify(value, null, 2)}\n`,
+      { readOnly: false },
+    );
+  } finally {
+    store.close();
+  }
+}
+
+function runBackup(
+  dbPath: string,
+  argv: string[],
+  globals: GlobalOptions,
+): void {
+  const subcommand = argv[0];
+  if (subcommand !== "create" && subcommand !== "verify") {
+    throw new CliError(
+      "bad_backup_command",
+      "backup requires a create or verify subcommand",
+      { exitCode: 2, hint: "Run `agentbrain help backup` for usage." },
+    );
+  }
+  const opts = parseOptions(argv.slice(1), {
+    output: { type: "string" },
+    backup: { type: "string" },
+    "artifact-root": { type: "string" },
+  });
+  const namedTarget =
+    subcommand === "create"
+      ? optString(opts, "output")
+      : optString(opts, "backup");
+  const wrongNamedTarget =
+    subcommand === "create"
+      ? optString(opts, "backup")
+      : optString(opts, "output");
+  if (
+    wrongNamedTarget !== undefined ||
+    (namedTarget === undefined && opts._.length !== 1) ||
+    (namedTarget !== undefined && opts._.length !== 0)
+  ) {
+    throw new CliError(
+      "bad_backup_path",
+      `backup ${subcommand} requires exactly one backup path`,
+      { exitCode: 2 },
+    );
+  }
+  const target = namedTarget ?? opts._[0];
+  const artifactRoot = optString(opts, "artifact-root");
+
+  if (subcommand === "create") {
+    if (!existsSync(dbPath)) {
+      throw new CliError(
+        "db_not_found",
+        `research cache DB not found: ${dbPath}`,
+        {
+          hint: "Pass --db PATH or set AGENTBRAIN_DB.",
+        },
+      );
+    }
+    const store = new ResearchStore(dbPath);
+    try {
+      const data = createBackup(store, target, {
+        artifactRoot: artifactRoot ?? defaultArtifactRoot(),
+      });
+      writeByFormat(
+        "backup create",
+        data,
+        globals,
+        (value) =>
+          [
+            `backup created: ${value.backup_path}`,
+            `schema_version: ${value.schema_version}`,
+            `required_artifacts: ${value.artifact_count}`,
+            "",
+          ].join("\n"),
+        { readOnly: false },
+      );
+    } finally {
+      store.close();
+    }
+    return;
+  }
+
+  const data = verifyBackup(target, { artifactRoot });
+  writeByFormat("backup verify", data, globals, (value) => {
+    const lines = value.checks.map(
+      (check) => `${check.status.padEnd(6)} ${check.name}: ${check.detail}`,
+    );
+    return `${value.verified ? "verified" : "verification failed"}\n${lines.join("\n")}\n`;
+  });
+  if (!data.verified) process.exitCode = 1;
+}
+
+function runRecovery(
+  dbPath: string,
+  argv: string[],
+  globals: GlobalOptions,
+): void {
+  const subcommand = argv[0];
+  if (subcommand !== "import") {
+    throw new CliError(
+      "bad_recovery_command",
+      "recovery requires the import subcommand",
+      { exitCode: 2, hint: "Run `agentbrain help recovery` for usage." },
+    );
+  }
+  const opts = parseOptions(argv.slice(1), {
+    "manifest-generation": { type: "string" },
+    "artifact-root": { type: "string", multiple: true },
+    "artifact-store": { type: "string" },
+    "dry-run": { type: "boolean", default: false },
+  });
+  const named = optString(opts, "manifest-generation");
+  if (
+    (named === undefined && opts._.length !== 1) ||
+    (named !== undefined && opts._.length !== 0)
+  ) {
+    throw new CliError(
+      "bad_recovery_manifest",
+      "recovery import requires exactly one frozen generation descriptor",
+      { exitCode: 2 },
+    );
+  }
+  const dryRun = optBoolean(opts, "dry-run");
+  const generation = readRecoveryGeneration(named ?? opts._[0], {
+    artifactRoots: optStrings(opts, "artifact-root"),
+  });
+  if (dryRun) {
+    const data = admitRecoveryGeneration(null, generation, { dryRun: true });
+    writeByFormat("recovery import", data, globals, (value) =>
+      [
+        "frozen recovery generation verified",
+        `candidate_rows: ${value.counts.candidate_rows}`,
+        `telegram_observations: ${value.counts.telegram_observations}`,
+        `approved_offline_artifacts: ${value.counts.approved_offline_artifacts}`,
+        "state_written: false",
+        "",
+      ].join("\n"),
+    );
+    return;
+  }
+  const store = new ResearchStore(dbPath);
+  try {
+    const artifactStore = new ArtifactStore(
+      optString(opts, "artifact-store") ?? defaultArtifactRoot(),
+    );
+    const data = admitRecoveryGeneration(store, generation, { artifactStore });
+    writeByFormat(
+      "recovery import",
+      data,
+      globals,
+      (value) =>
+        [
+          `queued frozen recovery run ${value.run.id}`,
+          `candidate_rows: ${value.counts.candidate_rows}`,
+          `jobs_created: ${value.jobs.created}`,
+          `jobs_existing: ${value.jobs.existing}`,
+          "",
+        ].join("\n"),
       { readOnly: false },
     );
   } finally {
