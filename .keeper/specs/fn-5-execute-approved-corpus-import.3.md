@@ -59,5 +59,5 @@ Item-specific terminal failure permits the sibling to proceed; shared infrastruc
 - [ ] Sanitized evidence records generation, approval, Run, snapshot and artifact digests, counts, states, Attempts, timings, and classifications without message bodies, Telegram identifiers, credentials, or exact unsafe URLs.
 
 ## Done summary
-
+Added digest-pinned, snapshot-gated controlled online backfill (recovery online): validates offline reconciliation, restore-verifies the post-offline snapshot, enforces the exact two-candidate immutable allowlist, and drains only those two jobs concurrency-one through the existing scoped worker and Scrapectl, with replay safety, per-item isolation, and sanitized evidence.
 ## Evidence
