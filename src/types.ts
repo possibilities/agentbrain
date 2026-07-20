@@ -364,6 +364,7 @@ export type FanoutSuppressionReason =
   | "excluded_media"
   | "unsafe_destination"
   | "relation_target_mismatch"
+  | "operator_controlled_run"
   | "ineligible_root"
   | "fanout_limit"
   | "one_hop_limit";
@@ -411,11 +412,35 @@ export interface ExtractionFanoutPlan {
   discoveries: FanoutDiscovery[];
 }
 
+export type RunState =
+  | "pending"
+  | "active"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type OperatorRunMode = "offline" | "online";
+
+export interface OperatorRunScope {
+  runId: number;
+  authorizationDigest: string;
+  allowedKinds: string[];
+}
+
+export interface OperatorRunPolicy extends OperatorRunScope {
+  mode: OperatorRunMode;
+  expectedJobCount: number;
+}
+
+export interface OperatorRunExecution extends OperatorRunPolicy {
+  executionToken: string;
+}
+
 export interface Run {
   id: number;
   run_type: string;
   source_id: number | null;
-  state: string;
+  state: RunState;
   checkpoint: string | null;
   started_at: string | null;
   finished_at: string | null;

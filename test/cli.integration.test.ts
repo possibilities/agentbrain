@@ -3,6 +3,9 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { admitSubmission } from "../src/admission";
+import { ArtifactStore } from "../src/artifacts";
+import { ResearchStore } from "../src/store";
 
 const REPO = join(import.meta.dir, "..");
 const tempDirs: string[] = [];
@@ -624,6 +627,177 @@ test("invalid submission fails before creating a job or Artifact", () => {
     count: 0,
   });
   db.close();
+});
+
+test("scoped worker CLI validates a complete policy and leaves unrelated due jobs untouched", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-scoped-worker-cli-"));
+  tempDirs.push(dir);
+  const dbPath = join(dir, "research.db");
+  const dataHome = join(dir, "data");
+  const store = new ResearchStore(dbPath);
+  const artifacts = new ArtifactStore(
+    join(dataHome, "agentbrain", "artifacts"),
+  );
+  const target = admitSubmission(
+    store,
+    {
+      version: 1,
+      source: "controlled local body",
+      kind: "text",
+      ingress: "cli-fixture",
+    },
+    { artifactStore: artifacts },
+  );
+  const unrelated = admitSubmission(
+    store,
+    {
+      version: 1,
+      source: "unrelated due body",
+      kind: "text",
+      ingress: "cli-fixture",
+    },
+    { artifactStore: artifacts },
+  );
+  const timestamp = "2026-06-03T00:00:00.000Z";
+  const runId = Number(
+    store.db
+      .query(
+        `INSERT INTO runs(run_type, state, created_at, updated_at)
+         VALUES ('cli_controlled_offline', 'pending', ?, ?)`,
+      )
+      .run(timestamp, timestamp).lastInsertRowid,
+  );
+  store.db
+    .query("UPDATE jobs SET run_id=? WHERE id=?")
+    .run(runId, target.job_id);
+  store.authorizeRunScope({
+    runId,
+    mode: "offline",
+    authorizationDigest: "4".repeat(64),
+    allowedKinds: ["text"],
+    expectedJobCount: 1,
+    now: new Date(timestamp),
+  });
+  store.close();
+
+  const mismatch = runCli(
+    [
+      "worker",
+      "--once",
+      "--run",
+      String(runId),
+      "--authorization-digest",
+      "5".repeat(64),
+      "--allowed-kind",
+      "text",
+      "--json",
+    ],
+    dbPath,
+    { XDG_DATA_HOME: dataHome },
+  );
+  expect(mismatch.exitCode).toBe(1);
+  expect(JSON.parse(decode(mismatch.stdout))).toMatchObject({
+    ok: false,
+    command: "worker",
+    error: { code: "run_scope_mismatch" },
+  });
+
+  const drained = runCli(
+    [
+      "worker",
+      "--once",
+      "--run",
+      String(runId),
+      "--authorization-digest",
+      "4".repeat(64),
+      "--allowed-kind",
+      "text",
+      "--json",
+    ],
+    dbPath,
+    { XDG_DATA_HOME: dataHome },
+  );
+  expect(drained.exitCode).toBe(0);
+  expect(JSON.parse(decode(drained.stdout))).toMatchObject({
+    ok: true,
+    command: "worker",
+    data: {
+      scope: {
+        run_id: runId,
+        execution_mode: "offline",
+        authorization_digest: "4".repeat(64),
+        allowed_job_kinds: ["text"],
+        expected_job_count: 1,
+      },
+      scheduled: 0,
+      claimed: 1,
+      completed: 1,
+    },
+  });
+  const db = new Database(dbPath, { readonly: true });
+  expect(db.query("SELECT id, state FROM jobs ORDER BY id").all()).toEqual([
+    { id: target.job_id, state: "completed" },
+    { id: unrelated.job_id, state: "queued" },
+  ]);
+  expect(
+    db.query("SELECT job_id, attempt_number FROM attempts ORDER BY id").all(),
+  ).toEqual([{ job_id: target.job_id, attempt_number: 1 }]);
+  db.close();
+});
+
+test("invalid scoped worker CLI options fail before opening the database", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-invalid-scope-cli-"));
+  tempDirs.push(dir);
+  const cases = [
+    {
+      path: "incomplete.db",
+      args: ["worker", "--once", "--run", "1", "--json"],
+      code: "incomplete_run_scope",
+    },
+    {
+      path: "digest.db",
+      args: [
+        "worker",
+        "--once",
+        "--run",
+        "1",
+        "--authorization-digest",
+        "not-a-digest",
+        "--allowed-kind",
+        "text",
+        "--json",
+      ],
+      code: "bad_run_scope",
+    },
+    {
+      path: "duplicate-kind.db",
+      args: [
+        "worker",
+        "--once",
+        "--run",
+        "1",
+        "--authorization-digest",
+        "8".repeat(64),
+        "--allowed-kind",
+        "text",
+        "--allowed-kind",
+        "text",
+        "--json",
+      ],
+      code: "bad_run_scope",
+    },
+  ];
+  for (const fixture of cases) {
+    const dbPath = join(dir, fixture.path);
+    const proc = runCli(fixture.args, dbPath);
+    expect(proc.exitCode).toBe(2);
+    expect(JSON.parse(decode(proc.stdout))).toMatchObject({
+      ok: false,
+      command: "worker",
+      error: { code: fixture.code },
+    });
+    expect(existsSync(dbPath)).toBe(false);
+  }
 });
 
 test("completed-link compatibility commands are absent from every public surface", async () => {

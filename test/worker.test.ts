@@ -49,6 +49,17 @@ function fixture(): {
   };
 }
 
+function createRun(store: ResearchStore, runType = "operator_fixture"): number {
+  return Number(
+    store.db
+      .query(
+        `INSERT INTO runs(run_type, state, created_at, updated_at)
+         VALUES (?, 'pending', ?, ?)`,
+      )
+      .run(runType, T0.toISOString(), T0.toISOString()).lastInsertRowid,
+  );
+}
+
 function intent(kind: "text" | "url" = "text"): DurableSubmissionIntent {
   return {
     version: 1,
@@ -525,6 +536,648 @@ test("worker once drains only eligible jobs", async () => {
   expect(store.db.query("SELECT content FROM documents").all()).toEqual([
     { content: `materialized ${eligible.job.id}` },
   ]);
+  store.close();
+});
+
+test("generic claims exclude operator-controlled Runs while scoped once drains only its allowed jobs", async () => {
+  const { store, artifacts } = fixture();
+  const runId = createRun(store);
+  const first = store.enqueueJob({
+    idempotencyKey: "controlled-first",
+    kind: "text",
+    intent: intent(),
+    runId,
+    now: T0,
+  });
+  const second = store.enqueueJob({
+    idempotencyKey: "controlled-second",
+    kind: "text",
+    intent: intent(),
+    runId,
+    now: T0,
+  });
+  const parked = store.enqueueJob({
+    idempotencyKey: "controlled-parked-url",
+    kind: "url",
+    intent: intent("url"),
+    runId,
+    now: T0,
+  });
+  store.db
+    .query("UPDATE jobs SET state='blocked', block_reason='offline' WHERE id=?")
+    .run(parked.job.id);
+  const unrelated = store.enqueueJob({
+    idempotencyKey: "ordinary-pressure",
+    kind: "text",
+    intent: intent(),
+    now: T0,
+  });
+  const scope = {
+    runId,
+    authorizationDigest: "a".repeat(64),
+    allowedKinds: ["text"],
+  };
+  store.authorizeRunScope({
+    ...scope,
+    mode: "offline",
+    expectedJobCount: 2,
+    now: T0,
+  });
+
+  const generic = store.claimJob({
+    worker: "generic-pressure",
+    now: T0,
+    leaseMs: 60_000,
+  });
+  if (!generic.claimed) throw new Error("expected ordinary claim");
+  expect(generic.job.id).toBe(unrelated.job.id);
+
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "scoped-offline",
+    scope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize,
+    extract: async () => {
+      throw new Error("offline scope invoked URL extraction");
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({
+    scope: {
+      run_id: runId,
+      execution_mode: "offline",
+      authorization_digest: "a".repeat(64),
+      allowed_job_kinds: ["text"],
+      expected_job_count: 2,
+    },
+    scheduled: 0,
+    claimed: 2,
+    completed: 2,
+  });
+  expect(
+    store.db.query("SELECT id, state FROM jobs ORDER BY id").all(),
+  ).toEqual([
+    { id: first.job.id, state: "completed" },
+    { id: second.job.id, state: "completed" },
+    { id: parked.job.id, state: "blocked" },
+    { id: unrelated.job.id, state: "running" },
+  ]);
+  expect(
+    store.db.query("SELECT job_id, worker FROM attempts ORDER BY id").all(),
+  ).toEqual([
+    { job_id: unrelated.job.id, worker: "generic-pressure" },
+    { job_id: first.job.id, worker: "scoped-offline" },
+    { job_id: second.job.id, worker: "scoped-offline" },
+  ]);
+  store.close();
+});
+
+test("scoped worker rejects authorization, kind, cardinality, and offline URL mismatches before claim", async () => {
+  const { store, artifacts } = fixture();
+  const runId = createRun(store, "validated_scope");
+  store.enqueueJob({
+    idempotencyKey: "validated-target",
+    kind: "text",
+    intent: intent(),
+    runId,
+    now: T0,
+  });
+  const scope = {
+    runId,
+    authorizationDigest: "b".repeat(64),
+    allowedKinds: ["text"],
+  };
+  store.authorizeRunScope({
+    ...scope,
+    mode: "offline",
+    expectedJobCount: 1,
+    now: T0,
+  });
+  expect(() =>
+    store.db
+      .query(
+        "UPDATE operator_run_policies SET authorization_digest=? WHERE run_id=?",
+      )
+      .run("9".repeat(64), runId),
+  ).toThrow("policy is immutable");
+  expect(() =>
+    store.enqueueJob({
+      idempotencyKey: "late-controlled-job",
+      kind: "text",
+      intent: intent(),
+      runId,
+      now: T0,
+    }),
+  ).toThrow("Run jobs are immutable");
+
+  await expect(
+    runWorker(store, {
+      once: true,
+      scope: { ...scope, authorizationDigest: "c".repeat(64) },
+      now: () => T0,
+      artifactStore: artifacts,
+      materialize,
+      installSignalHandlers: false,
+    }),
+  ).rejects.toThrow("does not match");
+  await expect(
+    runWorker(store, {
+      once: true,
+      scope: { ...scope, allowedKinds: ["file"] },
+      now: () => T0,
+      artifactStore: artifacts,
+      materialize,
+      installSignalHandlers: false,
+    }),
+  ).rejects.toThrow("does not match");
+
+  const malformedRunId = createRun(store, "cardinality_mismatch");
+  store.enqueueJob({
+    idempotencyKey: "cardinality-target",
+    kind: "text",
+    intent: intent(),
+    runId: malformedRunId,
+    now: T0,
+  });
+  store.db
+    .query(
+      `INSERT INTO operator_run_policies(
+         run_id, mode, authorization_digest, allowed_job_kinds,
+         expected_job_count, created_at
+       ) VALUES (?, 'offline', ?, '["text"]', 2, ?)`,
+    )
+    .run(malformedRunId, "d".repeat(64), T0.toISOString());
+  await expect(
+    runWorker(store, {
+      once: true,
+      scope: {
+        runId: malformedRunId,
+        authorizationDigest: "d".repeat(64),
+        allowedKinds: ["text"],
+      },
+      now: () => T0,
+      artifactStore: artifacts,
+      materialize,
+      installSignalHandlers: false,
+    }),
+  ).rejects.toThrow("expected 2 authorized jobs but found 1");
+
+  const offlineUrlRunId = createRun(store, "offline_url_rejected");
+  store.enqueueJob({
+    idempotencyKey: "offline-url",
+    kind: "url",
+    intent: intent("url"),
+    runId: offlineUrlRunId,
+    now: T0,
+  });
+  expect(() =>
+    store.authorizeRunScope({
+      runId: offlineUrlRunId,
+      mode: "offline",
+      authorizationDigest: "e".repeat(64),
+      allowedKinds: ["url"],
+      expectedJobCount: 1,
+      now: T0,
+    }),
+  ).toThrow("cannot allow URL extraction jobs");
+  expect(
+    store.db.query("SELECT COUNT(*) AS count FROM attempts").get(),
+  ).toEqual({ count: 0 });
+  store.close();
+});
+
+test("online scope executes exactly two bound URL jobs without admitting broad work", async () => {
+  const { store, artifacts } = fixture();
+  const runId = createRun(store, "controlled_online");
+  const first = store.enqueueJob({
+    idempotencyKey: "online-first",
+    kind: "url",
+    intent: intent("url"),
+    runId,
+    now: T0,
+  });
+  const second = store.enqueueJob({
+    idempotencyKey: "online-second",
+    kind: "url",
+    intent: intent("url"),
+    runId,
+    now: T0,
+  });
+  const unrelated = store.enqueueJob({
+    idempotencyKey: "online-unrelated",
+    kind: "url",
+    intent: intent("url"),
+    now: T0,
+  });
+  const scope = {
+    runId,
+    authorizationDigest: "f".repeat(64),
+    allowedKinds: ["url"],
+  };
+  store.authorizeRunScope({
+    ...scope,
+    mode: "online",
+    expectedJobCount: 2,
+    now: T0,
+  });
+  let extractionCalls = 0;
+
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "scoped-online",
+    scope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: (job) => [
+      {
+        sourceType: "url",
+        sourceUri: `controlled-url:${job.id}`,
+        title: `Controlled URL ${job.id}`,
+        content: `controlled URL body ${job.id}`,
+        fanout: {
+          discoveries: [
+            {
+              ordinal: 0,
+              relationType: "content_link",
+              targetUrl: `https://child.example/${job.id}`,
+              canonicalUrl: `https://child.example/${job.id}`,
+              resourceKey: {
+                type: "url",
+                value: `https://child.example/${job.id}`,
+              },
+              childIdempotencyKey: `controlled-child:${job.id}`,
+              childIntent: JSON.stringify(intent("url")),
+              suppressionReason: null,
+            },
+          ],
+        },
+      },
+    ],
+    extract: async () => {
+      extractionCalls += 1;
+      throw new Error("custom materializer should own this fixture");
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 2, completed: 2, scheduled: 0 });
+  expect(extractionCalls).toBe(0);
+  expect(
+    store.db.query("SELECT id, state FROM jobs ORDER BY id").all(),
+  ).toEqual([
+    { id: first.job.id, state: "completed" },
+    { id: second.job.id, state: "completed" },
+    { id: unrelated.job.id, state: "queued" },
+  ]);
+  expect(
+    store.db.query("SELECT state FROM runs WHERE id=?").get(runId),
+  ).toEqual({ state: "completed" });
+  expect(
+    store.db
+      .query(
+        `SELECT suppressed, suppressed_reason FROM observations
+         WHERE run_id=? ORDER BY source_job_id`,
+      )
+      .all(runId),
+  ).toEqual([
+    { suppressed: 1, suppressed_reason: "operator_controlled_run" },
+    { suppressed: 1, suppressed_reason: "operator_controlled_run" },
+  ]);
+  store.close();
+});
+
+test("shared scoped failures pause sibling claims", async () => {
+  const { store, artifacts } = fixture();
+  const runId = createRun(store, "paused_online");
+  const jobs = ["paused-first", "paused-second"].map((idempotencyKey) =>
+    store.enqueueJob({
+      idempotencyKey,
+      kind: "url",
+      intent: intent("url"),
+      runId,
+      now: T0,
+    }),
+  );
+  const scope = {
+    runId,
+    authorizationDigest: "9".repeat(64),
+    allowedKinds: ["url"],
+  };
+  store.authorizeRunScope({
+    ...scope,
+    mode: "online",
+    expectedJobCount: 2,
+    now: T0,
+  });
+
+  const result = await runWorker(store, {
+    once: true,
+    scope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: () => {
+      throw new Error("credential unavailable");
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 1, failed: 1, completed: 0 });
+  expect(
+    store.db.query("SELECT id, state FROM jobs ORDER BY id").all(),
+  ).toEqual([
+    { id: jobs[0].job.id, state: "blocked" },
+    { id: jobs[1].job.id, state: "queued" },
+  ]);
+  expect(
+    store.db.query("SELECT state FROM runs WHERE id=?").get(runId),
+  ).toEqual({ state: "pending" });
+  store.close();
+});
+
+test("operator-controlled Run execution leases serialize scoped workers and fence expired owners", () => {
+  const { store } = fixture();
+  const runId = createRun(store, "serialized_online");
+  for (const idempotencyKey of ["serialized-first", "serialized-second"]) {
+    store.enqueueJob({
+      idempotencyKey,
+      kind: "url",
+      intent: intent("url"),
+      runId,
+      now: T0,
+    });
+  }
+  const scope = {
+    runId,
+    authorizationDigest: "0".repeat(64),
+    allowedKinds: ["url"],
+  };
+  store.authorizeRunScope({
+    ...scope,
+    mode: "online",
+    expectedJobCount: 2,
+    now: T0,
+  });
+  const first = store.beginRunScope(scope, {
+    worker: "first-scoped-worker",
+    now: T0,
+    leaseMs: 1000,
+  });
+  const contender = new ResearchStore(store.dbPath);
+  expect(() =>
+    contender.beginRunScope(scope, {
+      worker: "concurrent-scoped-worker",
+      now: T0,
+      leaseMs: 1000,
+    }),
+  ).toThrow("has an active lease");
+  const replacement = contender.beginRunScope(scope, {
+    worker: "replacement-scoped-worker",
+    now: at(2000),
+    leaseMs: 1000,
+  });
+  expect(replacement.executionToken).not.toBe(first.executionToken);
+  expect(() =>
+    store.finishRunScope(scope, {
+      executionToken: first.executionToken,
+      now: at(2000),
+    }),
+  ).toThrow("execution lease is stale or fenced");
+  expect(
+    contender.finishRunScope(scope, {
+      executionToken: replacement.executionToken,
+      now: at(2000),
+    }),
+  ).toBe(false);
+  expect(
+    store.db.query("SELECT state FROM runs WHERE id=?").get(runId),
+  ).toEqual({ state: "pending" });
+  contender.close();
+  store.close();
+});
+
+test("terminal job failure does not mark an operator-controlled Run completed", async () => {
+  const { store, artifacts } = fixture();
+  const runId = createRun(store, "failed_offline_scope");
+  store.enqueueJob({
+    idempotencyKey: "failed-controlled-job",
+    kind: "text",
+    intent: intent(),
+    runId,
+    now: T0,
+  });
+  const scope = {
+    runId,
+    authorizationDigest: "7".repeat(64),
+    allowedKinds: ["text"],
+  };
+  store.authorizeRunScope({
+    ...scope,
+    mode: "offline",
+    expectedJobCount: 1,
+    now: T0,
+  });
+
+  const result = await runWorker(store, {
+    once: true,
+    scope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: () => {
+      throw new Error("deterministic malformed content");
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 1, failed: 1, completed: 0 });
+  expect(store.db.query("SELECT state FROM jobs").get()).toEqual({
+    state: "failed",
+  });
+  expect(
+    store.db.query("SELECT state FROM runs WHERE id=?").get(runId),
+  ).toEqual({ state: "pending" });
+  store.close();
+});
+
+test("scoped execution renews its Run lease between short jobs", async () => {
+  const { store, artifacts } = fixture();
+  const runId = createRun(store, "renewed_offline_scope");
+  for (const idempotencyKey of ["renewed-a", "renewed-b", "renewed-c"]) {
+    store.enqueueJob({
+      idempotencyKey,
+      kind: "text",
+      intent: intent(),
+      runId,
+      now: T0,
+    });
+  }
+  const scope = {
+    runId,
+    authorizationDigest: "6".repeat(64),
+    allowedKinds: ["text"],
+  };
+  store.authorizeRunScope({
+    ...scope,
+    mode: "offline",
+    expectedJobCount: 3,
+    now: T0,
+  });
+  let elapsed = 0;
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "renewing-scoped-worker",
+    scope,
+    now: () => at(elapsed),
+    leaseMs: 1000,
+    heartbeatMs: 500,
+    artifactStore: artifacts,
+    materialize: (job) => {
+      elapsed += 600;
+      return materialize(job, intent(), {
+        artifactStore: artifacts,
+        signal: new AbortController().signal,
+        extract: async () => {
+          throw new Error("not used");
+        },
+      });
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 3, completed: 3, fenced: 0 });
+  expect(
+    store.db.query("SELECT state, attempt_count FROM jobs ORDER BY id").all(),
+  ).toEqual([
+    { state: "completed", attempt_count: 1 },
+    { state: "completed", attempt_count: 1 },
+    { state: "completed", attempt_count: 1 },
+  ]);
+  store.close();
+});
+
+test("scoped retry_wait and stale Attempt recovery resume without generic interference", async () => {
+  const { store, artifacts } = fixture();
+  const retryRunId = createRun(store, "retry_scope");
+  const retryJob = store.enqueueJob({
+    idempotencyKey: "scoped-retry",
+    kind: "text",
+    intent: intent(),
+    runId: retryRunId,
+    now: T0,
+  });
+  const retryScope = {
+    runId: retryRunId,
+    authorizationDigest: "1".repeat(64),
+    allowedKinds: ["text"],
+  };
+  store.authorizeRunScope({
+    ...retryScope,
+    mode: "offline",
+    expectedJobCount: 1,
+    now: T0,
+  });
+  const policy = {
+    infraBaseMs: 1000,
+    infraCapMs: 1000,
+    jitterRatio: 0,
+  };
+
+  await runWorker(store, {
+    once: true,
+    scope: retryScope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: () => {
+      throw new Error("temporarily unavailable");
+    },
+    policy,
+    installSignalHandlers: false,
+  });
+  expect(
+    store.db
+      .query("SELECT state, attempt_count FROM jobs WHERE id=?")
+      .get(retryJob.job.id),
+  ).toEqual({ state: "retry_wait", attempt_count: 1 });
+  expect(
+    await runWorker(store, {
+      once: true,
+      scope: retryScope,
+      now: () => T0,
+      artifactStore: artifacts,
+      materialize,
+      policy,
+      installSignalHandlers: false,
+    }),
+  ).toMatchObject({ claimed: 0, recovered: 0 });
+  expect(
+    await runWorker(store, {
+      once: true,
+      scope: retryScope,
+      now: () => at(1000),
+      artifactStore: artifacts,
+      materialize,
+      policy,
+      installSignalHandlers: false,
+    }),
+  ).toMatchObject({ claimed: 1, completed: 1 });
+
+  const crashRunId = createRun(store, "crash_scope");
+  const crashJob = store.enqueueJob({
+    idempotencyKey: "scoped-crash",
+    kind: "text",
+    intent: intent(),
+    runId: crashRunId,
+    now: T0,
+  });
+  const crashScope = {
+    runId: crashRunId,
+    authorizationDigest: "2".repeat(64),
+    allowedKinds: ["text"],
+  };
+  store.authorizeRunScope({
+    ...crashScope,
+    mode: "offline",
+    expectedJobCount: 1,
+    now: T0,
+  });
+  const crashExecution = store.beginRunScope(crashScope, {
+    worker: "crashed-scoped-worker",
+    now: T0,
+    leaseMs: 1000,
+  });
+  const crashed = store.claimJob({
+    worker: "crashed-scoped-worker",
+    scope: crashScope,
+    executionToken: crashExecution.executionToken,
+    now: T0,
+    leaseMs: 1000,
+  });
+  if (!crashed.claimed) throw new Error("expected scoped crash claim");
+  expect(
+    store.recoverExpiredLeases({
+      now: at(2000),
+      policy: { infraBaseMs: 0, infraCapMs: 0, jitterRatio: 0 },
+    }),
+  ).toEqual([]);
+  expect(
+    await runWorker(store, {
+      once: true,
+      workerId: "resumed-scoped-worker",
+      scope: crashScope,
+      now: () => at(2000),
+      artifactStore: artifacts,
+      materialize,
+      policy: { infraBaseMs: 0, infraCapMs: 0, jitterRatio: 0 },
+      installSignalHandlers: false,
+    }),
+  ).toMatchObject({ recovered: 1, claimed: 1, completed: 1 });
+  expect(
+    store.db
+      .query("SELECT state, attempt_count FROM jobs WHERE id=?")
+      .get(crashJob.job.id),
+  ).toEqual({ state: "completed", attempt_count: 2 });
   store.close();
 });
 

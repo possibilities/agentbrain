@@ -32,6 +32,7 @@ import {
   revealJob,
   safeJobView,
   showJob,
+  showRun,
 } from "./jobs";
 import { readRecoveryGeneration } from "./recovery";
 import {
@@ -47,7 +48,12 @@ import {
 } from "./render";
 import { ResearchStore } from "./store";
 import { normalizeTags } from "./text";
-import type { GlobalOptions, SearchMode, Sensitivity } from "./types";
+import type {
+  GlobalOptions,
+  OperatorRunScope,
+  SearchMode,
+  Sensitivity,
+} from "./types";
 import { validateHttpUrl } from "./url";
 import { runWorker } from "./worker";
 
@@ -113,6 +119,8 @@ const DELETE_OPTION_SPECS = {
   "source-uri": { type: "string" },
   confirm: { type: "string" },
 } as const;
+
+const WORKER_SCOPE_KINDS = new Set(["text", "file", "directory", "url"]);
 
 async function runParsed(
   parsed: ReturnType<typeof parseTopLevel>,
@@ -461,13 +469,13 @@ async function runJobs(
   const subcommand = argv[0];
   if (
     !subcommand ||
-    !["list", "show", "retry", "cancel", "exclude", "stats"].includes(
+    !["list", "show", "run", "retry", "cancel", "exclude", "stats"].includes(
       subcommand,
     )
   ) {
     throw new CliError(
       "bad_jobs_command",
-      "jobs requires one of: list, show, retry, cancel, exclude, stats",
+      "jobs requires one of: list, show, run, retry, cancel, exclude, stats",
       { exitCode: 2 },
     );
   }
@@ -475,6 +483,7 @@ async function runJobs(
   if (subcommand === "list") {
     const opts = parseOptions(args, {
       state: { type: "string" },
+      run: { type: "number" },
       limit: { type: "number", default: 100 },
     });
     if (opts._.length > 0)
@@ -485,8 +494,11 @@ async function runJobs(
       );
     const cache = new ResearchCache(dbPath);
     try {
+      const runId = optNumber(opts, "run");
       const data = listJobs(cache, {
         state: parseJobState(optString(opts, "state")),
+        runId:
+          runId === undefined ? undefined : assertPositiveInteger(runId, "run"),
         limit: optNumber(opts, "limit"),
       });
       writeByFormat("jobs list", data, globals, (rows) =>
@@ -507,7 +519,7 @@ async function runJobs(
     return;
   }
   if (subcommand === "stats") {
-    const opts = parseOptions(args, {});
+    const opts = parseOptions(args, { run: { type: "number" } });
     if (opts._.length > 0)
       throw new CliError(
         "unexpected_args",
@@ -516,9 +528,39 @@ async function runJobs(
       );
     const cache = new ResearchCache(dbPath);
     try {
-      const data = jobStats(cache);
+      const runId = optNumber(opts, "run");
+      const data = jobStats(cache, new Date(), {
+        runId:
+          runId === undefined ? undefined : assertPositiveInteger(runId, "run"),
+      });
       writeByFormat(
         "jobs stats",
+        data,
+        globals,
+        (value) => `${JSON.stringify(value, null, 2)}\n`,
+      );
+    } finally {
+      cache.close();
+    }
+    return;
+  }
+  if (subcommand === "run") {
+    const opts = parseOptions(args, {
+      limit: { type: "number", default: 100 },
+    });
+    if (opts._.length !== 1) {
+      throw new CliError("bad_run_id", "jobs run requires exactly one Run ID", {
+        exitCode: 2,
+      });
+    }
+    const runId = assertPositiveInteger(Number(opts._[0]), "run-id");
+    const cache = new ResearchCache(dbPath);
+    try {
+      const data = showRun(cache, runId, {
+        limit: optNumber(opts, "limit"),
+      });
+      writeByFormat(
+        "jobs run",
         data,
         globals,
         (value) => `${JSON.stringify(value, null, 2)}\n`,
@@ -819,6 +861,9 @@ async function runWorkerCommand(
     "lease-ms": { type: "number", default: 60000 },
     "heartbeat-ms": { type: "number", default: 20000 },
     "shutdown-grace-ms": { type: "number", default: 10000 },
+    run: { type: "number" },
+    "authorization-digest": { type: "string" },
+    "allowed-kind": { type: "string", multiple: true },
   });
   if (opts._.length > 0)
     throw new CliError(
@@ -826,6 +871,60 @@ async function runWorkerCommand(
       "worker accepts no positional arguments",
       { exitCode: 2 },
     );
+  const runId = optNumber(opts, "run");
+  const authorizationDigest = optString(opts, "authorization-digest");
+  const allowedKinds = optStrings(opts, "allowed-kind");
+  const hasScopeOptions =
+    runId !== undefined ||
+    authorizationDigest !== undefined ||
+    allowedKinds.length !== 0;
+  let scope: OperatorRunScope | undefined;
+  if (hasScopeOptions) {
+    if (
+      runId === undefined ||
+      authorizationDigest === undefined ||
+      allowedKinds.length === 0
+    ) {
+      throw new CliError(
+        "incomplete_run_scope",
+        "scoped worker requires --run, --authorization-digest, and at least one --allowed-kind",
+        { exitCode: 2 },
+      );
+    }
+    if (!optBoolean(opts, "once")) {
+      throw new CliError(
+        "scoped_worker_requires_once",
+        "scoped worker requires --once",
+        { exitCode: 2 },
+      );
+    }
+    const controlledRunId = assertPositiveInteger(runId, "run");
+    if (!/^[a-f0-9]{64}$/.test(authorizationDigest)) {
+      throw new CliError(
+        "bad_run_scope",
+        "--authorization-digest must be a lowercase SHA-256 digest",
+        { exitCode: 2 },
+      );
+    }
+    if (
+      new Set(allowedKinds).size !== allowedKinds.length ||
+      allowedKinds.some(
+        (kind) =>
+          kind !== kind.trim().toLowerCase() || !WORKER_SCOPE_KINDS.has(kind),
+      )
+    ) {
+      throw new CliError(
+        "bad_run_scope",
+        "--allowed-kind must be a unique canonical ingestion job kind",
+        { exitCode: 2 },
+      );
+    }
+    scope = {
+      runId: controlledRunId,
+      authorizationDigest,
+      allowedKinds,
+    };
+  }
   const store = new ResearchStore(dbPath);
   try {
     const data = await runWorker(store, {
@@ -847,6 +946,7 @@ async function runWorkerCommand(
         optNumber(opts, "shutdown-grace-ms") ?? 10000,
         "shutdown-grace-ms",
       ),
+      scope,
     });
     writeByFormat(
       "worker",

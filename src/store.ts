@@ -36,12 +36,17 @@ import type {
   Job,
   JobState,
   LifecyclePolicy,
+  OperatorRunExecution,
+  OperatorRunMode,
+  OperatorRunPolicy,
+  OperatorRunScope,
   RecoveredLease,
   ResourceRelation,
+  Run,
   Sensitivity,
 } from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 7;
+export const RESEARCH_SCHEMA_VERSION = 8;
 
 /**
  * Default lease and retry policy. Durations are policy, not identity: callers
@@ -558,8 +563,85 @@ const MIGRATION_V7 = `
   UPDATE meta SET value='7' WHERE key='schema_version';
 `;
 
+const MIGRATION_V8 = `
+  CREATE TABLE operator_run_policies (
+    run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE RESTRICT,
+    mode TEXT NOT NULL CHECK (mode IN ('offline', 'online')),
+    authorization_digest TEXT NOT NULL CHECK (
+      length(authorization_digest)=64 AND
+      authorization_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    allowed_job_kinds TEXT NOT NULL CHECK (
+      json_valid(allowed_job_kinds) AND json_type(allowed_job_kinds)='array'
+    ),
+    expected_job_count INTEGER NOT NULL CHECK (expected_job_count > 0),
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_jobs_run_runnable
+    ON jobs(run_id, kind, state, run_at, id);
+  CREATE TABLE operator_run_execution_leases (
+    run_id INTEGER PRIMARY KEY REFERENCES operator_run_policies(run_id) ON DELETE CASCADE,
+    fencing_token TEXT NOT NULL UNIQUE,
+    worker TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_operator_run_execution_leases_expiry
+    ON operator_run_execution_leases(lease_expires_at, run_id);
+  CREATE TRIGGER operator_run_policy_immutable_update
+    BEFORE UPDATE ON operator_run_policies
+    BEGIN
+      SELECT RAISE(ABORT, 'operator-controlled Run policy is immutable');
+    END;
+  CREATE TRIGGER operator_run_policy_immutable_delete
+    BEFORE DELETE ON operator_run_policies
+    BEGIN
+      SELECT RAISE(ABORT, 'operator-controlled Run policy is immutable');
+    END;
+  CREATE TRIGGER operator_run_jobs_frozen_insert
+    BEFORE INSERT ON jobs
+    WHEN NEW.run_id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM operator_run_policies p WHERE p.run_id=NEW.run_id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'operator-controlled Run jobs are immutable');
+    END;
+  CREATE TRIGGER operator_run_jobs_frozen_update
+    BEFORE UPDATE OF run_id, kind, intent ON jobs
+    WHEN (
+      NEW.run_id IS NOT OLD.run_id OR
+      NEW.kind IS NOT OLD.kind OR
+      NEW.intent IS NOT OLD.intent
+    ) AND (
+      EXISTS (SELECT 1 FROM operator_run_policies p WHERE p.run_id=OLD.run_id) OR
+      EXISTS (SELECT 1 FROM operator_run_policies p WHERE p.run_id=NEW.run_id)
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'operator-controlled Run job binding is immutable');
+    END;
+  CREATE TRIGGER operator_run_jobs_frozen_delete
+    BEFORE DELETE ON jobs
+    WHEN EXISTS (
+      SELECT 1 FROM operator_run_policies p WHERE p.run_id=OLD.run_id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'operator-controlled Run jobs are immutable');
+    END;
+  UPDATE meta SET value='8' WHERE key='schema_version';
+`;
+
 const MEDIA_TYPE_PATTERN =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[ -~]+)?$/;
+const JOB_KIND_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const CONTROLLED_JOB_KINDS = new Set(["text", "file", "directory", "url"]);
+
+interface PersistedOperatorRunPolicy {
+  run_id: number;
+  mode: OperatorRunMode;
+  authorization_digest: string;
+  allowed_job_kinds: string;
+  expected_job_count: number;
+}
 
 const SENSITIVITY_RANK: Record<Sensitivity, number> = {
   public: 0,
@@ -645,6 +727,93 @@ function titleFromSource(source: string): string {
 
 function limitCodePoints(value: string, limit: number): string {
   return Array.from(value).slice(0, limit).join("");
+}
+
+function normalizedAllowedKinds(value: readonly string[]): string[] {
+  if (value.length === 0 || value.length > CONTROLLED_JOB_KINDS.size) {
+    throw new CliError(
+      "bad_run_scope",
+      "operator-controlled Run scope requires one or more allowed job kinds",
+      { exitCode: 2 },
+    );
+  }
+  const normalized = value.map((kind) => String(kind).trim().toLowerCase());
+  if (
+    normalized.some(
+      (kind) => !JOB_KIND_PATTERN.test(kind) || !CONTROLLED_JOB_KINDS.has(kind),
+    )
+  ) {
+    throw new CliError(
+      "bad_run_scope",
+      "operator-controlled Run scope contains an unsupported job kind",
+      { exitCode: 2 },
+    );
+  }
+  if (new Set(normalized).size !== normalized.length) {
+    throw new CliError(
+      "bad_run_scope",
+      "operator-controlled Run scope contains a duplicate allowed job kind",
+      { exitCode: 2 },
+    );
+  }
+  return normalized.sort();
+}
+
+function sameStrings(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function validatedAuthorizationDigest(value: string): string {
+  const digest = String(value || "").trim();
+  if (!SHA256_DIGEST_PATTERN.test(digest)) {
+    throw new CliError(
+      "bad_run_scope",
+      "operator-controlled Run scope requires a lowercase SHA-256 authorization digest",
+      { exitCode: 2 },
+    );
+  }
+  return digest;
+}
+
+function policyFromRow(row: PersistedOperatorRunPolicy): OperatorRunPolicy {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.allowed_job_kinds);
+  } catch {
+    throw new CliError(
+      "invalid_run_policy",
+      `operator-controlled Run ${row.run_id} has an invalid allowed-kind policy`,
+    );
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some((kind) => typeof kind !== "string")
+  ) {
+    throw new CliError(
+      "invalid_run_policy",
+      `operator-controlled Run ${row.run_id} has an invalid allowed-kind policy`,
+    );
+  }
+  const allowedKinds = normalizedAllowedKinds(parsed);
+  if (!sameStrings(parsed, allowedKinds)) {
+    throw new CliError(
+      "invalid_run_policy",
+      `operator-controlled Run ${row.run_id} has a non-canonical allowed-kind policy`,
+    );
+  }
+  return {
+    runId: row.run_id,
+    mode: row.mode,
+    authorizationDigest: validatedAuthorizationDigest(row.authorization_digest),
+    allowedKinds,
+    expectedJobCount: row.expected_job_count,
+  };
 }
 
 /** Writable schema-v2 store. Read commands deliberately use ResearchCache instead. */
@@ -964,14 +1133,21 @@ export class ResearchStore {
         );
       }
       const parentJob = this.db
-        .query("SELECT id FROM jobs WHERE id=?")
-        .get(input.parentJobId);
+        .query("SELECT id, run_id FROM jobs WHERE id=?")
+        .get(input.parentJobId) as { id: number; run_id: number | null } | null;
       if (parentJob === null) {
         throw new CliError(
           "job_not_found",
           `parent job ${input.parentJobId} not found`,
         );
       }
+      if (parentJob.run_id !== (input.runId ?? null)) {
+        throw new CliError(
+          "fanout_run_mismatch",
+          "URL fanout Run binding does not match its parent ingestion job",
+        );
+      }
+      const operatorControlled = this.runIsOperatorControlled(parentJob.run_id);
 
       let admitted = 0;
       let suppressed = 0;
@@ -1022,7 +1198,10 @@ export class ResearchStore {
             discovery.relationType,
             discovery.ordinal,
           ) as { id: number } | null;
-        const isSuppressed = discovery.suppressionReason !== null;
+        const suppressionReason =
+          discovery.suppressionReason ??
+          (operatorControlled ? "operator_controlled_run" : null);
+        const isSuppressed = suppressionReason !== null;
         if (existingObservation === null) {
           this.db
             .query(
@@ -1043,7 +1222,7 @@ export class ResearchStore {
               discovery.ordinal,
               discovery.targetUrl,
               isSuppressed ? 1 : 0,
-              discovery.suppressionReason,
+              suppressionReason,
               timestamp,
             );
         } else {
@@ -1061,7 +1240,7 @@ export class ResearchStore {
               input.ingress,
               discovery.targetUrl,
               isSuppressed ? 1 : 0,
-              discovery.suppressionReason,
+              suppressionReason,
               timestamp,
               existingObservation.id,
             );
@@ -1660,6 +1839,250 @@ export class ResearchStore {
     return result;
   }
 
+  authorizeRunScope(
+    input: OperatorRunPolicy & { now?: Date },
+  ): OperatorRunPolicy {
+    if (!Number.isInteger(input.runId) || input.runId < 1) {
+      throw new CliError("bad_run_scope", "Run ID must be a positive integer", {
+        exitCode: 2,
+      });
+    }
+    if (input.mode !== "offline" && input.mode !== "online") {
+      throw new CliError(
+        "bad_run_scope",
+        "operator-controlled Run mode must be offline or online",
+        { exitCode: 2 },
+      );
+    }
+    if (
+      !Number.isInteger(input.expectedJobCount) ||
+      input.expectedJobCount < 1
+    ) {
+      throw new CliError(
+        "bad_run_scope",
+        "operator-controlled Run expected job count must be positive",
+        { exitCode: 2 },
+      );
+    }
+    const authorizationDigest = validatedAuthorizationDigest(
+      input.authorizationDigest,
+    );
+    const allowedKinds = normalizedAllowedKinds(input.allowedKinds);
+    this.assertControlledMode(input.mode, allowedKinds, input.expectedJobCount);
+    const timestamp = (input.now ?? new Date()).toISOString();
+
+    const transaction = this.db.transaction((): OperatorRunPolicy => {
+      const run = this.db
+        .query(
+          `SELECT id, run_type, source_id, state, checkpoint, started_at,
+                  finished_at, created_at, updated_at
+           FROM runs WHERE id=?`,
+        )
+        .get(input.runId) as Run | null;
+      if (run === null) {
+        throw new CliError("run_not_found", `Run ${input.runId} not found`);
+      }
+      const existing = this.loadRunPolicy(input.runId);
+      if (existing !== null) {
+        if (
+          existing.mode !== input.mode ||
+          existing.authorizationDigest !== authorizationDigest ||
+          !sameStrings(existing.allowedKinds, allowedKinds) ||
+          existing.expectedJobCount !== input.expectedJobCount
+        ) {
+          throw new CliError(
+            "run_policy_immutable",
+            `operator-controlled Run ${input.runId} already has a different immutable policy`,
+          );
+        }
+        return existing;
+      }
+      const running = this.db
+        .query(
+          `SELECT COUNT(*) AS count FROM jobs
+           WHERE run_id=? AND state='running'`,
+        )
+        .get(input.runId) as { count: number };
+      if (running.count !== 0) {
+        throw new CliError(
+          "run_not_quiescent",
+          `Run ${input.runId} has active ingestion jobs`,
+        );
+      }
+      const policy: OperatorRunPolicy = {
+        runId: input.runId,
+        mode: input.mode,
+        authorizationDigest,
+        allowedKinds,
+        expectedJobCount: input.expectedJobCount,
+      };
+      this.assertRunScopeCardinality(policy);
+      this.db
+        .query(
+          `INSERT INTO operator_run_policies(
+             run_id, mode, authorization_digest, allowed_job_kinds,
+             expected_job_count, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          policy.runId,
+          policy.mode,
+          policy.authorizationDigest,
+          JSON.stringify(policy.allowedKinds),
+          policy.expectedJobCount,
+          timestamp,
+        );
+      return policy;
+    });
+    return transaction.immediate();
+  }
+
+  validateRunScope(scope: OperatorRunScope): OperatorRunPolicy {
+    return this.requireRunScope(scope);
+  }
+
+  beginRunScope(
+    scope: OperatorRunScope,
+    input: { worker: string; now?: Date; leaseMs?: number },
+  ): OperatorRunExecution {
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+    const leaseMs = input.leaseMs ?? DEFAULT_LIFECYCLE_POLICY.leaseMs;
+    const worker = String(input.worker || "").trim();
+    if (worker.length === 0 || !Number.isFinite(leaseMs) || leaseMs < 1) {
+      throw new CliError(
+        "bad_run_scope",
+        "operator-controlled Run execution requires a worker and positive lease duration",
+        { exitCode: 2 },
+      );
+    }
+    const leaseExpiresAt = isoAfter(now, leaseMs);
+    const transaction = this.db.transaction((): OperatorRunExecution => {
+      const policy = this.requireRunScope(scope);
+      const active = this.db
+        .query(
+          `SELECT COUNT(*) AS count
+           FROM attempts a JOIN jobs j ON j.id=a.job_id
+           WHERE j.run_id=? AND a.state='leased' AND a.lease_expires_at>?`,
+        )
+        .get(policy.runId, timestamp) as { count: number };
+      const execution = this.db
+        .query(
+          `SELECT lease_expires_at FROM operator_run_execution_leases
+           WHERE run_id=?`,
+        )
+        .get(policy.runId) as { lease_expires_at: string } | null;
+      if (
+        active.count !== 0 ||
+        (execution !== null && execution.lease_expires_at > timestamp)
+      ) {
+        throw new CliError(
+          "run_not_quiescent",
+          `operator-controlled Run ${policy.runId} has an active lease`,
+        );
+      }
+      const run = this.db
+        .query("SELECT state FROM runs WHERE id=?")
+        .get(policy.runId) as { state: string };
+      if (run.state === "cancelled" || run.state === "failed") {
+        throw new CliError(
+          "run_not_executable",
+          `operator-controlled Run ${policy.runId} is ${run.state}`,
+        );
+      }
+      this.db
+        .query(
+          "DELETE FROM operator_run_execution_leases WHERE run_id=? AND lease_expires_at<=?",
+        )
+        .run(policy.runId, timestamp);
+      const leased = this.db
+        .query(
+          `INSERT INTO operator_run_execution_leases(
+             run_id, fencing_token, worker, lease_expires_at, heartbeat_at
+           ) VALUES (?, lower(hex(randomblob(16))), ?, ?, ?)
+           RETURNING fencing_token`,
+        )
+        .get(policy.runId, worker, leaseExpiresAt, timestamp) as {
+        fencing_token: string;
+      };
+      this.db
+        .query(
+          `UPDATE runs SET state='active', started_at=COALESCE(started_at, ?),
+             finished_at=NULL, updated_at=? WHERE id=?`,
+        )
+        .run(timestamp, timestamp, policy.runId);
+      return { ...policy, executionToken: leased.fencing_token };
+    });
+    return transaction.immediate();
+  }
+
+  heartbeatRunScope(
+    scope: OperatorRunScope,
+    executionToken: string,
+    input: { now?: Date; leaseMs?: number } = {},
+  ): boolean {
+    const now = input.now ?? new Date();
+    const timestamp = now.toISOString();
+    const leaseMs = input.leaseMs ?? DEFAULT_LIFECYCLE_POLICY.leaseMs;
+    if (!Number.isFinite(leaseMs) || leaseMs < 1) return false;
+    const transaction = this.db.transaction((): boolean => {
+      const policy = this.requireRunScope(scope);
+      const updated = this.db
+        .query(
+          `UPDATE operator_run_execution_leases
+           SET lease_expires_at=?, heartbeat_at=?
+           WHERE run_id=? AND fencing_token=? AND lease_expires_at>?`,
+        )
+        .run(
+          isoAfter(now, leaseMs),
+          timestamp,
+          policy.runId,
+          executionToken,
+          timestamp,
+        );
+      return updated.changes === 1;
+    });
+    return transaction.immediate();
+  }
+
+  finishRunScope(
+    scope: OperatorRunScope,
+    input: { executionToken: string; now?: Date },
+  ): boolean {
+    const timestamp = (input.now ?? new Date()).toISOString();
+    const transaction = this.db.transaction((): boolean => {
+      const policy = this.requireRunScope(scope);
+      this.assertRunExecutionLease(policy, input.executionToken, timestamp);
+      const placeholders = policy.allowedKinds.map(() => "?").join(", ");
+      const pending = this.db
+        .query(
+          `SELECT COUNT(*) AS count FROM jobs
+           WHERE run_id=? AND kind IN (${placeholders})
+             AND state NOT IN ('completed', 'excluded')`,
+        )
+        .get(policy.runId, ...policy.allowedKinds) as { count: number };
+      this.db
+        .query(
+          `UPDATE runs SET state=?, finished_at=?, updated_at=? WHERE id=?
+             AND state NOT IN ('failed', 'cancelled')`,
+        )
+        .run(
+          pending.count === 0 ? "completed" : "pending",
+          pending.count === 0 ? timestamp : null,
+          timestamp,
+          policy.runId,
+        );
+      this.db
+        .query(
+          `DELETE FROM operator_run_execution_leases
+           WHERE run_id=? AND fencing_token=?`,
+        )
+        .run(policy.runId, input.executionToken);
+      return pending.count === 0;
+    });
+    return transaction.immediate();
+  }
+
   // ---- Durable ingestion job lifecycle (ADR 0004) ----
 
   /**
@@ -1739,7 +2162,13 @@ export class ResearchStore {
    * predicate excludes any already-running job, so two concurrent claimers can
    * never obtain the same active lease. The new attempt id is the fencing token.
    */
-  claimJob(input: { worker: string } & LifecycleOptions): ClaimResult {
+  claimJob(
+    input: {
+      worker: string;
+      scope?: OperatorRunScope;
+      executionToken?: string;
+    } & LifecycleOptions,
+  ): ClaimResult {
     const worker = String(input.worker || "").trim();
     if (worker.length === 0)
       throw new CliError("bad_claim", "worker is required");
@@ -1749,13 +2178,31 @@ export class ResearchStore {
     const leaseExpiresAt = isoAfter(now, input.leaseMs ?? policy.leaseMs);
 
     const transaction = this.db.transaction((): ClaimResult => {
-      const candidate = this.db
-        .query(
-          `SELECT ${JOB_COLUMNS} FROM jobs
-           WHERE state IN ('queued', 'retry_wait') AND run_at <= ?
-           ORDER BY run_at ASC, id ASC LIMIT 1`,
-        )
-        .get(timestamp) as Job | null;
+      let candidate: Job | null;
+      if (input.scope === undefined) {
+        candidate = this.db
+          .query(
+            `SELECT ${JOB_COLUMNS} FROM jobs j
+             WHERE state IN ('queued', 'retry_wait') AND run_at <= ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM operator_run_policies p WHERE p.run_id=j.run_id
+               )
+             ORDER BY run_at ASC, id ASC LIMIT 1`,
+          )
+          .get(timestamp) as Job | null;
+      } else {
+        const scope = this.requireRunScope(input.scope);
+        this.assertRunExecutionLease(scope, input.executionToken, timestamp);
+        const placeholders = scope.allowedKinds.map(() => "?").join(", ");
+        candidate = this.db
+          .query(
+            `SELECT ${JOB_COLUMNS} FROM jobs
+             WHERE state IN ('queued', 'retry_wait') AND run_at <= ?
+               AND run_id=? AND kind IN (${placeholders})
+             ORDER BY run_at ASC, id ASC LIMIT 1`,
+          )
+          .get(timestamp, scope.runId, ...scope.allowedKinds) as Job | null;
+      }
       if (candidate === null) return { claimed: false };
 
       const attemptNumber = candidate.attempt_count + 1;
@@ -2005,27 +2452,52 @@ export class ResearchStore {
    * attempt stale and return its job to retry_wait with infra backoff. A crash
    * is not attributable to the item, so it never consumes the item budget.
    */
-  recoverExpiredLeases(input: LifecycleOptions = {}): RecoveredLease[] {
+  recoverExpiredLeases(
+    input: LifecycleOptions & {
+      scope?: OperatorRunScope;
+      executionToken?: string;
+    } = {},
+  ): RecoveredLease[] {
     const now = input.now ?? new Date();
     const policy = { ...DEFAULT_LIFECYCLE_POLICY, ...input.policy };
     const random = input.random ?? Math.random;
     const timestamp = now.toISOString();
 
     const transaction = this.db.transaction((): RecoveredLease[] => {
-      const expired = this.db
-        .query(
-          `SELECT a.id AS attempt_id, a.job_id AS job_id, j.state AS state,
-                  j.attempt_count AS attempt_count
-           FROM attempts a JOIN jobs j ON j.id = a.job_id
-           WHERE a.state='leased' AND a.lease_expires_at <= ? AND j.state='running'
-           ORDER BY a.id ASC`,
-        )
-        .all(timestamp) as Array<{
+      let expired: Array<{
         attempt_id: number;
         job_id: number;
         state: JobState;
         attempt_count: number;
       }>;
+      if (input.scope === undefined) {
+        expired = this.db
+          .query(
+            `SELECT a.id AS attempt_id, a.job_id AS job_id, j.state AS state,
+                    j.attempt_count AS attempt_count
+             FROM attempts a JOIN jobs j ON j.id = a.job_id
+             WHERE a.state='leased' AND a.lease_expires_at <= ? AND j.state='running'
+               AND NOT EXISTS (
+                 SELECT 1 FROM operator_run_policies p WHERE p.run_id=j.run_id
+               )
+             ORDER BY a.id ASC`,
+          )
+          .all(timestamp) as typeof expired;
+      } else {
+        const scope = this.requireRunScope(input.scope);
+        this.assertRunExecutionLease(scope, input.executionToken, timestamp);
+        const placeholders = scope.allowedKinds.map(() => "?").join(", ");
+        expired = this.db
+          .query(
+            `SELECT a.id AS attempt_id, a.job_id AS job_id, j.state AS state,
+                    j.attempt_count AS attempt_count
+             FROM attempts a JOIN jobs j ON j.id = a.job_id
+             WHERE a.state='leased' AND a.lease_expires_at <= ? AND j.state='running'
+               AND j.run_id=? AND j.kind IN (${placeholders})
+             ORDER BY a.id ASC`,
+          )
+          .all(timestamp, scope.runId, ...scope.allowedKinds) as typeof expired;
+      }
       const recovered: RecoveredLease[] = [];
       for (const row of expired) {
         this.db
@@ -2212,6 +2684,156 @@ export class ResearchStore {
     return transaction.immediate();
   }
 
+  private assertControlledMode(
+    mode: OperatorRunMode,
+    allowedKinds: readonly string[],
+    expectedJobCount: number,
+  ): void {
+    if (mode === "offline" && allowedKinds.includes("url")) {
+      throw new CliError(
+        "offline_scope_external_kind",
+        "offline operator-controlled Run scopes cannot allow URL extraction jobs",
+        { exitCode: 2 },
+      );
+    }
+    if (
+      mode === "online" &&
+      (!sameStrings(allowedKinds, ["url"]) || expectedJobCount !== 2)
+    ) {
+      throw new CliError(
+        "online_scope_policy_mismatch",
+        "online operator-controlled Run scopes require exactly two URL jobs",
+        { exitCode: 2 },
+      );
+    }
+  }
+
+  private loadRunPolicy(runId: number): OperatorRunPolicy | null {
+    const row = this.db
+      .query(
+        `SELECT run_id, mode, authorization_digest, allowed_job_kinds,
+                expected_job_count
+         FROM operator_run_policies WHERE run_id=?`,
+      )
+      .get(runId) as PersistedOperatorRunPolicy | null;
+    return row === null ? null : policyFromRow(row);
+  }
+
+  private requireRunScope(scope: OperatorRunScope): OperatorRunPolicy {
+    if (!Number.isInteger(scope.runId) || scope.runId < 1) {
+      throw new CliError("bad_run_scope", "Run ID must be a positive integer", {
+        exitCode: 2,
+      });
+    }
+    const authorizationDigest = validatedAuthorizationDigest(
+      scope.authorizationDigest,
+    );
+    const allowedKinds = normalizedAllowedKinds(scope.allowedKinds);
+    const policy = this.loadRunPolicy(scope.runId);
+    if (policy === null) {
+      throw new CliError(
+        "run_not_operator_controlled",
+        `Run ${scope.runId} is not operator-controlled`,
+      );
+    }
+    this.assertControlledMode(
+      policy.mode,
+      policy.allowedKinds,
+      policy.expectedJobCount,
+    );
+    if (
+      policy.authorizationDigest !== authorizationDigest ||
+      !sameStrings(policy.allowedKinds, allowedKinds)
+    ) {
+      throw new CliError(
+        "run_scope_mismatch",
+        `operator-controlled Run ${scope.runId} does not match the requested authorization scope`,
+      );
+    }
+    this.assertRunScopeCardinality(policy);
+    return policy;
+  }
+
+  private assertRunExecutionLease(
+    policy: OperatorRunPolicy,
+    executionToken: string | undefined,
+    timestamp: string,
+  ): void {
+    const execution = this.db
+      .query(
+        `SELECT fencing_token, lease_expires_at
+         FROM operator_run_execution_leases WHERE run_id=?`,
+      )
+      .get(policy.runId) as {
+      fencing_token: string;
+      lease_expires_at: string;
+    } | null;
+    if (
+      executionToken === undefined ||
+      execution === null ||
+      execution.fencing_token !== executionToken ||
+      execution.lease_expires_at <= timestamp
+    ) {
+      throw new CliError(
+        "run_scope_fenced",
+        `operator-controlled Run ${policy.runId} execution lease is stale or fenced`,
+      );
+    }
+  }
+
+  private assertRunScopeCardinality(policy: OperatorRunPolicy): void {
+    const placeholders = policy.allowedKinds.map(() => "?").join(", ");
+    const jobs = this.db
+      .query(
+        `SELECT id, kind, intent FROM jobs
+         WHERE run_id=? AND kind IN (${placeholders}) ORDER BY id`,
+      )
+      .all(policy.runId, ...policy.allowedKinds) as Array<{
+      id: number;
+      kind: string;
+      intent: string | null;
+    }>;
+    if (jobs.length !== policy.expectedJobCount) {
+      throw new CliError(
+        "run_scope_cardinality_mismatch",
+        `operator-controlled Run ${policy.runId} expected ${policy.expectedJobCount} authorized jobs but found ${jobs.length}`,
+      );
+    }
+    for (const job of jobs) {
+      let intent: unknown;
+      try {
+        intent = job.intent === null ? null : JSON.parse(job.intent);
+      } catch {
+        intent = null;
+      }
+      if (
+        intent === null ||
+        typeof intent !== "object" ||
+        (intent as { version?: unknown }).version !== 1 ||
+        (intent as { kind?: unknown }).kind !== job.kind
+      ) {
+        throw new CliError(
+          "run_scope_intent_mismatch",
+          `operator-controlled Run ${policy.runId} job ${job.id} has an invalid kind binding`,
+        );
+      }
+    }
+    const disallowed = this.db
+      .query(
+        `SELECT id FROM jobs
+         WHERE run_id=? AND kind NOT IN (${placeholders})
+           AND state IN ('queued', 'running', 'retry_wait')
+         ORDER BY id LIMIT 1`,
+      )
+      .get(policy.runId, ...policy.allowedKinds) as { id: number } | null;
+    if (disallowed !== null) {
+      throw new CliError(
+        "run_scope_disallowed_runnable",
+        `operator-controlled Run ${policy.runId} has runnable work outside its allowed kinds`,
+      );
+    }
+  }
+
   private operatorTransition(
     jobId: number,
     toState: JobState,
@@ -2321,6 +2943,15 @@ export class ResearchStore {
       );
   }
 
+  private runIsOperatorControlled(runId: number | null | undefined): boolean {
+    if (runId === null || runId === undefined) return false;
+    return (
+      this.db
+        .query("SELECT run_id FROM operator_run_policies WHERE run_id=?")
+        .get(runId) !== null
+    );
+  }
+
   private loadJobByKey(idempotencyKey: string): Job | null {
     return this.db
       .query(`SELECT ${JOB_COLUMNS} FROM jobs WHERE idempotency_key=?`)
@@ -2398,6 +3029,7 @@ export class ResearchStore {
         if (version < 5) this.db.exec(MIGRATION_V5);
         if (version < 6) this.db.exec(MIGRATION_V6);
         if (version < 7) this.db.exec(MIGRATION_V7);
+        if (version < 8) this.db.exec(MIGRATION_V8);
       })
       .immediate();
   }

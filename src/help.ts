@@ -244,6 +244,15 @@ Options:
   --lease-ms <n>            Attempt lease duration (default: 60000)
   --heartbeat-ms <n>        Active lease heartbeat interval (default: 20000)
   --shutdown-grace-ms <n>   Bounded completion grace after a signal (default: 10000)
+  --run <id>                Pin an operator-controlled Run
+  --authorization-digest <sha256>  Require the persisted authorization digest
+  --allowed-kind <kind>     Require a persisted allowed job kind; repeatable
+
+Scoped execution requires --once and all three scope options. It performs no scheduling,
+rejects policy or cardinality mismatches before claim, and never falls back to ordinary
+queue claims. Offline Runs cannot authorize URL extraction; online Runs authorize exactly
+two URL jobs already bound to that Run and hold a single fenced execution lease. Ordinary
+workers skip every operator-controlled Run.
 
 Materialization happens outside SQLite write transactions. URL jobs delegate a versioned
 extraction envelope to Scrapectl; unknown envelope versions are protocol defects rather
@@ -254,15 +263,18 @@ expiry.
   jobs: `agentbrain jobs — inspect and operate on ingestion jobs
 
 Usage:
-  agentbrain jobs list [--state STATE] [--limit N] [--json]
+  agentbrain jobs list [--state STATE] [--run RUN_ID] [--limit N] [--json]
   agentbrain jobs show JOB_ID [--reveal-content] [--actor NAME] [--json]
+  agentbrain jobs run RUN_ID [--limit N] [--json]
   agentbrain jobs retry JOB_ID [--reason TEXT] [--actor NAME] [--json]
   agentbrain jobs cancel JOB_ID [--reason TEXT] [--actor NAME] [--json]
   agentbrain jobs exclude JOB_ID --reason TEXT [--actor NAME] [--json]
-  agentbrain jobs stats [--json]
+  agentbrain jobs stats [--run RUN_ID] [--json]
 
-List, ordinary show, and stats are structurally read-only and omit durable intent,
-Artifact bodies, raw URLs, query values, worker names, and detailed diagnostics.
+List, ordinary show, Run inspection, and stats are structurally read-only and omit durable
+intent, Run checkpoints, Artifact bodies, raw URLs, query values, worker names, and
+detailed diagnostics. Run inspection reports only opaque IDs and authorization digests,
+state and kind counts, Attempt counts, quiescence, and bounded safe job views.
 --reveal-content explicitly reads Artifact bodies and appends a sensitive-inspection
 audit record. Retry, cancel, and exclude append transitions and preserve all attempts.
 `,
