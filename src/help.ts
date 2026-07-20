@@ -317,6 +317,7 @@ Options:
   --manifest-generation <path>  Atomic generation pointer, directory, or generation.json
   --artifact-root <path>         Declared root for legacy Markdown; repeatable
   --artifact-store <path>        Destination Artifact store for admitted searchable bodies
+  --authorize-offline            Bind the admitted Run to recovery_offline scoped execution
   --dry-run                      Verify all descriptors, hashes, rows, and frontmatter only
   --json                         Emit a count-only stable envelope
 
@@ -328,8 +329,11 @@ candidate, while only the frontmatter-free body enters the Artifact store.
 Dry-run performs no database or Artifact-store writes. Admission creates one pending
 recovery Run, stable candidate outcomes, 584 ordered legacy-links memberships, body-free
 Secretary observations, 581 runnable offline jobs, 11 blocked jobs, and 37 exclusions.
-The two controlled-online jobs remain blocked until a separate run explicitly authorizes
-egress. Comparison URIs are diagnostic aliases only and never merge candidate outcomes.
+--authorize-offline immutably binds that Run to the generation digest and the logical
+recovery_offline scope, which selects only its 581 recovery file jobs while rejecting URL
+and unrelated file claims. The two controlled-online jobs remain blocked until a separate
+run explicitly authorizes egress. Comparison URIs are diagnostic aliases only and never
+merge candidate outcomes.
 Output contains opaque generation IDs and aggregate counts, never exact candidate URLs,
 private locators, message bodies, credentials, or filesystem paths.
 `,

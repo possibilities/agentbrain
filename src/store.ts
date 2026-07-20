@@ -633,7 +633,15 @@ const MIGRATION_V8 = `
 const MEDIA_TYPE_PATTERN =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[ -~]+)?$/;
 const JOB_KIND_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-const CONTROLLED_JOB_KINDS = new Set(["text", "file", "directory", "url"]);
+export const RECOVERY_OFFLINE_SCOPE_KIND = "recovery_offline";
+const RECOVERY_JOB_IDEMPOTENCY_GLOB = "legacy-recovery-candidate:v1:*";
+const CONTROLLED_JOB_KINDS = new Set([
+  "text",
+  "file",
+  "directory",
+  "url",
+  RECOVERY_OFFLINE_SCOPE_KIND,
+]);
 
 interface PersistedOperatorRunPolicy {
   run_id: number;
@@ -767,6 +775,24 @@ function sameStrings(
     left.length === right.length &&
     left.every((value, index) => value === right[index])
   );
+}
+
+function controlledScopeJobPredicate(
+  policy: Pick<OperatorRunPolicy, "allowedKinds">,
+  alias = "",
+): { sql: string; parameters: string[] } {
+  const column = (name: string): string => (alias ? `${alias}.${name}` : name);
+  if (sameStrings(policy.allowedKinds, [RECOVERY_OFFLINE_SCOPE_KIND])) {
+    return {
+      sql: `${column("kind")}='file' AND ${column("idempotency_key")} GLOB ?`,
+      parameters: [RECOVERY_JOB_IDEMPOTENCY_GLOB],
+    };
+  }
+  const placeholders = policy.allowedKinds.map(() => "?").join(", ");
+  return {
+    sql: `${column("kind")} IN (${placeholders})`,
+    parameters: [...policy.allowedKinds],
+  };
 }
 
 function validatedAuthorizationDigest(value: string): string {
@@ -2053,14 +2079,14 @@ export class ResearchStore {
     const transaction = this.db.transaction((): boolean => {
       const policy = this.requireRunScope(scope);
       this.assertRunExecutionLease(policy, input.executionToken, timestamp);
-      const placeholders = policy.allowedKinds.map(() => "?").join(", ");
+      const eligible = controlledScopeJobPredicate(policy);
       const pending = this.db
         .query(
           `SELECT COUNT(*) AS count FROM jobs
-           WHERE run_id=? AND kind IN (${placeholders})
+           WHERE run_id=? AND (${eligible.sql})
              AND state NOT IN ('completed', 'excluded')`,
         )
-        .get(policy.runId, ...policy.allowedKinds) as { count: number };
+        .get(policy.runId, ...eligible.parameters) as { count: number };
       this.db
         .query(
           `UPDATE runs SET state=?, finished_at=?, updated_at=? WHERE id=?
@@ -2193,15 +2219,15 @@ export class ResearchStore {
       } else {
         const scope = this.requireRunScope(input.scope);
         this.assertRunExecutionLease(scope, input.executionToken, timestamp);
-        const placeholders = scope.allowedKinds.map(() => "?").join(", ");
+        const eligible = controlledScopeJobPredicate(scope);
         candidate = this.db
           .query(
             `SELECT ${JOB_COLUMNS} FROM jobs
              WHERE state IN ('queued', 'retry_wait') AND run_at <= ?
-               AND run_id=? AND kind IN (${placeholders})
+               AND run_id=? AND (${eligible.sql})
              ORDER BY run_at ASC, id ASC LIMIT 1`,
           )
-          .get(timestamp, scope.runId, ...scope.allowedKinds) as Job | null;
+          .get(timestamp, scope.runId, ...eligible.parameters) as Job | null;
       }
       if (candidate === null) return { claimed: false };
 
@@ -2486,17 +2512,21 @@ export class ResearchStore {
       } else {
         const scope = this.requireRunScope(input.scope);
         this.assertRunExecutionLease(scope, input.executionToken, timestamp);
-        const placeholders = scope.allowedKinds.map(() => "?").join(", ");
+        const eligible = controlledScopeJobPredicate(scope, "j");
         expired = this.db
           .query(
             `SELECT a.id AS attempt_id, a.job_id AS job_id, j.state AS state,
                     j.attempt_count AS attempt_count
              FROM attempts a JOIN jobs j ON j.id = a.job_id
              WHERE a.state='leased' AND a.lease_expires_at <= ? AND j.state='running'
-               AND j.run_id=? AND j.kind IN (${placeholders})
+               AND j.run_id=? AND (${eligible.sql})
              ORDER BY a.id ASC`,
           )
-          .all(timestamp, scope.runId, ...scope.allowedKinds) as typeof expired;
+          .all(
+            timestamp,
+            scope.runId,
+            ...eligible.parameters,
+          ) as typeof expired;
       }
       const recovered: RecoveredLease[] = [];
       for (const row of expired) {
@@ -2697,6 +2727,17 @@ export class ResearchStore {
       );
     }
     if (
+      allowedKinds.includes(RECOVERY_OFFLINE_SCOPE_KIND) &&
+      (mode !== "offline" ||
+        !sameStrings(allowedKinds, [RECOVERY_OFFLINE_SCOPE_KIND]))
+    ) {
+      throw new CliError(
+        "recovery_offline_scope_mismatch",
+        "recovery_offline must be the only allowed kind in an offline scope",
+        { exitCode: 2 },
+      );
+    }
+    if (
       mode === "online" &&
       (!sameStrings(allowedKinds, ["url"]) || expectedJobCount !== 2)
     ) {
@@ -2782,13 +2823,13 @@ export class ResearchStore {
   }
 
   private assertRunScopeCardinality(policy: OperatorRunPolicy): void {
-    const placeholders = policy.allowedKinds.map(() => "?").join(", ");
+    const eligible = controlledScopeJobPredicate(policy);
     const jobs = this.db
       .query(
         `SELECT id, kind, intent FROM jobs
-         WHERE run_id=? AND kind IN (${placeholders}) ORDER BY id`,
+         WHERE run_id=? AND (${eligible.sql}) ORDER BY id`,
       )
-      .all(policy.runId, ...policy.allowedKinds) as Array<{
+      .all(policy.runId, ...eligible.parameters) as Array<{
       id: number;
       kind: string;
       intent: string | null;
@@ -2821,11 +2862,11 @@ export class ResearchStore {
     const disallowed = this.db
       .query(
         `SELECT id FROM jobs
-         WHERE run_id=? AND kind NOT IN (${placeholders})
+         WHERE run_id=? AND NOT (${eligible.sql})
            AND state IN ('queued', 'running', 'retry_wait')
          ORDER BY id LIMIT 1`,
       )
-      .get(policy.runId, ...policy.allowedKinds) as { id: number } | null;
+      .get(policy.runId, ...eligible.parameters) as { id: number } | null;
     if (disallowed !== null) {
       throw new CliError(
         "run_scope_disallowed_runnable",

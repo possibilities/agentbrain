@@ -54,7 +54,14 @@ export interface RecoveryImportReport {
     artifacts_created: number;
     artifacts_existing: number;
   };
-  run: { id: number | null; state: "verified" | "pending" };
+  run: {
+    id: number | null;
+    state: "verified" | "pending";
+    operator_controlled: boolean;
+    authorization_digest: string | null;
+    allowed_job_kinds: string[];
+    expected_job_count: number | null;
+  };
 }
 
 export type ChunkBlockType =

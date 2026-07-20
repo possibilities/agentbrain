@@ -436,7 +436,7 @@ test("disposable rehearsal drives the frozen generation through the installed CL
   expect(preBackup.exitCode, preBackup.stderr).toBe(0);
 
   // Phase 2: real admission into the disposable database.
-  const imported = runCli(importArgs, env);
+  const imported = runCli([...importArgs, "--authorize-offline"], env);
   expect(imported.exitCode, imported.stderr).toBe(0);
   const importData = jsonData(imported);
   expect(importData).toMatchObject({
@@ -447,12 +447,34 @@ test("disposable rehearsal drives the frozen generation through the installed CL
     jobs: { queued: 581, blocked: 11, excluded: 37, created: 629, existing: 0 },
     effects: { candidate_outcomes_created: 1088, observations_created: 294 },
   });
-  expect((importData.run as { id: number }).id).toBeGreaterThan(0);
+  const runId = (importData.run as { id: number }).id;
+  expect(runId).toBeGreaterThan(0);
+  expect(importData.run).toMatchObject({
+    operator_controlled: true,
+    authorization_digest: generationId.slice("sha256-".length),
+    allowed_job_kinds: ["recovery_offline"],
+    expected_job_count: 581,
+  });
   assertSanitized(imported);
 
   // Phase 2: drain only the 581 offline jobs; approved-online jobs stay
   // non-runnable and no extractor is ever invoked.
-  const drain = runCli(["worker", "--once", "--db", dbPath, "--json"], env);
+  const drain = runCli(
+    [
+      "worker",
+      "--once",
+      "--run",
+      String(runId),
+      "--authorization-digest",
+      generationId.slice("sha256-".length),
+      "--allowed-kind",
+      "recovery_offline",
+      "--db",
+      dbPath,
+      "--json",
+    ],
+    env,
+  );
   expect(drain.exitCode, drain.stderr).toBe(0);
   expect(jsonData(drain)).toMatchObject({
     claimed: 581,
@@ -551,7 +573,7 @@ test("disposable rehearsal drives the frozen generation through the installed CL
   restoredDb.close();
 
   // Phase 3: idempotent replay against the live database creates no new work.
-  const replay = runCli(importArgs, env);
+  const replay = runCli([...importArgs, "--authorize-offline"], env);
   expect(replay.exitCode, replay.stderr).toBe(0);
   expect(jsonData(replay)).toMatchObject({
     jobs: { created: 0, existing: 629 },

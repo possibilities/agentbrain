@@ -46,7 +46,7 @@ import {
   humanTags,
   searchJsonl,
 } from "./render";
-import { ResearchStore } from "./store";
+import { RECOVERY_OFFLINE_SCOPE_KIND, ResearchStore } from "./store";
 import { normalizeTags } from "./text";
 import type {
   GlobalOptions,
@@ -120,7 +120,13 @@ const DELETE_OPTION_SPECS = {
   confirm: { type: "string" },
 } as const;
 
-const WORKER_SCOPE_KINDS = new Set(["text", "file", "directory", "url"]);
+const WORKER_SCOPE_KINDS = new Set([
+  "text",
+  "file",
+  "directory",
+  "url",
+  RECOVERY_OFFLINE_SCOPE_KIND,
+]);
 
 async function runParsed(
   parsed: ReturnType<typeof parseTopLevel>,
@@ -771,6 +777,7 @@ function runRecovery(
     "manifest-generation": { type: "string" },
     "artifact-root": { type: "string", multiple: true },
     "artifact-store": { type: "string" },
+    "authorize-offline": { type: "boolean", default: false },
     "dry-run": { type: "boolean", default: false },
   });
   const named = optString(opts, "manifest-generation");
@@ -785,6 +792,14 @@ function runRecovery(
     );
   }
   const dryRun = optBoolean(opts, "dry-run");
+  const authorizeOffline = optBoolean(opts, "authorize-offline");
+  if (dryRun && authorizeOffline) {
+    throw new CliError(
+      "bad_recovery_authorization",
+      "--authorize-offline cannot be combined with --dry-run",
+      { exitCode: 2 },
+    );
+  }
   const generation = readRecoveryGeneration(named ?? opts._[0], {
     artifactRoots: optStrings(opts, "artifact-root"),
   });
@@ -807,7 +822,10 @@ function runRecovery(
     const artifactStore = new ArtifactStore(
       optString(opts, "artifact-store") ?? defaultArtifactRoot(),
     );
-    const data = admitRecoveryGeneration(store, generation, { artifactStore });
+    const data = admitRecoveryGeneration(store, generation, {
+      artifactStore,
+      authorizeOffline,
+    });
     writeByFormat(
       "recovery import",
       data,

@@ -117,12 +117,13 @@ Recovery admits one immutable, hash-bound frozen generation of legacy candidate 
 
 ```bash
 agentbrain recovery import --manifest-generation ~/.local/share/agentbrain/recovery/manifests/current --dry-run --json
-agentbrain recovery import --manifest-generation ~/.local/share/agentbrain/recovery/manifests/current --artifact-root ~/content/links --json
+agentbrain recovery import --manifest-generation ~/.local/share/agentbrain/recovery/manifests/current --artifact-root ~/content/links --authorize-offline --json
+agentbrain worker --once --run OFFLINE_RUN_ID --authorization-digest GENERATION_DIGEST --allowed-kind recovery_offline --json
 ```
 
 Dry-run verifies every descriptor, checksum, candidate row, and local Markdown front-matter without writing to the database or the Artifact store and without invoking Scrapectl. It reports the exact accounting only: 1,088 candidate outcomes, 294 Secretary observations, 118 provenance merges, 13 appended exact candidates, 584 ordered `legacy-links` memberships, and 581 approved offline artifacts. Comparison URIs are diagnostic aliases; they never collapse candidate outcomes.
 
-Admission is offline, idempotent, and resumable. It creates one pending recovery Run, stable candidate outcomes, body-free observations, 581 runnable offline file jobs, 11 blocked jobs, and 37 exclusions; review and evidence-only cohorts create no jobs at all. The two human-approved candidates for **controlled online backfill** are admitted as **blocked** jobs and are never claimable by `worker`; egress stays deferred to the separate downstream online phase. Draining the queue with `agentbrain worker --once` completes only the offline jobs — file jobs read retained bytes from the Artifact store, so no offline completion touches the network.
+Admission is offline, idempotent, and resumable. It creates one pending recovery Run, stable candidate outcomes, body-free observations, 581 runnable offline file jobs, 11 blocked jobs, and 37 exclusions; review and evidence-only cohorts create no jobs at all. `--authorize-offline` immutably binds the Run to the generation digest and logical `recovery_offline` kind. Ordinary workers then skip the controlled Run, while the matching scoped command claims only its 581 recovery file jobs. The two human-approved candidates for **controlled online backfill** are admitted as **blocked** jobs and are never eligible for the offline scope; egress stays deferred to the separate downstream online phase.
 
 Every recovery surface is count-only: output carries opaque generation IDs, aggregate counts, and snapshot hashes, never exact candidate URLs, private locators, message bodies, chat/session identifiers, credentials, or filesystem paths.
 

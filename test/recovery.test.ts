@@ -20,7 +20,7 @@ import {
   type VerifiedRecoveryCandidate,
   type VerifiedRecoveryGeneration,
 } from "../src/recovery";
-import { ResearchStore } from "../src/store";
+import { RECOVERY_OFFLINE_SCOPE_KIND, ResearchStore } from "../src/store";
 import { runWorker } from "../src/worker";
 
 const REPO = join(import.meta.dir, "..");
@@ -550,6 +550,7 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
   const artifacts = new ArtifactStore(artifactRoot);
   const first = admitRecoveryGeneration(store, generation, {
     artifactStore: artifacts,
+    authorizeOffline: true,
     now: new Date("2026-07-19T00:00:00.000Z"),
   });
   expect(first.jobs).toMatchObject({
@@ -637,9 +638,27 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
   expect(body).not.toContain("url:");
   expect(body).toContain("Searchable legacy body");
 
+  expect(first.run).toMatchObject({
+    operator_controlled: true,
+    authorization_digest: generation.generationDigest,
+    allowed_job_kinds: [RECOVERY_OFFLINE_SCOPE_KIND],
+    expected_job_count: 581,
+  });
+  expect(
+    store.claimJob({
+      worker: "ordinary-worker-must-skip-recovery",
+      now: new Date("2026-07-19T00:30:00.000Z"),
+    }),
+  ).toEqual({ claimed: false });
+
   let networkCalls = 0;
   const worker = await runWorker(store, {
     once: true,
+    scope: {
+      runId: first.run.id as number,
+      authorizationDigest: generation.generationDigest,
+      allowedKinds: [RECOVERY_OFFLINE_SCOPE_KIND],
+    },
     artifactStore: artifacts,
     installSignalHandlers: false,
     extract: async () => {
@@ -674,6 +693,7 @@ test("admission is offline, idempotent, and preserves every exact candidate outc
   );
   const second = admitRecoveryGeneration(store, generation, {
     artifactStore: artifacts,
+    authorizeOffline: true,
     now: new Date("2026-07-19T01:00:00.000Z"),
   });
   expect(second.jobs).toMatchObject({ created: 0, existing: 629 });
