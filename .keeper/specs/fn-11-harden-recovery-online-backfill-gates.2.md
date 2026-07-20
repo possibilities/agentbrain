@@ -12,5 +12,5 @@ Resolve in one of two directions: (a) scope the infra reclassification to the re
 - [ ] The chosen direction is covered by a test in `test/scrapectl.test.ts`
 
 ## Done summary
-
+Reverted the unconditional upstream_unavailable to infra/infrastructure reclassification in envelopeFailure back to item_transient/item, restoring bounded-retry-then-permanent-failure semantics for ordinary URL jobs on a persistent upstream outage; the existing table-driven test in test/scrapectl.test.ts directly asserts the restored classification.
 ## Evidence
