@@ -22,5 +22,5 @@ Files: src/worker.ts, test/worker.test.ts (or test/recovery.test.ts).
 - [ ] Regression test asserts the job->resource->document link after a cross-candidate content collision.
 
 ## Done summary
-
+Fixed the foreign-owner merge branch in applyDocuments to set firstResourceId = resource.id (the document-owning resource) instead of recoveryResource.id, restoring job->resource->document resolution after a cross-candidate content collision merge; added a regression test asserting the full link.
 ## Evidence
