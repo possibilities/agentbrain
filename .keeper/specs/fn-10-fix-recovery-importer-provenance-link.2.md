@@ -21,5 +21,5 @@ shell test suite.
 - [ ] Shell test covers the prune/cleanup behavior.
 
 ## Done summary
-
+Prune stale Agentbrain restic snapshot dirs in restic-backup and its silverbird variant after each successful snapshot, drop the now-redundant explicit $SNAPSHOT_DIR restic source entry, and add regression test coverage for the cleanup.
 ## Evidence
