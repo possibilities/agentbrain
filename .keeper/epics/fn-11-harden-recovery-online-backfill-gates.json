@@ -1,0 +1,19 @@
+{
+  "branch_name": "main",
+  "bundles": [],
+  "created_at": "2026-07-20T20:33:25.343000Z",
+  "created_by_close_of": "fn-5-execute-approved-corpus-import",
+  "depends_on_epics": [
+    "fn-5-execute-approved-corpus-import"
+  ],
+  "id": "fn-11-harden-recovery-online-backfill-gates",
+  "last_validated_at": null,
+  "primary_repo": "/Users/mike/code/agentbrain",
+  "snippets": [],
+  "status": "open",
+  "title": "Harden recovery online-backfill gates and retry semantics",
+  "touched_repos": [
+    "/Users/mike/code/agentbrain"
+  ],
+  "updated_at": "2026-07-20T20:33:25.343000Z"
+}

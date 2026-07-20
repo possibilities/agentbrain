@@ -1,0 +1,14 @@
+{
+  "bundles": [],
+  "created_at": "2026-07-20T20:33:25.343000Z",
+  "depends_on": [],
+  "epic": "fn-11-harden-recovery-online-backfill-gates",
+  "id": "fn-11-harden-recovery-online-backfill-gates.2",
+  "model": "opus",
+  "priority": null,
+  "snippets": [],
+  "target_repo": "/Users/mike/code/agentbrain",
+  "tier": "xhigh",
+  "title": "Scope upstream_unavailable retry reclassification",
+  "updated_at": "2026-07-20T20:33:25.343000Z"
+}
