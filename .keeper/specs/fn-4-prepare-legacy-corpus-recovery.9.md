@@ -67,5 +67,5 @@ only; no repository, credential, or network access.
   asserts the accepted shape) and all touched shell tests pass via their named gates
 
 ## Done summary
-
+Fixed both restic-backup scripts to invoke agentbrain backup create with --output <fresh-path> instead of the invented --destination flag, tightened the JSON success check to the CLI's real {schema_version,ok,command,data.backup_path} envelope, and rewrote the fake-binary test to reject --destination, enforce the real invocation shape, and prove consecutive runs never collide on output paths.
 ## Evidence
