@@ -56,5 +56,5 @@ Run a tagged/dry snapshot in each repository, restore the frozen generation and 
 - [ ] Existing backup monitoring, retry-lock, and scheduled integrity behavior remains intact.
 
 ## Done summary
-
+Both Restic backup scripts now fail closed unless the Agentbrain recovery generation checksum verifies and a consistent snapshot succeeds; extended B2/Silverbird source coverage, added credential/session exclusions, documented sampled restore verification, and added an isolated shell test suite.
 ## Evidence

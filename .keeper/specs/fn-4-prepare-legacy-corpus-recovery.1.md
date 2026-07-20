@@ -54,5 +54,5 @@ Use only temporary databases until restore tests pass; live snapshot creation be
 - [ ] Normal backup tests require no live worker, Restic repository, or network.
 
 ## Done summary
-
+Added agentbrain backup create/verify using a SQLite VACUUM INTO snapshot, body-free artifact/reference manifest, and isolated restore verification (integrity, schema, digests, FTS rebuild) with atomic staging and interrupted-creation cleanup.
 ## Evidence

@@ -62,5 +62,5 @@ Preserve the baseline manifest and current private evidence unchanged. Publish a
 - [ ] Synthetic validation is deterministic and offline, and all frozen private files verify as `0600` beneath `0700` directories.
 
 ## Done summary
-
+Verified the frozen live-scan/DB-scan inputs and published a hash-addressed 1,088-candidate recovery generation (sha256-c16991f1...) under ~/.local/share/agentbrain/recovery/manifests/, with 118 provenance merges, 13 deterministic new candidates split into 6 test-exclusions/2 approved-online/5 bot-review, a private allowlist binding exactly the 2 approved candidate evidence row IDs, and a count-only public summary at ~/docs/agentbrain-telegram-link-recovery-summary-2026-07-18.json. All numbers match ADR 0010's locked contract; no repo-tracked files changed, so no source commit was required.
 ## Evidence

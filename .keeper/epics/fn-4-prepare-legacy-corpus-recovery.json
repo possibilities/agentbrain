@@ -7,7 +7,7 @@
     "fn-1-build-durable-ingestion-core"
   ],
   "id": "fn-4-prepare-legacy-corpus-recovery",
-  "last_validated_at": "2026-07-18T23:52:13.415000Z",
+  "last_validated_at": "2026-07-19T22:46:30.893000Z",
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -16,5 +16,5 @@
     "/Users/mike/code/agentbrain",
     "/Users/mike/code/dotfiles"
   ],
-  "updated_at": "2026-07-18T23:52:13.415000Z"
+  "updated_at": "2026-07-19T23:22:43.498000Z"
 }
