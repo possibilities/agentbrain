@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -414,10 +414,170 @@ function assertSanitized(result: CliResult): void {
   expect(text).not.toContain("legacy-artifacts");
 }
 
+interface PreparedOnlineGateFixture extends Fixture {
+  dbPath: string;
+  env: Record<string, string>;
+  offlineRunId: number;
+  onlineArgs: string[];
+  postSnapshot: string;
+  sentinel: string;
+}
+
+function prepareOfflineRunForOnlineGate(): PreparedOnlineGateFixture {
+  const fixture = makeFixture();
+  const { binDir, sentinel } = forbiddenScrapectl(fixture.root);
+  const dataHome = join(fixture.root, "data");
+  const dbPath = join(fixture.root, "online-gate.db");
+  const env = {
+    XDG_DATA_HOME: dataHome,
+    PATH: `${binDir}:${originalPath}`,
+  };
+  const importArgs = [
+    "recovery",
+    "import",
+    "--manifest-generation",
+    fixture.descriptor,
+    "--artifact-root",
+    fixture.artifactRoot,
+    "--authorize-offline",
+    "--db",
+    dbPath,
+    "--json",
+  ];
+  const imported = runCli(importArgs, env);
+  expect(imported.exitCode, imported.stdout + imported.stderr).toBe(0);
+  const importData = jsonData(imported);
+  const offlineRunId = (importData.run as { id: number }).id;
+  const generationId = importData.generation_id as string;
+
+  const drained = runCli(
+    [
+      "worker",
+      "--once",
+      "--run",
+      String(offlineRunId),
+      "--authorization-digest",
+      generationId.slice("sha256-".length),
+      "--allowed-kind",
+      "recovery_offline",
+      "--db",
+      dbPath,
+      "--json",
+    ],
+    env,
+  );
+  expect(drained.exitCode, drained.stdout + drained.stderr).toBe(0);
+  expect(jsonData(drained)).toMatchObject({
+    claimed: 581,
+    completed: 581,
+    failed: 0,
+  });
+
+  const postSnapshot = join(fixture.root, "online-gate-snapshot");
+  const backedUp = runCli(
+    ["backup", "create", "--output", postSnapshot, "--db", dbPath, "--json"],
+    env,
+  );
+  expect(backedUp.exitCode, backedUp.stdout + backedUp.stderr).toBe(0);
+  const onlineArgs = [
+    "recovery",
+    "online",
+    "--manifest-generation",
+    fixture.descriptor,
+    "--artifact-root",
+    fixture.artifactRoot,
+    "--artifact-store",
+    join(dataHome, "agentbrain", "artifacts"),
+    "--offline-run",
+    String(offlineRunId),
+    "--post-offline-snapshot",
+    postSnapshot,
+    "--generation-digest",
+    generationId.slice("sha256-".length),
+    "--approval-digest",
+    digest(readFileSync(join(fixture.generationRoot, "online-allowlist.json"))),
+    "--snapshot-digest",
+    String(jsonData(backedUp).database_sha256),
+    "--db",
+    dbPath,
+    "--json",
+  ];
+  expect(existsSync(sentinel)).toBe(false);
+  return {
+    ...fixture,
+    dbPath,
+    env,
+    offlineRunId,
+    onlineArgs,
+    postSnapshot,
+    sentinel,
+  };
+}
+
+let sharedOnlineGateFixture: PreparedOnlineGateFixture | null = null;
+
+function resetOnlineGateFixture(): PreparedOnlineGateFixture {
+  if (sharedOnlineGateFixture === null) {
+    sharedOnlineGateFixture = prepareOfflineRunForOnlineGate();
+    const rootIndex = roots.indexOf(sharedOnlineGateFixture.root);
+    if (rootIndex >= 0) roots.splice(rootIndex, 1);
+  }
+  for (const suffix of ["", "-shm", "-wal"]) {
+    rmSync(`${sharedOnlineGateFixture.dbPath}${suffix}`, { force: true });
+  }
+  cpSync(
+    join(sharedOnlineGateFixture.postSnapshot, BACKUP_DATABASE_FILE),
+    sharedOnlineGateFixture.dbPath,
+  );
+  return sharedOnlineGateFixture;
+}
+
+function updateDatabase(path: string, update: (db: Database) => void): void {
+  const db = new Database(path);
+  try {
+    update(db);
+  } finally {
+    db.close();
+  }
+}
+
+function expectOnlineError(result: CliResult, expectedCode: string): void {
+  expect(result.exitCode, result.stdout + result.stderr).toBe(2);
+  const output = JSON.parse(result.stdout) as { error: { code: string } };
+  expect(output.error.code).toBe(expectedCode);
+  assertSanitized(result);
+}
+
+function insertPostSnapshotJob(
+  db: Database,
+  idempotencyKey: string,
+  state: "blocked" | "running" = "blocked",
+): number {
+  const timestamp = "2099-01-01T00:00:00.000Z";
+  return Number(
+    db
+      .query(
+        `INSERT INTO jobs(
+           idempotency_key, kind, state, sensitivity, run_at, created_at,
+           updated_at
+         ) VALUES (?, 'text', ?, 'normal', ?, ?, ?)`,
+      )
+      .run(idempotencyKey, state, timestamp, timestamp, timestamp)
+      .lastInsertRowid,
+  );
+}
+
 afterEach(() => {
   process.env.PATH = originalPath;
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+afterAll(() => {
+  if (sharedOnlineGateFixture !== null) {
+    rmSync(sharedOnlineGateFixture.root, { recursive: true, force: true });
+    sharedOnlineGateFixture = null;
   }
 });
 
@@ -799,6 +959,111 @@ test("disposable rehearsal drives the frozen generation through the installed CL
     jobs: { queued: 581, blocked: 11, excluded: 37, created: 629, existing: 0 },
     effects: { candidate_outcomes_created: 1088, observations_created: 294 },
   });
+}, 120000);
+
+test("controlled online preparation rejects a live corpus divergent from its post-offline snapshot", () => {
+  const fixture = resetOnlineGateFixture();
+  updateDatabase(fixture.dbPath, (db) => {
+    db.query(
+      `UPDATE documents SET source_uri=source_uri || '#live-divergence'
+       WHERE id=(
+         SELECT r.document_id
+         FROM jobs j JOIN resources r ON r.id=j.resource_id
+         WHERE j.run_id=? AND j.kind='file' AND j.state='completed'
+         ORDER BY j.id LIMIT 1
+       )`,
+    ).run(fixture.offlineRunId);
+  });
+
+  const result = runCli(fixture.onlineArgs, fixture.env);
+  expectOnlineError(result, "recovery_snapshot_corpus_mismatch");
+  expect(existsSync(fixture.sentinel)).toBe(false);
+}, 240000);
+
+test("controlled online preparation rejects broken frozen recovery accounting", () => {
+  const fixture = resetOnlineGateFixture();
+  updateDatabase(fixture.dbPath, (db) => {
+    db.query(
+      `UPDATE jobs SET state='cancelled'
+       WHERE id=(
+         SELECT id FROM jobs
+         WHERE run_id=? AND state='excluded' ORDER BY id LIMIT 1
+       )`,
+    ).run(fixture.offlineRunId);
+  });
+
+  const result = runCli(fixture.onlineArgs, fixture.env);
+  expectOnlineError(result, "recovery_offline_accounting_mismatch");
+  expect(existsSync(fixture.sentinel)).toBe(false);
+}, 120000);
+
+test("controlled online preparation rejects tampered protected ingestion ledger inventory", () => {
+  const fixture = resetOnlineGateFixture();
+  const prepared = runCli(fixture.onlineArgs, fixture.env);
+  expect(prepared.exitCode, prepared.stdout + prepared.stderr).toBe(0);
+  updateDatabase(fixture.dbPath, (db) => {
+    db.query(
+      `UPDATE jobs SET updated_at='2099-01-01T00:00:00.000Z'
+       WHERE id=(SELECT MIN(id) FROM jobs)`,
+    ).run();
+  });
+
+  const result = runCli(fixture.onlineArgs, fixture.env);
+  expectOnlineError(result, "recovery_protected_jobs_changed");
+  expect(existsSync(fixture.sentinel)).toBe(false);
+}, 120000);
+
+test("controlled online preparation rejects scope widened after activation", () => {
+  const fixture = resetOnlineGateFixture();
+  const prepared = runCli(fixture.onlineArgs, fixture.env);
+  expect(prepared.exitCode, prepared.stdout + prepared.stderr).toBe(0);
+  updateDatabase(fixture.dbPath, (db) => {
+    insertPostSnapshotJob(db, "test:recovery-online-scope-widened");
+  });
+
+  const result = runCli(fixture.onlineArgs, fixture.env);
+  expectOnlineError(result, "recovery_scope_widened");
+  expect(existsSync(fixture.sentinel)).toBe(false);
+}, 120000);
+
+test("controlled online preparation rejects a post-snapshot ingestion job", () => {
+  const fixture = resetOnlineGateFixture();
+  updateDatabase(fixture.dbPath, (db) => {
+    insertPostSnapshotJob(db, "test:recovery-online-snapshot-stale");
+  });
+
+  const result = runCli(fixture.onlineArgs, fixture.env);
+  expectOnlineError(result, "recovery_snapshot_stale");
+  expect(existsSync(fixture.sentinel)).toBe(false);
+}, 120000);
+
+test("controlled online preparation requires every Worker to be quiescent", () => {
+  const fixture = resetOnlineGateFixture();
+  updateDatabase(fixture.dbPath, (db) => {
+    const jobId = insertPostSnapshotJob(
+      db,
+      "test:recovery-online-non-quiescent",
+      "running",
+    );
+    const timestamp = "2099-01-01T00:00:00.000Z";
+    const attemptId = Number(
+      db
+        .query(
+          `INSERT INTO attempts(
+             job_id, attempt_number, worker, state, lease_expires_at,
+             heartbeat_at, started_at
+           ) VALUES (?, 1, 'non-quiescent-worker', 'leased', ?, ?, ?)`,
+        )
+        .run(jobId, timestamp, timestamp, timestamp).lastInsertRowid,
+    );
+    db.query(
+      `UPDATE jobs SET attempt_count=1, current_attempt_id=? WHERE id=?`,
+    ).run(attemptId, jobId);
+  });
+
+  const result = runCli(fixture.onlineArgs, fixture.env);
+  expectOnlineError(result, "recovery_workers_not_quiescent");
+  expect(existsSync(fixture.sentinel)).toBe(false);
 }, 120000);
 
 test("a tampered generation file fails closed without writing state or leaking locators", () => {
