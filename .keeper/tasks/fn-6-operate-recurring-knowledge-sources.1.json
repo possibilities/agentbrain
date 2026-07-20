@@ -11,5 +11,6 @@
   "target_repo": "/Users/mike/code/arthack",
   "tier": "xhigh",
   "title": "Add feed archive discovery",
-  "updated_at": "2026-07-18T21:31:56.368000Z"
+  "updated_at": "2026-07-20T21:43:11.503000Z",
+  "worker_done_at": "2026-07-20T21:43:11.503000Z"
 }

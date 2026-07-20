@@ -54,5 +54,5 @@ Ship the command with fixtures before any Agentbrain source enables it; source-s
 - [ ] All tests use local fixtures with no browser, credentials, or network.
 
 ## Done summary
-
+Added Scrapectl discover-feed: bounded, network-free RSS/Atom and configured-archive discovery producing stable IDs, tombstones, validators/cursor, pagination evidence, and classified failures, with fixture-backed tests and README docs.
 ## Evidence
