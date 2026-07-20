@@ -329,6 +329,13 @@ export function showRun(
   } | null;
   if (run === null)
     throw new CliError("run_not_found", `Run ${runId} not found`);
+  const onlineStatus = cache.db
+    .query("SELECT status FROM recovery_online_runs WHERE run_id=?")
+    .get(runId) as { status: string } | null;
+  const effectiveState: RunState =
+    onlineStatus?.status === "completed_with_review"
+      ? "completed_with_review"
+      : run.state;
 
   const policy = safeRunPolicy(cache, run.id);
   const operatorControlled =
@@ -413,7 +420,7 @@ export function showRun(
     id: run.id,
     run_type: safeClass(run.run_type),
     source_id: run.source_id,
-    state: run.state,
+    state: effectiveState,
     operator_controlled: operatorControlled,
     execution_mode: policy?.mode ?? null,
     authorization_digest: policy?.authorizationDigest ?? null,

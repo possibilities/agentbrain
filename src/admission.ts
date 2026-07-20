@@ -573,6 +573,7 @@ interface RecoveryCandidateEffect {
 }
 
 export const RECOVERY_JOB_PREFIX = "legacy-recovery-candidate:v1:";
+export const RECOVERY_ONLINE_JOB_PREFIX = `${RECOVERY_JOB_PREFIX}online:`;
 
 function recoveryAdmissionError(code: string, message: string): CliError {
   return new CliError(code, message, { exitCode: 2 });
@@ -598,7 +599,9 @@ function recoveryJobState(
   return null;
 }
 
-function recoveryUrlIntent(candidate: VerifiedRecoveryCandidate): string {
+export function recoveryUrlIntent(
+  candidate: VerifiedRecoveryCandidate,
+): string {
   const intent: DurableSubmissionIntent = {
     version: SUBMISSION_VERSION,
     kind: "url",

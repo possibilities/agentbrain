@@ -36,6 +36,10 @@ import {
 } from "./jobs";
 import { readRecoveryGeneration } from "./recovery";
 import {
+  executeRecoveryOnlineBackfill,
+  prepareRecoveryOnlineBackfill,
+} from "./recovery-online";
+import {
   humanChunk,
   humanContext,
   humanDocument,
@@ -46,7 +50,11 @@ import {
   humanTags,
   searchJsonl,
 } from "./render";
-import { RECOVERY_OFFLINE_SCOPE_KIND, ResearchStore } from "./store";
+import {
+  RECOVERY_OFFLINE_SCOPE_KIND,
+  RECOVERY_ONLINE_SCOPE_KIND,
+  ResearchStore,
+} from "./store";
 import { normalizeTags } from "./text";
 import type {
   GlobalOptions,
@@ -126,6 +134,7 @@ const WORKER_SCOPE_KINDS = new Set([
   "directory",
   "url",
   RECOVERY_OFFLINE_SCOPE_KIND,
+  RECOVERY_ONLINE_SCOPE_KIND,
 ]);
 
 async function runParsed(
@@ -176,7 +185,11 @@ async function runParsed(
   }
 
   if (command === "recovery") {
-    runRecovery(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);
+    await runRecovery(
+      parsed.globals.dbPath,
+      parsed.commandArgv,
+      parsed.globals,
+    );
     return;
   }
 
@@ -760,16 +773,127 @@ function runBackup(
   if (!data.verified) process.exitCode = 1;
 }
 
-function runRecovery(
+async function runRecoveryOnline(
   dbPath: string,
   argv: string[],
   globals: GlobalOptions,
-): void {
+): Promise<void> {
+  const opts = parseOptions(argv, {
+    "manifest-generation": { type: "string" },
+    "artifact-root": { type: "string", multiple: true },
+    "artifact-store": { type: "string" },
+    "offline-run": { type: "number" },
+    "post-offline-snapshot": { type: "string" },
+    "generation-digest": { type: "string" },
+    "approval-digest": { type: "string" },
+    "snapshot-digest": { type: "string" },
+    execute: { type: "boolean", default: false },
+    "worker-id": { type: "string" },
+    "lease-ms": { type: "number", default: 60000 },
+    "heartbeat-ms": { type: "number", default: 20000 },
+    "shutdown-grace-ms": { type: "number", default: 10000 },
+  });
+  if (opts._.length !== 0) {
+    throw new CliError(
+      "unexpected_args",
+      "recovery online accepts no positional arguments",
+      { exitCode: 2 },
+    );
+  }
+  const manifestGeneration = optString(opts, "manifest-generation");
+  const offlineRun = optNumber(opts, "offline-run");
+  const postOfflineSnapshot = optString(opts, "post-offline-snapshot");
+  const generationDigest = optString(opts, "generation-digest");
+  const approvalDigest = optString(opts, "approval-digest");
+  const snapshotDigest = optString(opts, "snapshot-digest");
+  if (
+    manifestGeneration === undefined ||
+    offlineRun === undefined ||
+    postOfflineSnapshot === undefined ||
+    generationDigest === undefined ||
+    approvalDigest === undefined ||
+    snapshotDigest === undefined
+  ) {
+    throw new CliError(
+      "incomplete_recovery_online_authorization",
+      "recovery online requires the generation, linked offline Run, verified snapshot, and all three explicit digests",
+      { exitCode: 2, hint: "Run `agentbrain help recovery` for usage." },
+    );
+  }
+  const generation = readRecoveryGeneration(manifestGeneration, {
+    artifactRoots: optStrings(opts, "artifact-root"),
+  });
+  const store = new ResearchStore(dbPath);
+  try {
+    const artifactStore = new ArtifactStore(
+      optString(opts, "artifact-store") ?? defaultArtifactRoot(),
+    );
+    const common = {
+      offlineRunId: assertPositiveInteger(offlineRun, "offline-run"),
+      postOfflineSnapshot,
+      expectedGenerationDigest: generationDigest,
+      expectedApprovalDigest: approvalDigest,
+      expectedSnapshotDigest: snapshotDigest,
+      artifactStore,
+    };
+    const data = optBoolean(opts, "execute")
+      ? await executeRecoveryOnlineBackfill(store, generation, {
+          ...common,
+          worker: {
+            workerId: optString(opts, "worker-id"),
+            leaseMs: assertPositiveInteger(
+              optNumber(opts, "lease-ms") ?? 60000,
+              "lease-ms",
+            ),
+            heartbeatMs: assertPositiveInteger(
+              optNumber(opts, "heartbeat-ms") ?? 20000,
+              "heartbeat-ms",
+            ),
+            shutdownGraceMs: assertNonNegativeInteger(
+              optNumber(opts, "shutdown-grace-ms") ?? 10000,
+              "shutdown-grace-ms",
+            ),
+          },
+          installSignalHandlers: true,
+        }).then((result) => {
+          const { worker_id: _workerId, ...safeWorker } = result.worker;
+          return { ...result.recovery, worker: safeWorker };
+        })
+      : prepareRecoveryOnlineBackfill(store, generation, common);
+    writeByFormat(
+      "recovery online",
+      data,
+      globals,
+      (value) =>
+        [
+          `controlled online backfill: ${value.status}`,
+          `online_run_id: ${value.online_run.id}`,
+          `linked_offline_run_id: ${value.offline_run.id}`,
+          `approved_jobs: ${value.online_run.counts.jobs}`,
+          `attempts: ${value.online_run.counts.attempts}`,
+          "",
+        ].join("\n"),
+      { readOnly: false },
+    );
+  } finally {
+    store.close();
+  }
+}
+
+async function runRecovery(
+  dbPath: string,
+  argv: string[],
+  globals: GlobalOptions,
+): Promise<void> {
   const subcommand = argv[0];
+  if (subcommand === "online") {
+    await runRecoveryOnline(dbPath, argv.slice(1), globals);
+    return;
+  }
   if (subcommand !== "import") {
     throw new CliError(
       "bad_recovery_command",
-      "recovery requires the import subcommand",
+      "recovery requires the import or online subcommand",
       { exitCode: 2, hint: "Run `agentbrain help recovery` for usage." },
     );
   }

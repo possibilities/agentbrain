@@ -50,6 +50,7 @@ interface Fixture {
 
 interface FixtureOptions {
   mutateRows?: (rows: Array<Record<string, unknown>>, root: string) => void;
+  mutatePrivateRows?: (rows: Array<Record<string, unknown>>) => void;
   malformedArtifact?: boolean;
 }
 
@@ -204,6 +205,7 @@ function makeFixture(options: FixtureOptions = {}): Fixture {
   }
   expect(observationSequence).toBe(294);
   options.mutateRows?.(rows, root);
+  options.mutatePrivateRows?.(privateRows);
 
   const manifest = `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
   const privateReconciliation = `${privateRows
@@ -380,6 +382,7 @@ function directGeneration(
     generationDigest: generationId.slice(7),
     generationRoot: "/direct-test-generation",
     manifestDigest: "b".repeat(64),
+    onlineAllowlistDigest: "c".repeat(64),
     candidates: [candidate],
     onlineAllowlist: [],
     dispositionCounts,
@@ -960,6 +963,25 @@ test("generation validation fails closed for identity, paths, hashes, and privat
       artifactRoots: [unsafe.artifactRoot],
     }),
   ).toThrow("outside declared roots");
+
+  const nonHumanApproval = makeFixture({
+    mutatePrivateRows(rows) {
+      const approved = rows.find(
+        (row) =>
+          row.candidate_disposition ===
+          "approved_online_backfill_telegram_human",
+      ) as Record<string, unknown>;
+      const observations = approved.observations as Array<
+        Record<string, unknown>
+      >;
+      observations[0].sender_kind = "bot";
+    },
+  });
+  expect(() =>
+    readRecoveryGeneration(nonHumanApproval.descriptor, {
+      artifactRoots: [nonHumanApproval.artifactRoot],
+    }),
+  ).toThrow("allowlist is not bound to the approved cohort");
 
   const privateData = makeFixture({
     mutateRows(rows) {

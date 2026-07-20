@@ -423,6 +423,7 @@ export type RunState =
   | "pending"
   | "active"
   | "completed"
+  | "completed_with_review"
   | "failed"
   | "cancelled";
 

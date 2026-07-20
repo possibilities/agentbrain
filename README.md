@@ -119,13 +119,20 @@ Recovery admits one immutable, hash-bound frozen generation of legacy candidate 
 agentbrain recovery import --manifest-generation ~/.local/share/agentbrain/recovery/manifests/current --dry-run --json
 agentbrain recovery import --manifest-generation ~/.local/share/agentbrain/recovery/manifests/current --artifact-root ~/content/links --authorize-offline --json
 agentbrain worker --once --run OFFLINE_RUN_ID --authorization-digest GENERATION_DIGEST --allowed-kind recovery_offline --json
+agentbrain recovery online --manifest-generation ~/.local/share/agentbrain/recovery/manifests/current \
+  --artifact-root ~/content/links --offline-run OFFLINE_RUN_ID \
+  --post-offline-snapshot ~/.local/share/agentbrain/recovery/snapshots/post-legacy-offline-import \
+  --generation-digest GENERATION_DIGEST --approval-digest ONLINE_ALLOWLIST_SHA256 \
+  --snapshot-digest POST_OFFLINE_DATABASE_SHA256 --execute --json
 ```
 
 Dry-run verifies every descriptor, checksum, candidate row, and local Markdown front-matter without writing to the database or the Artifact store and without invoking Scrapectl. It reports the exact accounting only: 1,088 candidate outcomes, 294 Secretary observations, 118 provenance merges, 13 appended exact candidates, 584 ordered `legacy-links` memberships, and 581 approved offline artifacts. Comparison URIs are diagnostic aliases; they never collapse candidate outcomes.
 
 Admission is offline, idempotent, and resumable. It creates one pending recovery Run, stable candidate outcomes, body-free observations, 581 runnable offline file jobs, 11 blocked jobs, and 37 exclusions; review and evidence-only cohorts create no jobs at all. `--authorize-offline` immutably binds the Run to the generation digest and logical `recovery_offline` kind. Ordinary workers then skip the controlled Run, while the matching scoped command claims only its 581 recovery file jobs. The two human-approved candidates for **controlled online backfill** are admitted as **blocked** jobs and are never eligible for the offline scope; egress stays deferred to the separate downstream online phase.
 
-Every recovery surface is count-only: output carries opaque generation IDs, aggregate counts, and snapshot hashes, never exact candidate URLs, private locators, message bodies, chat/session identifiers, credentials, or filesystem paths.
+`recovery online` refuses to prepare work unless the offline Run is terminal and exactly reconciled, the post-offline snapshot independently restore-verifies, all Artifact/FTS/integrity/quiescence gates pass, all three supplied digests match, and the immutable allowlist maps exactly two distinct approved candidate evidence rows to their original blocked jobs. Preparation creates a separate immutable `recovery_online` Run with two URL jobs; `--execute` holds its concurrency-one execution lease and delegates each acquisition only to Scrapectl. Item failures preserve sibling isolation, shared provider/auth/config/integrity failures pause the Run, replay never substitutes work, and a terminal non-success reports `completed_with_review`. Rollback covers local database/Artifact effects only—remote requests cannot be undone.
+
+Every recovery surface is sanitized: output carries opaque generation/candidate/Run/Attempt IDs, bounded states and classifications, aggregate counts, and snapshot/Artifact hashes, never exact candidate URLs, private locators, message bodies, chat/session identifiers, credentials, or unsafe evidence.
 
 Before any live admission, prove the whole path end to end in throwaway roots with a forbidden Scrapectl on PATH:
 

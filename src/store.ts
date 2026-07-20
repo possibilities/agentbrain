@@ -46,7 +46,7 @@ import type {
   Sensitivity,
 } from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 8;
+export const RESEARCH_SCHEMA_VERSION = 9;
 
 /**
  * Default lease and retry policy. Durations are policy, not identity: callers
@@ -630,17 +630,106 @@ const MIGRATION_V8 = `
   UPDATE meta SET value='8' WHERE key='schema_version';
 `;
 
+const MIGRATION_V9 = `
+  CREATE TABLE recovery_online_runs (
+    run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE RESTRICT,
+    offline_run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id) ON DELETE RESTRICT,
+    generation_id TEXT NOT NULL,
+    generation_digest TEXT NOT NULL CHECK (
+      length(generation_digest)=64 AND generation_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    manifest_digest TEXT NOT NULL CHECK (
+      length(manifest_digest)=64 AND manifest_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    approval_digest TEXT NOT NULL CHECK (
+      length(approval_digest)=64 AND approval_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    snapshot_database_digest TEXT NOT NULL CHECK (
+      length(snapshot_database_digest)=64 AND snapshot_database_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    snapshot_artifact_inventory_digest TEXT NOT NULL CHECK (
+      length(snapshot_artifact_inventory_digest)=64 AND
+      snapshot_artifact_inventory_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    snapshot_artifact_count INTEGER NOT NULL CHECK (snapshot_artifact_count >= 0),
+    snapshot_job_inventory_digest TEXT NOT NULL CHECK (
+      length(snapshot_job_inventory_digest)=64 AND
+      snapshot_job_inventory_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    snapshot_job_count INTEGER NOT NULL CHECK (snapshot_job_count >= 0),
+    snapshot_max_job_id INTEGER NOT NULL CHECK (snapshot_max_job_id >= 0),
+    snapshot_created_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN (
+      'preparing', 'ready', 'active', 'paused', 'completed',
+      'completed_with_review'
+    )),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT
+  );
+  CREATE TABLE recovery_online_items (
+    run_id INTEGER NOT NULL REFERENCES recovery_online_runs(run_id) ON DELETE RESTRICT,
+    candidate_evidence_row_id TEXT NOT NULL CHECK (
+      length(candidate_evidence_row_id)=16 AND
+      candidate_evidence_row_id NOT GLOB '*[^0-9a-f]*'
+    ),
+    offline_job_id INTEGER NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE RESTRICT,
+    job_id INTEGER NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE RESTRICT,
+    resource_id INTEGER NOT NULL REFERENCES resources(id) ON DELETE RESTRICT,
+    outcome TEXT NOT NULL DEFAULT 'pending',
+    failure_class TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    last_attempt_id INTEGER REFERENCES attempts(id) ON DELETE SET NULL,
+    artifact_digest TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(run_id, candidate_evidence_row_id)
+  );
+  CREATE TRIGGER recovery_online_run_binding_immutable
+    BEFORE UPDATE OF offline_run_id, generation_id, generation_digest,
+      manifest_digest, approval_digest, snapshot_database_digest,
+      snapshot_artifact_inventory_digest, snapshot_artifact_count,
+      snapshot_job_inventory_digest, snapshot_job_count, snapshot_max_job_id,
+      snapshot_created_at
+    ON recovery_online_runs
+    BEGIN
+      SELECT RAISE(ABORT, 'controlled online backfill binding is immutable');
+    END;
+  CREATE TRIGGER recovery_online_run_delete_forbidden
+    BEFORE DELETE ON recovery_online_runs
+    BEGIN
+      SELECT RAISE(ABORT, 'controlled online backfill binding is immutable');
+    END;
+  CREATE TRIGGER recovery_online_item_binding_immutable
+    BEFORE UPDATE OF run_id, candidate_evidence_row_id, offline_job_id, job_id,
+      resource_id ON recovery_online_items
+    BEGIN
+      SELECT RAISE(ABORT, 'controlled online backfill item binding is immutable');
+    END;
+  CREATE TRIGGER recovery_online_item_delete_forbidden
+    BEFORE DELETE ON recovery_online_items
+    BEGIN
+      SELECT RAISE(ABORT, 'controlled online backfill item binding is immutable');
+    END;
+  UPDATE meta SET value='9' WHERE key='schema_version';
+`;
+
 const MEDIA_TYPE_PATTERN =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[ -~]+)?$/;
 const JOB_KIND_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 export const RECOVERY_OFFLINE_SCOPE_KIND = "recovery_offline";
+export const RECOVERY_ONLINE_SCOPE_KIND = "recovery_online";
 const RECOVERY_JOB_IDEMPOTENCY_GLOB = "legacy-recovery-candidate:v1:*";
+const RECOVERY_ONLINE_JOB_IDEMPOTENCY_GLOB =
+  "legacy-recovery-candidate:v1:online:*";
 const CONTROLLED_JOB_KINDS = new Set([
   "text",
   "file",
   "directory",
   "url",
   RECOVERY_OFFLINE_SCOPE_KIND,
+  RECOVERY_ONLINE_SCOPE_KIND,
 ]);
 
 interface PersistedOperatorRunPolicy {
@@ -786,6 +875,12 @@ function controlledScopeJobPredicate(
     return {
       sql: `${column("kind")}='file' AND ${column("idempotency_key")} GLOB ?`,
       parameters: [RECOVERY_JOB_IDEMPOTENCY_GLOB],
+    };
+  }
+  if (sameStrings(policy.allowedKinds, [RECOVERY_ONLINE_SCOPE_KIND])) {
+    return {
+      sql: `${column("kind")}='url' AND ${column("idempotency_key")} GLOB ?`,
+      parameters: [RECOVERY_ONLINE_JOB_IDEMPOTENCY_GLOB],
     };
   }
   const placeholders = policy.allowedKinds.map(() => "?").join(", ");
@@ -1989,9 +2084,10 @@ export class ResearchStore {
         .query(
           `SELECT COUNT(*) AS count
            FROM attempts a JOIN jobs j ON j.id=a.job_id
-           WHERE j.run_id=? AND a.state='leased' AND a.lease_expires_at>?`,
+           WHERE a.state='leased' AND a.lease_expires_at>?
+             AND (?='online' OR j.run_id=?)`,
         )
-        .get(policy.runId, timestamp) as { count: number };
+        .get(timestamp, policy.mode, policy.runId) as { count: number };
       const execution = this.db
         .query(
           `SELECT lease_expires_at FROM operator_run_execution_leases
@@ -2037,6 +2133,12 @@ export class ResearchStore {
              finished_at=NULL, updated_at=? WHERE id=?`,
         )
         .run(timestamp, timestamp, policy.runId);
+      this.db
+        .query(
+          `UPDATE recovery_online_runs
+           SET status='active', updated_at=?, finished_at=NULL WHERE run_id=?`,
+        )
+        .run(timestamp, policy.runId);
       return { ...policy, executionToken: leased.fencing_token };
     });
     return transaction.immediate();
@@ -2080,31 +2182,114 @@ export class ResearchStore {
       const policy = this.requireRunScope(scope);
       this.assertRunExecutionLease(policy, input.executionToken, timestamp);
       const eligible = controlledScopeJobPredicate(policy);
-      const pending = this.db
-        .query(
-          `SELECT COUNT(*) AS count FROM jobs
-           WHERE run_id=? AND (${eligible.sql})
-             AND state NOT IN ('completed', 'excluded')`,
-        )
-        .get(policy.runId, ...eligible.parameters) as { count: number };
-      this.db
-        .query(
-          `UPDATE runs SET state=?, finished_at=?, updated_at=? WHERE id=?
-             AND state NOT IN ('failed', 'cancelled')`,
-        )
-        .run(
-          pending.count === 0 ? "completed" : "pending",
-          pending.count === 0 ? timestamp : null,
-          timestamp,
-          policy.runId,
-        );
+      const recoveryOnline = this.db
+        .query("SELECT run_id FROM recovery_online_runs WHERE run_id=?")
+        .get(policy.runId) as { run_id: number } | null;
+      let terminal: boolean;
+      if (recoveryOnline !== null) {
+        const counts = this.db
+          .query(
+            `SELECT
+               SUM(CASE WHEN state='completed' THEN 1 ELSE 0 END) AS completed,
+               SUM(CASE WHEN state IN ('queued', 'running', 'retry_wait')
+                        THEN 1 ELSE 0 END) AS pending,
+               SUM(CASE
+                 WHEN failure_class IN ('infra', 'auth_config')
+                   AND state<>'completed' THEN 1 ELSE 0
+               END) AS shared_failures
+             FROM jobs WHERE run_id=? AND (${eligible.sql})`,
+          )
+          .get(policy.runId, ...eligible.parameters) as {
+          completed: number;
+          pending: number;
+          shared_failures: number;
+        };
+        const status =
+          counts.completed === policy.expectedJobCount
+            ? "completed"
+            : counts.shared_failures > 0 || counts.pending > 0
+              ? "paused"
+              : "completed_with_review";
+        terminal = status === "completed" || status === "completed_with_review";
+        this.db
+          .query(
+            `UPDATE recovery_online_items AS item SET
+               outcome=CASE job.state
+                 WHEN 'completed' THEN 'succeeded_or_duplicate'
+                 ELSE job.state
+               END,
+               failure_class=CASE
+                 WHEN job.state='completed' THEN NULL ELSE job.failure_class
+               END,
+               attempt_count=job.attempt_count,
+               last_attempt_id=(
+                 SELECT MAX(a.id) FROM attempts a WHERE a.job_id=job.id
+               ),
+               artifact_digest=(
+                 SELECT a.content_hash
+                 FROM provenance p
+                 JOIN artifacts a ON a.id=p.artifact_id
+                 WHERE p.run_id=item.run_id
+                   AND p.evidence_type='url_extraction'
+                   AND json_extract(p.raw_metadata, '$.job_id')=job.id
+                 ORDER BY p.id DESC LIMIT 1
+               ),
+               started_at=(
+                 SELECT MIN(a.started_at) FROM attempts a WHERE a.job_id=job.id
+               ),
+               finished_at=(
+                 SELECT MAX(a.finished_at) FROM attempts a WHERE a.job_id=job.id
+               ),
+               updated_at=?
+             FROM jobs AS job
+             WHERE item.run_id=? AND job.id=item.job_id`,
+          )
+          .run(timestamp, policy.runId);
+        this.db
+          .query(
+            `UPDATE recovery_online_runs
+             SET status=?, updated_at=?, finished_at=? WHERE run_id=?`,
+          )
+          .run(status, timestamp, terminal ? timestamp : null, policy.runId);
+        this.db
+          .query(
+            `UPDATE runs SET state=?, finished_at=?, updated_at=? WHERE id=?
+               AND state NOT IN ('failed', 'cancelled')`,
+          )
+          .run(
+            terminal ? "completed" : "pending",
+            terminal ? timestamp : null,
+            timestamp,
+            policy.runId,
+          );
+      } else {
+        const pending = this.db
+          .query(
+            `SELECT COUNT(*) AS count FROM jobs
+             WHERE run_id=? AND (${eligible.sql})
+               AND state NOT IN ('completed', 'excluded')`,
+          )
+          .get(policy.runId, ...eligible.parameters) as { count: number };
+        terminal = pending.count === 0;
+        this.db
+          .query(
+            `UPDATE runs SET state=?, finished_at=?, updated_at=? WHERE id=?
+               AND state NOT IN ('failed', 'cancelled')`,
+          )
+          .run(
+            terminal ? "completed" : "pending",
+            terminal ? timestamp : null,
+            timestamp,
+            policy.runId,
+          );
+      }
       this.db
         .query(
           `DELETE FROM operator_run_execution_leases
            WHERE run_id=? AND fencing_token=?`,
         )
         .run(policy.runId, input.executionToken);
-      return pending.count === 0;
+      return terminal;
     });
     return transaction.immediate();
   }
@@ -2213,21 +2398,56 @@ export class ResearchStore {
                AND NOT EXISTS (
                  SELECT 1 FROM operator_run_policies p WHERE p.run_id=j.run_id
                )
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM operator_run_execution_leases l
+                 JOIN operator_run_policies p ON p.run_id=l.run_id
+                 WHERE p.mode='online' AND l.lease_expires_at>?
+               )
              ORDER BY run_at ASC, id ASC LIMIT 1`,
           )
-          .get(timestamp) as Job | null;
+          .get(timestamp, timestamp) as Job | null;
       } else {
         const scope = this.requireRunScope(input.scope);
         this.assertRunExecutionLease(scope, input.executionToken, timestamp);
         const eligible = controlledScopeJobPredicate(scope);
         candidate = this.db
           .query(
-            `SELECT ${JOB_COLUMNS} FROM jobs
+            `SELECT ${JOB_COLUMNS} FROM jobs j
              WHERE state IN ('queued', 'retry_wait') AND run_at <= ?
                AND run_id=? AND (${eligible.sql})
+               AND (
+                 NOT EXISTS (
+                   SELECT 1
+                   FROM recovery_online_items i
+                   JOIN jobs failed_job ON failed_job.id=i.job_id
+                   WHERE i.run_id=?
+                     AND i.failure_class IN ('infra', 'auth_config')
+                     AND failed_job.state IN (
+                       'queued', 'running', 'retry_wait', 'blocked'
+                     )
+                 )
+                 OR j.id=(
+                   SELECT i.job_id
+                   FROM recovery_online_items i
+                   JOIN jobs failed_job ON failed_job.id=i.job_id
+                   WHERE i.run_id=?
+                     AND i.failure_class IN ('infra', 'auth_config')
+                     AND failed_job.state IN (
+                       'queued', 'running', 'retry_wait', 'blocked'
+                     )
+                   ORDER BY i.job_id LIMIT 1
+                 )
+               )
              ORDER BY run_at ASC, id ASC LIMIT 1`,
           )
-          .get(timestamp, scope.runId, ...eligible.parameters) as Job | null;
+          .get(
+            timestamp,
+            scope.runId,
+            ...eligible.parameters,
+            scope.runId,
+            scope.runId,
+          ) as Job | null;
       }
       if (candidate === null) return { claimed: false };
 
@@ -2506,9 +2726,15 @@ export class ResearchStore {
                AND NOT EXISTS (
                  SELECT 1 FROM operator_run_policies p WHERE p.run_id=j.run_id
                )
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM operator_run_execution_leases l
+                 JOIN operator_run_policies p ON p.run_id=l.run_id
+                 WHERE p.mode='online' AND l.lease_expires_at>?
+               )
              ORDER BY a.id ASC`,
           )
-          .all(timestamp) as typeof expired;
+          .all(timestamp, timestamp) as typeof expired;
       } else {
         const scope = this.requireRunScope(input.scope);
         this.assertRunExecutionLease(scope, input.executionToken, timestamp);
@@ -2738,8 +2964,21 @@ export class ResearchStore {
       );
     }
     if (
+      allowedKinds.includes(RECOVERY_ONLINE_SCOPE_KIND) &&
+      (mode !== "online" ||
+        !sameStrings(allowedKinds, [RECOVERY_ONLINE_SCOPE_KIND]))
+    ) {
+      throw new CliError(
+        "recovery_online_scope_mismatch",
+        "recovery_online must be the only allowed kind in an online scope",
+        { exitCode: 2 },
+      );
+    }
+    if (
       mode === "online" &&
-      (!sameStrings(allowedKinds, ["url"]) || expectedJobCount !== 2)
+      ((!sameStrings(allowedKinds, ["url"]) &&
+        !sameStrings(allowedKinds, [RECOVERY_ONLINE_SCOPE_KIND])) ||
+        expectedJobCount !== 2)
     ) {
       throw new CliError(
         "online_scope_policy_mismatch",
@@ -3071,6 +3310,7 @@ export class ResearchStore {
         if (version < 6) this.db.exec(MIGRATION_V6);
         if (version < 7) this.db.exec(MIGRATION_V7);
         if (version < 8) this.db.exec(MIGRATION_V8);
+        if (version < 9) this.db.exec(MIGRATION_V9);
       })
       .immediate();
   }

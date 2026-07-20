@@ -13,10 +13,11 @@ import { join } from "node:path";
 import {
   type DurableSubmissionIntent,
   RECOVERY_JOB_PREFIX,
+  RECOVERY_ONLINE_JOB_PREFIX,
 } from "../src/admission";
 import { ArtifactStore } from "../src/artifacts";
 import { ScrapectlExtractionError } from "../src/scrapectl";
-import { ResearchStore } from "../src/store";
+import { RECOVERY_ONLINE_SCOPE_KIND, ResearchStore } from "../src/store";
 import { type JobMaterializer, runWorker } from "../src/worker";
 
 const roots: string[] = [];
@@ -58,6 +59,129 @@ function createRun(store: ResearchStore, runType = "operator_fixture"): number {
       )
       .run(runType, T0.toISOString(), T0.toISOString()).lastInsertRowid,
   );
+}
+
+function createRecoveryOnlineRun(store: ResearchStore): {
+  runId: number;
+  scope: {
+    runId: number;
+    authorizationDigest: string;
+    allowedKinds: string[];
+  };
+  jobs: number[];
+} {
+  const offlineRunId = createRun(store, "completed_offline_fixture");
+  store.db
+    .query("UPDATE runs SET state='completed', finished_at=? WHERE id=?")
+    .run(T0.toISOString(), offlineRunId);
+  const runId = createRun(store, "controlled_online_backfill");
+  const jobs: number[] = [];
+  const originalJobs: number[] = [];
+  const resources: number[] = [];
+  for (let index = 0; index < 2; index += 1) {
+    const resourceId = Number(
+      store.db
+        .query(
+          `INSERT INTO resources(
+             key_type, key_value, kind, sensitivity, created_at, updated_at
+           ) VALUES ('recovery_candidate', ?, 'url', 'normal', ?, ?)`,
+        )
+        .run(`candidate-${index}`, T0.toISOString(), T0.toISOString())
+        .lastInsertRowid,
+    );
+    resources.push(resourceId);
+    store.db
+      .query(
+        `INSERT INTO resource_aliases(
+           resource_id, alias_type, locator, evidence, first_observed_at,
+           last_observed_at
+         ) VALUES (?, 'legacy_exact_url', ?, 'fixture', ?, ?)`,
+      )
+      .run(
+        resourceId,
+        `https://example.test/approved/${index}`,
+        T0.toISOString(),
+        T0.toISOString(),
+      );
+    const original = store.enqueueJob({
+      idempotencyKey: `${RECOVERY_JOB_PREFIX}${String(index).padStart(16, "0")}`,
+      kind: "url",
+      intent: intent("url"),
+      resourceId,
+      runId: offlineRunId,
+      now: T0,
+    });
+    store.db
+      .query(
+        "UPDATE jobs SET state='blocked', block_reason='approved' WHERE id=?",
+      )
+      .run(original.job.id);
+    originalJobs.push(original.job.id);
+    const online = store.enqueueJob({
+      idempotencyKey: `${RECOVERY_ONLINE_JOB_PREFIX}${"a".repeat(64)}:${String(index).padStart(16, "0")}`,
+      kind: "url",
+      intent: intent("url"),
+      resourceId,
+      runId,
+      now: T0,
+    });
+    jobs.push(online.job.id);
+  }
+  store.db
+    .query(
+      `INSERT INTO recovery_online_runs(
+         run_id, offline_run_id, generation_id, generation_digest,
+         manifest_digest, approval_digest, snapshot_database_digest,
+         snapshot_artifact_inventory_digest, snapshot_artifact_count,
+         snapshot_job_inventory_digest, snapshot_job_count,
+         snapshot_max_job_id, snapshot_created_at, status, created_at,
+         updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 2, ?, ?, 'ready', ?, ?)`,
+    )
+    .run(
+      runId,
+      offlineRunId,
+      `sha256-${"a".repeat(64)}`,
+      "a".repeat(64),
+      "b".repeat(64),
+      "c".repeat(64),
+      "d".repeat(64),
+      "e".repeat(64),
+      "f".repeat(64),
+      Math.max(...originalJobs),
+      T0.toISOString(),
+      T0.toISOString(),
+      T0.toISOString(),
+    );
+  for (let index = 0; index < 2; index += 1) {
+    store.db
+      .query(
+        `INSERT INTO recovery_online_items(
+           run_id, candidate_evidence_row_id, offline_job_id, job_id,
+           resource_id, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        runId,
+        String(index).padStart(16, "0"),
+        originalJobs[index],
+        jobs[index],
+        resources[index],
+        T0.toISOString(),
+      );
+  }
+  const scope = {
+    runId,
+    authorizationDigest: "c".repeat(64),
+    allowedKinds: [RECOVERY_ONLINE_SCOPE_KIND],
+  };
+  store.authorizeRunScope({
+    ...scope,
+    mode: "online",
+    expectedJobCount: 2,
+    now: T0,
+  });
+  return { runId, scope, jobs };
 }
 
 function intent(kind: "text" | "url" = "text"): DurableSubmissionIntent {
@@ -894,6 +1018,222 @@ test("shared scoped failures pause sibling claims", async () => {
   expect(
     store.db.query("SELECT state FROM runs WHERE id=?").get(runId),
   ).toEqual({ state: "pending" });
+  store.close();
+});
+
+test("recovery online item failure preserves its sibling and completes with review", async () => {
+  const { store, artifacts } = fixture();
+  const recovery = createRecoveryOnlineRun(store);
+  let calls = 0;
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "recovery-online-item-isolation",
+    scope: recovery.scope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: (job) => {
+      calls += 1;
+      if (job.id === recovery.jobs[0]) {
+        throw new Error("deterministic item content failure");
+      }
+      return [
+        {
+          sourceType: "url",
+          sourceUri: `fixture:${job.id}`,
+          title: "Sibling completed",
+          content: "sibling searchable content",
+        },
+      ];
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 2, completed: 1, failed: 1 });
+  expect(calls).toBe(2);
+  expect(
+    store.db
+      .query("SELECT state FROM jobs WHERE run_id=? ORDER BY id")
+      .all(recovery.runId),
+  ).toEqual([{ state: "failed" }, { state: "completed" }]);
+  expect(
+    store.db.query("SELECT state FROM runs WHERE id=?").get(recovery.runId),
+  ).toEqual({ state: "completed" });
+  expect(
+    store.db
+      .query("SELECT status FROM recovery_online_runs WHERE run_id=?")
+      .get(recovery.runId),
+  ).toEqual({ status: "completed_with_review" });
+  expect(
+    store.db
+      .query(
+        `SELECT outcome, attempt_count FROM recovery_online_items
+         WHERE run_id=? ORDER BY candidate_evidence_row_id`,
+      )
+      .all(recovery.runId),
+  ).toEqual([
+    { outcome: "failed", attempt_count: 1 },
+    { outcome: "succeeded_or_duplicate", attempt_count: 1 },
+  ]);
+  store.close();
+});
+
+test("recovery online shared failure pauses before the sibling claim", async () => {
+  const { store, artifacts } = fixture();
+  const recovery = createRecoveryOnlineRun(store);
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "recovery-online-shared-pause",
+    scope: recovery.scope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: () => {
+      throw new ScrapectlExtractionError(
+        "shared provider configuration unavailable",
+        "auth_config",
+        "auth_config",
+      );
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 1, completed: 0, failed: 1 });
+  expect(
+    store.db
+      .query("SELECT state FROM jobs WHERE run_id=? ORDER BY id")
+      .all(recovery.runId),
+  ).toEqual([{ state: "blocked" }, { state: "queued" }]);
+  expect(
+    store.db
+      .query("SELECT status FROM recovery_online_runs WHERE run_id=?")
+      .get(recovery.runId),
+  ).toEqual({ status: "paused" });
+
+  const blindReplay = await runWorker(store, {
+    once: true,
+    workerId: "recovery-online-shared-still-paused",
+    scope: recovery.scope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: () => [
+      {
+        sourceType: "url",
+        sourceUri: "fixture:must-not-run",
+        title: "must not run",
+        content: "must not run",
+      },
+    ],
+    installSignalHandlers: false,
+  });
+  expect(blindReplay).toMatchObject({ claimed: 0, completed: 0, failed: 0 });
+
+  store.retryJob({ jobId: recovery.jobs[0], now: T0 });
+  const resumed = await runWorker(store, {
+    once: true,
+    workerId: "recovery-online-shared-resumed",
+    scope: recovery.scope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: (job) => [
+      {
+        sourceType: "url",
+        sourceUri: `fixture:${job.id}`,
+        title: "resumed",
+        content: `resumed searchable content ${job.id}`,
+      },
+    ],
+    installSignalHandlers: false,
+  });
+  expect(resumed).toMatchObject({ claimed: 2, completed: 2, failed: 0 });
+  expect(
+    store.db
+      .query("SELECT status FROM recovery_online_runs WHERE run_id=?")
+      .get(recovery.runId),
+  ).toEqual({ status: "completed" });
+  store.close();
+});
+
+test("recovery online keeps a final shared failure paused for operator retry", async () => {
+  const { store, artifacts } = fixture();
+  const recovery = createRecoveryOnlineRun(store);
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "recovery-online-final-shared-pause",
+    scope: recovery.scope,
+    now: () => T0,
+    artifactStore: artifacts,
+    materialize: (job) => {
+      if (job.id === recovery.jobs[1]) {
+        throw new ScrapectlExtractionError(
+          "shared provider authentication unavailable",
+          "auth_config",
+          "auth_config",
+        );
+      }
+      return [
+        {
+          sourceType: "url",
+          sourceUri: `fixture:${job.id}`,
+          title: "first sibling completed",
+          content: "first sibling searchable content",
+        },
+      ];
+    },
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 2, completed: 1, failed: 1 });
+  expect(
+    store.db
+      .query("SELECT state FROM jobs WHERE run_id=? ORDER BY id")
+      .all(recovery.runId),
+  ).toEqual([{ state: "completed" }, { state: "blocked" }]);
+  expect(
+    store.db
+      .query(
+        "SELECT status, finished_at FROM recovery_online_runs WHERE run_id=?",
+      )
+      .get(recovery.runId),
+  ).toEqual({ status: "paused", finished_at: null });
+  expect(
+    store.db.query("SELECT state FROM runs WHERE id=?").get(recovery.runId),
+  ).toEqual({ state: "pending" });
+  store.close();
+});
+
+test("active recovery online scope fences ordinary claims and requires quiescence", () => {
+  const { store } = fixture();
+  const recovery = createRecoveryOnlineRun(store);
+  const unrelated = store.enqueueJob({
+    idempotencyKey: "ordinary-due-during-online",
+    kind: "text",
+    intent: intent(),
+    now: T0,
+  });
+  const execution = store.beginRunScope(recovery.scope, {
+    worker: "recovery-online-exclusive",
+    now: T0,
+    leaseMs: 60_000,
+  });
+  expect(store.claimJob({ worker: "ordinary-worker", now: T0 })).toEqual({
+    claimed: false,
+  });
+  expect(
+    store.finishRunScope(recovery.scope, {
+      executionToken: execution.executionToken,
+      now: T0,
+    }),
+  ).toBe(false);
+
+  const ordinary = store.claimJob({ worker: "ordinary-worker", now: T0 });
+  if (!ordinary.claimed) throw new Error("expected ordinary claim after scope");
+  expect(ordinary.job.id).toBe(unrelated.job.id);
+  expect(() =>
+    store.beginRunScope(recovery.scope, {
+      worker: "recovery-online-must-wait",
+      now: T0,
+      leaseMs: 60_000,
+    }),
+  ).toThrow("active lease");
   store.close();
 });
 
