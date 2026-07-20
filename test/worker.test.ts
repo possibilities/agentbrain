@@ -1237,6 +1237,65 @@ test("active recovery online scope fences ordinary claims and requires quiescenc
   store.close();
 });
 
+test("active recovery online execution lease globally fences expired ordinary lease recovery", () => {
+  const { store } = fixture();
+  const ordinary = store.enqueueJob({
+    idempotencyKey: "ordinary-expired-during-recovery-online",
+    kind: "text",
+    intent: intent(),
+    now: T0,
+  });
+  const claimed = store.claimJob({
+    worker: "expired-ordinary-worker",
+    now: T0,
+    leaseMs: 1000,
+  });
+  if (!claimed.claimed) throw new Error("expected ordinary claim");
+
+  const recovery = createRecoveryOnlineRun(store);
+  const execution = store.beginRunScope(recovery.scope, {
+    worker: "recovery-online-exclusive-recovery-fence",
+    now: at(2000),
+    leaseMs: 60_000,
+  });
+  expect(
+    store.recoverExpiredLeases({
+      now: at(2000),
+      policy: { infraBaseMs: 0, infraCapMs: 0, jitterRatio: 0 },
+    }),
+  ).toEqual([]);
+  expect(
+    store.db
+      .query("SELECT state, current_attempt_id FROM jobs WHERE id=?")
+      .get(ordinary.job.id),
+  ).toEqual({ state: "running", current_attempt_id: claimed.fencing_token });
+  expect(
+    store.db
+      .query("SELECT state FROM attempts WHERE id=?")
+      .get(claimed.fencing_token),
+  ).toEqual({ state: "leased" });
+
+  expect(
+    store.finishRunScope(recovery.scope, {
+      executionToken: execution.executionToken,
+      now: at(2000),
+    }),
+  ).toBe(false);
+  expect(
+    store.recoverExpiredLeases({
+      now: at(2000),
+      policy: { infraBaseMs: 0, infraCapMs: 0, jitterRatio: 0 },
+    }),
+  ).toEqual([
+    {
+      job_id: ordinary.job.id,
+      attempt_id: claimed.fencing_token,
+      disposition: "retry_wait",
+    },
+  ]);
+  store.close();
+});
+
 test("operator-controlled Run execution leases serialize scoped workers and fence expired owners", () => {
   const { store } = fixture();
   const runId = createRun(store, "serialized_online");

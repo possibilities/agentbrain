@@ -975,14 +975,14 @@ function envelopeFailure(detail: ExtractionFailureDetail): never {
   if (detail.failure_class === "invalid_request") {
     throw new ScrapectlExtractionError(message, "permanent", "policy");
   }
-  if (detail.retryable && detail.failure_class === "upstream_unavailable") {
-    throw new ScrapectlExtractionError(message, "infra", "infrastructure");
-  }
   if (
     detail.retryable &&
-    new Set(["timeout", "browser_error", "provider_error"]).has(
-      detail.failure_class,
-    )
+    new Set([
+      "timeout",
+      "browser_error",
+      "provider_error",
+      "upstream_unavailable",
+    ]).has(detail.failure_class)
   ) {
     throw new ScrapectlExtractionError(message, "item_transient", "item");
   }
