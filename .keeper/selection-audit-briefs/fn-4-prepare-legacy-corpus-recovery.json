@@ -1,0 +1,80 @@
+{
+  "auditable_tasks": [
+    {
+      "assigned_model": "opus",
+      "assigned_tier": "max",
+      "config_hash": "e25a324bf07c0da4907c9c0d1da473e08fa7b22bffe1eb773c9f57005cb43c93",
+      "constraint": null,
+      "diff_stats": {
+        "commit_count": 0,
+        "deletions": 0,
+        "files_changed": 0,
+        "insertions": 0
+      },
+      "done_summary": "Pollution channel named with evidence: there is NO in-process jobs-cli test pollution. The full-suite-only failures were external checkout mutation \u2014 a lane 'reset: moving to HEAD' landing MID-TEST-RUN (17:45:39, between resolver steps 17:44:55-17:46:10), swapping merged schema-v7 source back to HEAD's v6 and producing the exact 'research cache schema version 7 is newer than supported version 6' failure. Controlled causality probe: v7 parent/v7 child exits 0; v7 parent + on-disk reset to v6 makes the child exit 1 with that error. On an immutable merged reconstruction (both suites co-resident) all four jobs-cli suites passed 3/3 full-suite runs, chunking-then-jobs 10/10, isolation 5/5 + 5/5. No test changes needed or made (changing tests would mask checkout mutation). Root cause is the lane-reset defect fn-1379-hold-live-lanes-against-resets owns (#72); this diagnosis retires the in-process-pollution hypothesis.",
+      "input_hash": "db1889b1405a0f944527b68a7665c49204dc71cf45c5eef4206e49cbe4e56be5",
+      "model": "opus",
+      "spec_chars": 2529,
+      "spec_md": "## Description\n\n**Size:** S\n**Files:** test/jobs-cli.test.ts, test/chunking.test.ts\n\n### Approach\n\nFour jobs-cli suites (redaction of intent bodies/unsafe URLs, Artifact\nreveal + inspection audit, jobs stats content-safety, operator-command\naudits) fail in full-suite order once the structural-chunking suite\nexists, yet pass 4/4 in isolation on the same tree \u2014 order-dependent\nshared state landing on content-safety guards. Diagnose the pollution\nchannel (module state, tmp/db reuse, global config bleed), fix it at the\nsource (isolate the leaking state, never reorder or waive tests), and\nprove full-suite green. Reproduce on the epic base lane, which carries\nboth suites.\n\n### Investigation targets\n\n*Verify before relying \u2014 these file:line refs are planner-verified at authoring time, but the repo moves.*\n\n**Required** (read before coding):\n- test/jobs-cli.test.ts:98 \u2014 the first failing exit (runCli jobs list --json exits 1 full-suite-only)\n- test/chunking.test.ts \u2014 the suite whose presence triggers the order dependence\n\n### Risks\n\n- The guards involved are content-safety posture; a wrong fix that masks rather than isolates weakens redaction coverage\n\n### Test notes\n\nFull-suite runs prove the fix; isolation runs stay green; baselines: pre-chunking tree full-suite green, merged tree 5 fail (4 here + the schema pin).\n\n## Acceptance\n\n- [ ] The pollution channel is named with evidence in the Done summary\n- [ ] All four jobs-cli suites pass in full-suite order with the chunking suite present, without test reordering or waivers\n- [ ] Isolation runs remain green\n\n## Done summary\nPollution channel named with evidence: there is NO in-process jobs-cli test pollution. The full-suite-only failures were external checkout mutation \u2014 a lane 'reset: moving to HEAD' landing MID-TEST-RUN (17:45:39, between resolver steps 17:44:55-17:46:10), swapping merged schema-v7 source back to HEAD's v6 and producing the exact 'research cache schema version 7 is newer than supported version 6' failure. Controlled causality probe: v7 parent/v7 child exits 0; v7 parent + on-disk reset to v6 makes the child exit 1 with that error. On an immutable merged reconstruction (both suites co-resident) all four jobs-cli suites passed 3/3 full-suite runs, chunking-then-jobs 10/10, isolation 5/5 + 5/5. No test changes needed or made (changing tests would mask checkout mutation). Root cause is the lane-reset defect fn-1379-hold-live-lanes-against-resets owns (#72); this diagnosis retires the in-process-pollution hypothesis.\n## Evidence\n",
+      "task_id": "fn-4-prepare-legacy-corpus-recovery.7",
+      "tier": "max",
+      "title": "Diagnose jobs cli test pollution"
+    },
+    {
+      "assigned_model": "gpt-5.5",
+      "assigned_tier": "high",
+      "config_hash": "e25a324bf07c0da4907c9c0d1da473e08fa7b22bffe1eb773c9f57005cb43c93",
+      "constraint": null,
+      "diff_stats": {
+        "commit_count": 1,
+        "deletions": 16,
+        "files_changed": 4,
+        "insertions": 249
+      },
+      "done_summary": "Verify report now names the schema version relationship (current, older-migratable, newer-unsupported) against the running schema, and the read-only cache open path rejects older-than-supported schemas with a structured unsupported_schema_version error instead of failing on missing columns.",
+      "input_hash": "db1889b1405a0f944527b68a7665c49204dc71cf45c5eef4206e49cbe4e56be5",
+      "model": "gpt-5.5",
+      "spec_chars": 2284,
+      "spec_md": "## Description\n\n**Size:** S\n**Files:** src/backup.ts, src/db.ts, test/backup.test.ts\n\n### Approach\n\nBackup verification currently compares a backup image only against its\nOWN manifest and opens it with a raw database handle, bypassing the\nstore's schema guards \u2014 so an old-schema backup reports VERIFIED under\nnewer code and that green asserts nothing about restorability. Make the\nverify report state the version relationship explicitly: current,\nolder-migratable, or newer-unsupported. Separately, the read path\nrejects only newer-than-current schemas; give it the matching lower\nbound so an old image surfaces a structured unsupported-schema error\ninstead of dying on missing columns. Migrate-on-restore is explicitly\nOUT of scope: no restore command exists yet; the migrate posture lands\nwith it in the import-execution epic.\n\n### Investigation targets\n\n*Verify before relying \u2014 these file:line refs are planner-verified at authoring time, but the repo moves.*\n\n**Required** (read before coding):\n- src/backup.ts:196-215 \u2014 manifest schema_version sourced from the snapshot DB itself\n- src/backup.ts:651 \u2014 the raw Database open that bypasses store guards\n- src/db.ts:805-824 \u2014 the read-path version gate (upper bound only today)\n\n### Risks\n\n- The verify report shape is consumed by rehearsal tooling; additive fields only, no breaking change to existing green outputs\n\n### Test notes\n\nFixtures: a current-version image verifies \"current\"; an older image verifies \"older-migratable\" (never bare green); a newer image verifies \"newer-unsupported\"; the read path returns the structured error for an old image.\n\n## Acceptance\n\n- [ ] Verify output names the version relationship for current, older, and newer images, proven by fixture tests\n- [ ] Opening an older-schema database through the store returns a structured unsupported-schema error, never a raw missing-column failure\n- [ ] Existing backup create/verify behavior for current-version images is unchanged\n\n## Done summary\nVerify report now names the schema version relationship (current, older-migratable, newer-unsupported) against the running schema, and the read-only cache open path rejects older-than-supported schemas with a structured unsupported_schema_version error instead of failing on missing columns.\n## Evidence\n",
+      "task_id": "fn-4-prepare-legacy-corpus-recovery.8",
+      "tier": "high",
+      "title": "Report backup verify version honesty"
+    }
+  ],
+  "created_at": "2026-07-20T07:05:03.652000Z",
+  "epic_id": "fn-4-prepare-legacy-corpus-recovery",
+  "excluded_tasks": [
+    {
+      "reason": "no-sidecar-cell",
+      "task_id": "fn-4-prepare-legacy-corpus-recovery.1"
+    },
+    {
+      "reason": "no-sidecar-cell",
+      "task_id": "fn-4-prepare-legacy-corpus-recovery.2"
+    },
+    {
+      "reason": "no-sidecar-cell",
+      "task_id": "fn-4-prepare-legacy-corpus-recovery.3"
+    },
+    {
+      "reason": "no-sidecar-cell",
+      "task_id": "fn-4-prepare-legacy-corpus-recovery.4"
+    },
+    {
+      "reason": "no-sidecar-cell",
+      "task_id": "fn-4-prepare-legacy-corpus-recovery.5"
+    },
+    {
+      "reason": "no-sidecar-cell",
+      "task_id": "fn-4-prepare-legacy-corpus-recovery.6"
+    }
+  ],
+  "primary_repo": "/Users/mike/code/agentbrain",
+  "schema_version": 2,
+  "selection_config_hash": "e25a324bf07c0da4907c9c0d1da473e08fa7b22bffe1eb773c9f57005cb43c93",
+  "selection_input_hash": "db1889b1405a0f944527b68a7665c49204dc71cf45c5eef4206e49cbe4e56be5",
+  "selector": {
+    "harness": "subagent",
+    "model": "plan:model-selector"
+  }
+}
