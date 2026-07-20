@@ -7,7 +7,7 @@
     "fn-5-execute-approved-corpus-import"
   ],
   "id": "fn-11-harden-recovery-online-backfill-gates",
-  "last_validated_at": null,
+  "last_validated_at": "2026-07-20T20:42:02.827000Z",
   "primary_repo": "/Users/mike/code/agentbrain",
   "snippets": [],
   "status": "open",
@@ -15,5 +15,5 @@
   "touched_repos": [
     "/Users/mike/code/agentbrain"
   ],
-  "updated_at": "2026-07-20T20:33:25.343000Z"
+  "updated_at": "2026-07-20T20:42:02.827000Z"
 }
