@@ -11,5 +11,6 @@
   "target_repo": "/Users/mike/code/agentbrain",
   "tier": "max",
   "title": "Add run-scoped recovery execution",
-  "updated_at": "2026-07-20T11:33:58.020000Z"
+  "updated_at": "2026-07-20T12:32:50.556000Z",
+  "worker_done_at": "2026-07-20T12:32:50.556000Z"
 }

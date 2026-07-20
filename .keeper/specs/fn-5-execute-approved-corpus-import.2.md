@@ -73,3 +73,5 @@ Land and exercise scoped execution entirely against temporary runs first. Existi
 ## Done summary
 
 ## Evidence
+- Commits: 37d8185a62ca8dc5b49a0947f8b2b18744f48dca
+- Tests: bun test worker/store/jobs-cli/cli.integration/backup suites: 62 pass 0 fail (392 assertions); tsc --noEmit clean
