@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ResearchCache } from "../src/db";
+import { CliError } from "../src/errors";
 import { ResearchStore } from "../src/store";
 import { chunkText } from "../src/text";
 import type { ClaimResult } from "../src/types";
@@ -362,14 +363,18 @@ test("migration maps legacy documents and relation provenance", () => {
   db.close();
 });
 
-test("read-only cache opens a legacy v2 database without migrating it", () => {
+test("read-only cache rejects a legacy v2 database without migrating it", () => {
   const path = tempDb();
   createV2(path);
-  const cache = new ResearchCache(path);
-  // Read commands still work against the un-migrated schema.
-  expect(cache.search({ query: "alpha", mode: "any" }).results).toHaveLength(1);
-  expect(cache.resourceForDocument(3)).toBeNull();
-  cache.close();
+  let error: unknown;
+  try {
+    new ResearchCache(path).close();
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error).toBeInstanceOf(CliError);
+  expect((error as CliError).code).toBe("unsupported_schema_version");
+  expect((error as Error).message).toContain("older than supported");
 
   // The database is untouched: still v2, with no resource model created.
   const db = new Database(path, { readonly: true });
@@ -1099,11 +1104,8 @@ test("read-only cache observes the job lifecycle without mutating it", () => {
   ).toThrow();
   cache.close();
 
-  // On a pre-lifecycle database the read path returns empty rather than failing.
+  // Pre-current databases are rejected before any read path can hit missing schema.
   const legacyPath = tempDb();
   createV2(legacyPath);
-  const legacy = new ResearchCache(legacyPath);
-  expect(legacy.job(1)).toBeNull();
-  expect(legacy.jobs()).toEqual([]);
-  legacy.close();
+  expect(() => new ResearchCache(legacyPath)).toThrow("older than supported");
 });

@@ -26,7 +26,7 @@ import {
   SHA256_DIGEST_PATTERN,
 } from "./artifacts";
 import { CliError } from "./errors";
-import type { ResearchStore } from "./store";
+import { RESEARCH_SCHEMA_VERSION, type ResearchStore } from "./store";
 
 export const BACKUP_MANIFEST_VERSION = 1;
 export const BACKUP_DATABASE_FILE = "database.sqlite";
@@ -76,6 +76,11 @@ export interface BackupCreateResult {
   artifact_count: number;
 }
 
+export type BackupSchemaVersionRelationship =
+  | "current"
+  | "older-migratable"
+  | "newer-unsupported";
+
 export interface BackupCheck {
   name:
     | "database_digest"
@@ -93,6 +98,8 @@ export interface BackupVerifyResult {
   backup_path: string;
   created_at: string;
   schema_version: number;
+  supported_schema_version: number;
+  schema_version_relationship: BackupSchemaVersionRelationship;
   artifact_count: number;
   artifacts_checked: number;
   checks: BackupCheck[];
@@ -299,6 +306,27 @@ function verifyArtifactFiles(
     }
   }
   return { checked: byDigest.size, failed };
+}
+
+function schemaVersionRelationship(
+  schemaVersion: number,
+): BackupSchemaVersionRelationship {
+  if (schemaVersion === RESEARCH_SCHEMA_VERSION) return "current";
+  if (schemaVersion < RESEARCH_SCHEMA_VERSION) return "older-migratable";
+  return "newer-unsupported";
+}
+
+function schemaVersionCheckDetail(
+  schemaVersion: number,
+  relationship: BackupSchemaVersionRelationship,
+): string {
+  if (relationship === "current") {
+    return `schema version ${schemaVersion} matches the manifest`;
+  }
+  if (relationship === "older-migratable") {
+    return `schema version ${schemaVersion} matches the manifest and is older-migratable; supported version is ${RESEARCH_SCHEMA_VERSION}`;
+  }
+  return `schema version ${schemaVersion} matches the manifest but is newer-unsupported; supported version is ${RESEARCH_SCHEMA_VERSION}`;
 }
 
 /**
@@ -610,6 +638,7 @@ export function verifyBackup(
 ): BackupVerifyResult {
   const backupPath = resolve(backup);
   const manifest = readManifest(backupPath);
+  const relationship = schemaVersionRelationship(manifest.schema_version);
   const sourceDatabase = join(backupPath, manifest.database.file);
   const checks: BackupCheck[] = [];
   let sourceHash: FileHash | undefined;
@@ -677,15 +706,18 @@ export function verifyBackup(
           } catch {
             schemaVersion = undefined;
           }
-          const schemaOk =
+          const schemaMatchesManifest =
             Number.isSafeInteger(schemaVersion) &&
             schemaVersion === manifest.schema_version;
+          const schemaOk =
+            schemaMatchesManifest && relationship !== "newer-unsupported";
+          const schemaDetail = schemaMatchesManifest
+            ? schemaVersionCheckDetail(manifest.schema_version, relationship)
+            : "restored schema version does not match the manifest";
           checks.push({
             name: "schema_version",
             status: schemaOk ? "ok" : "failed",
-            detail: schemaOk
-              ? `schema version ${manifest.schema_version} matches the manifest`
-              : "restored schema version does not match the manifest",
+            detail: schemaDetail,
           });
 
           let referencesOk = false;
@@ -757,6 +789,8 @@ export function verifyBackup(
     backup_path: backupPath,
     created_at: manifest.created_at,
     schema_version: manifest.schema_version,
+    supported_schema_version: RESEARCH_SCHEMA_VERSION,
+    schema_version_relationship: relationship,
     artifact_count: manifest.required_artifact_digests.length,
     artifacts_checked: artifacts.checked,
     checks,
