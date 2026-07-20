@@ -1,5 +1,8 @@
 ## Description
 
+**PRIOR-ATTEMPT PARK NOTE (supervisor, verified).** The frozen generation EXISTS and is checksummed — the earlier DEPENDENCY_BLOCKED park chased a spec typo (`manifests/current.json`); the real artifact is the atomic pointer `~/.local/share/agentbrain/recovery/manifests/current` (directory with generation.json, candidate-manifest.jsonl, SHA256SUMS). Do not park on the missing `.json` literal; run preflight against the pointer.
+
+
 **Size:** M
 **Files:** ~/.hermes/research-cache/research.db, ~/.local/share/agentbrain/artifacts/, ~/.local/share/agentbrain/recovery/, ~/content/links/
 
@@ -13,7 +16,7 @@ Verify the frozen generation digest, encrypted backup freshness, checksum invent
 
 **Required** (read before execution):
 - `docs/adr/0010-legacy-recovery-import-contract.md:13-38` — locked generation, cohort, isolation, and reconciliation contract.
-- `~/.local/share/agentbrain/recovery/manifests/current.json:1` — authoritative generation descriptor after recovery preparation.
+- `~/.local/share/agentbrain/recovery/manifests/current` — the ATOMIC GENERATION POINTER (a symlink to the frozen sha256-named generation directory; its `generation.json` carries the bound checksum inventory). The landed importer accepts pointer, directory, or generation.json for `--manifest-generation` — there is NO `current.json` file; a prior attempt parked on that literal path. Verified present and frozen 2026-07-19.
 - `~/.local/share/agentbrain/recovery/SHA256SUMS:1` — protected evidence integrity.
 - `~/docs/agentbrain-recovery-report-2026-07-15.md:47-58` — baseline live DB and backup cautions.
 

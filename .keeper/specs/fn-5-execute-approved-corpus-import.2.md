@@ -1,9 +1,21 @@
 ## Description
-
 **Size:** M
 **Files:** src/store.ts, src/worker.ts, src/cli.ts, src/help.ts, src/types.ts, src/jobs.ts, test/worker.test.ts, test/jobs-cli.test.ts, test/cli.integration.test.ts
 
 ### Approach
+
+**PRIOR-ATTEMPT LANE STATE — READ FIRST (supervisor note, 07-20 07:0x).** The previous
+worker FULLY implemented and verified this task: an 11-file diff satisfying all acceptance
+items sits UNCOMMITTED on this lane (154 tests were passing at its verification). Its
+commit was refused only by an ownership conflict against its own wrapped leg's file claims
+(since released or releasable), and the task was reset to todo. Your job: verify the
+existing lane diff against the acceptance criteria (run the named gates yourself), then
+LAND it via `keeper commit-work` with real evidence. Do NOT re-implement from scratch, do
+NOT discard the diff, and NEVER mark done without the commit landing — an empty-evidence
+done on this diff is exactly the #59 phantom-done failure. If commit-work still names a
+live foreign claimant, use the envelope's request_release rail (bounded bus notice +
+grace), then park OWNERSHIP_CONFLICT with the claimant named if it persists.
+
 
 Extend the existing leased worker with an operator-controlled execution scope that pins one Run, an expected generation/approval digest, and an allowlist of job kinds before claims become eligible. Generic workers must skip operator-controlled runs; a scoped `worker --run ... --allowed-kind ... --once` performs no source scheduling and claims only matching jobs through the same lease, attempt, retry, artifact, fencing, and completion paths. Add safe run inspection and fail-closed CLI validation so operational tasks never need broad queue scans or raw URL reveal.
 
@@ -48,7 +60,6 @@ No network code, no second queue, no full-table polling loop, bounded transactio
 ### Rollout
 
 Land and exercise scoped execution entirely against temporary runs first. Existing unscoped worker behavior remains the default; controlled runs remain non-runnable until an explicitly matching scoped invocation.
-
 ## Acceptance
 
 - [ ] Generic workers never claim jobs belonging to an operator-controlled Run, including under concurrent claim attempts.
@@ -62,3 +73,5 @@ Land and exercise scoped execution entirely against temporary runs first. Existi
 ## Done summary
 
 ## Evidence
+- Commits: 37d8185a62ca8dc5b49a0947f8b2b18744f48dca
+- Tests: bun test worker/store/jobs-cli/cli.integration/backup suites: 62 pass 0 fail (392 assertions); tsc --noEmit clean
