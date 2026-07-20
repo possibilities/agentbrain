@@ -38,5 +38,5 @@ Full-suite runs prove the fix; isolation runs stay green; baselines: pre-chunkin
 - [ ] Isolation runs remain green
 
 ## Done summary
-
+Pollution channel named with evidence: there is NO in-process jobs-cli test pollution. The full-suite-only failures were external checkout mutation — a lane 'reset: moving to HEAD' landing MID-TEST-RUN (17:45:39, between resolver steps 17:44:55-17:46:10), swapping merged schema-v7 source back to HEAD's v6 and producing the exact 'research cache schema version 7 is newer than supported version 6' failure. Controlled causality probe: v7 parent/v7 child exits 0; v7 parent + on-disk reset to v6 makes the child exit 1 with that error. On an immutable merged reconstruction (both suites co-resident) all four jobs-cli suites passed 3/3 full-suite runs, chunking-then-jobs 10/10, isolation 5/5 + 5/5. No test changes needed or made (changing tests would mask checkout mutation). Root cause is the lane-reset defect fn-1379-hold-live-lanes-against-resets owns (#72); this diagnosis retires the in-process-pollution hypothesis.
 ## Evidence
