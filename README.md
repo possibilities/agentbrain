@@ -111,6 +111,29 @@ The LaunchAgent drains already admitted ingestion jobs only. Installation does *
 
 Legacy provenance labels such as `source=linkctl` remain queryable as historical data. They do not identify a live Ingress or an installed command.
 
+## Legacy corpus recovery
+
+Recovery admits one immutable, hash-bound frozen generation of legacy candidate evidence. A generation binds its candidate manifest, private reconciliation, public summary, and checksum inventory under a single `sha256-` generation ID and is verified in full before any state changes:
+
+```bash
+agentbrain recovery import --manifest-generation ~/.local/share/agentbrain/recovery/manifests/current --dry-run --json
+agentbrain recovery import --manifest-generation ~/.local/share/agentbrain/recovery/manifests/current --artifact-root ~/content/links --json
+```
+
+Dry-run verifies every descriptor, checksum, candidate row, and local Markdown front-matter without writing to the database or the Artifact store and without invoking Scrapectl. It reports the exact accounting only: 1,088 candidate outcomes, 294 Secretary observations, 118 provenance merges, 13 appended exact candidates, 584 ordered `legacy-links` memberships, and 581 approved offline artifacts. Comparison URIs are diagnostic aliases; they never collapse candidate outcomes.
+
+Admission is offline, idempotent, and resumable. It creates one pending recovery Run, stable candidate outcomes, body-free observations, 581 runnable offline file jobs, 11 blocked jobs, and 37 exclusions; review and evidence-only cohorts create no jobs at all. The two human-approved candidates for **controlled online backfill** are admitted as **blocked** jobs and are never claimable by `worker`; egress stays deferred to the separate downstream online phase. Draining the queue with `agentbrain worker --once` completes only the offline jobs — file jobs read retained bytes from the Artifact store, so no offline completion touches the network.
+
+Every recovery surface is count-only: output carries opaque generation IDs, aggregate counts, and snapshot hashes, never exact candidate URLs, private locators, message bodies, chat/session identifiers, credentials, or filesystem paths.
+
+Before any live admission, prove the whole path end to end in throwaway roots with a forbidden Scrapectl on PATH:
+
+```bash
+./scripts/rehearse-recovery-import.sh
+```
+
+The rehearsal drives the real frozen generation and local artifacts through dry-run, admission, an offline worker drain, retrieval and citations, backup create/verify restore, and idempotent replay in a disposable database and Artifact store, then prints one sanitized aggregate summary. It performs zero network operations, removes its temporary state on success, and preserves it for inspection on failure. Override `AGENTBRAIN_RECOVERY_GENERATION` and `AGENTBRAIN_RECOVERY_ARTIFACT_ROOT` to rehearse a different generation or artifact root.
+
 ## Deletion
 
 Deletion is intentionally guarded:

@@ -20,7 +20,7 @@ import {
   createBackup,
   verifyBackup,
 } from "../src/backup";
-import { ResearchStore } from "../src/store";
+import { RESEARCH_SCHEMA_VERSION, ResearchStore } from "../src/store";
 
 const roots: string[] = [];
 
@@ -145,7 +145,7 @@ test("manifest records schema, paths, and Artifact references without content", 
     manifest_version: 1,
     kind: "agentbrain_backup",
     created_at: "2026-07-18T12:34:56.000Z",
-    schema_version: 7,
+    schema_version: RESEARCH_SCHEMA_VERSION,
     source_paths: { database: dbPath, artifact_store: artifactRoot },
     configuration: {
       sqlite_snapshot: "vacuum_into",
