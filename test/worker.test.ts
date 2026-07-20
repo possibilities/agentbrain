@@ -253,7 +253,7 @@ test("retry after index failure reuses the promoted URL Artifact", async () => {
   store.close();
 });
 
-test("recovery completion reuses a foreign Resource that already owns the document", async () => {
+test("recovery completion links a cross-candidate collision job to the document owner", async () => {
   const { store, artifacts } = fixture();
   const exactUrl = "https://legacy-collision.test/item/1";
   const document = store.upsertDocument({
@@ -336,9 +336,20 @@ test("recovery completion reuses a foreign Resource that already owns the docume
       .get(queued.job.id),
   ).toEqual({
     state: "completed",
-    resource_id: recoveryResourceId,
+    resource_id: existingResourceId,
     failure_class: null,
   });
+  expect(
+    store.db
+      .query(
+        `SELECT d.id AS document_id
+         FROM jobs j
+         JOIN resources r ON r.id=j.resource_id
+         JOIN documents d ON d.id=r.document_id
+         WHERE j.id=?`,
+      )
+      .get(queued.job.id),
+  ).toEqual({ document_id: document.document_id });
   expect(
     store.db
       .query("SELECT document_id, sensitivity FROM resources WHERE id=?")

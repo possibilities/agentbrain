@@ -645,7 +645,7 @@ function applyDocuments(
       };
     }
     if (firstResourceId === null) {
-      firstResourceId = recoveryResource?.id ?? resource.id;
+      firstResourceId = resource.id;
     }
     const aliases = [
       {
