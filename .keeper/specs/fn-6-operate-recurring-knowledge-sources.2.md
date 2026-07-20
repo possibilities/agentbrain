@@ -55,5 +55,5 @@ Support definitions and dry-run with every source disabled before worker dispatc
 - [ ] Unknown source kinds remain inspectable but cannot execute destructively.
 
 ## Done summary
-
+Added a durable recurring source registry: versioned/validated source manifests with private overlay, source definitions with audit/pause/health state, Runs separating attempted cursor from committed checkpoint plus warnings/counts/outcome, idempotent catch-up scheduling, and list/show/status/sync/pause/resume CLI commands that only admit durable jobs.
 ## Evidence
