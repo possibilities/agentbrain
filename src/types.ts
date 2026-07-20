@@ -57,6 +57,32 @@ export interface RecoveryImportReport {
   run: { id: number | null; state: "verified" | "pending" };
 }
 
+export type ChunkBlockType =
+  | "text"
+  | "heading"
+  | "paragraph"
+  | "list"
+  | "code"
+  | "table"
+  | "blockquote"
+  | "thematic_break"
+  | "html"
+  | "definition"
+  | "other";
+
+export interface ChunkStructuralProvenance {
+  structural_anchor: string;
+  heading_path: string[];
+  start_line: number;
+  end_line: number;
+  block_types: ChunkBlockType[];
+  revision_digest: string;
+  chunker_version: string;
+  chunk_digest: string;
+  duplicate_ordinal: number;
+  chunk_identity: string;
+}
+
 export interface GlobalOptions {
   dbPath: string;
   format: OutputFormat;

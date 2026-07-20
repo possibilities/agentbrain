@@ -48,6 +48,7 @@ export interface MaterializedDocument {
   content: string;
   tags?: string[];
   notes?: string;
+  mediaType?: string;
   artifactDigest?: string;
   resourceKey?: { type: string; value: string };
   aliases?: Array<{ type: string; locator: string; evidence: string }>;
@@ -386,6 +387,7 @@ function urlDocument(
       (extraction.metadata.title ||
         titleFromMarkdown(sourceUri, extraction.artifacts[0].content)),
     content: extraction.artifacts[0].content,
+    mediaType: record.artifact.media_type,
     tags: intent.options.tags,
     notes: intent.options.notes,
     resourceKey,
@@ -497,6 +499,7 @@ export const defaultMaterializer: JobMaterializer = async (
           ? "Pasted note"
           : `Captured Artifact ${artifact.content_digest.slice(0, 12)}`),
       content,
+      mediaType: artifact.media_type,
       artifactDigest: artifact.content_digest,
       ...common,
     };
@@ -576,6 +579,9 @@ function applyDocuments(
       content: document.content,
       tags: document.tags,
       notes: document.notes,
+      mediaType: document.mediaType ?? document.artifact?.mediaType,
+      revisionDigest:
+        document.artifactDigest ?? document.artifact?.contentDigest,
       force: intent.options.force,
     });
     let resource: { id: number; sensitivity: Sensitivity };
