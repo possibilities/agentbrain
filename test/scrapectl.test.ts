@@ -236,7 +236,7 @@ test("classified extraction failures map without parsing stderr", async () => {
   const url = "https://example.com/failure";
   const { executable } = installScrapectl("#!/bin/sh\nexit 1\n");
   const cases = [
-    ["upstream_unavailable", true, "infra", "infrastructure", 1],
+    ["upstream_unavailable", true, "item_transient", "item", 1],
     ["authentication_required", false, "auth_config", "auth_config", 2],
     ["provider_error", false, "permanent", "permanent", 1],
     ["invalid_request", false, "permanent", "policy", 1],
