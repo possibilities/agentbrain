@@ -1,3 +1,7 @@
+import type { SourceRunOutcome } from "./source-types";
+
+export type * from "./source-types";
+
 export const SCHEMA_VERSION = 1;
 
 export type OutputFormat = "human" | "json" | "jsonl";
@@ -331,19 +335,6 @@ export interface Artifact {
   created_at: string;
 }
 
-export interface Source {
-  id: number;
-  source_type: string;
-  identifier: string;
-  display_name: string | null;
-  enabled: boolean;
-  sensitivity: Sensitivity;
-  schedule: string | null;
-  checkpoint: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Collection {
   id: number;
   slug: string;
@@ -450,6 +441,16 @@ export interface Run {
   source_id: number | null;
   state: RunState;
   checkpoint: string | null;
+  attempted_cursor: string | null;
+  committed_checkpoint: string | null;
+  warnings: string;
+  discovered_count: number;
+  admitted_count: number;
+  suppressed_count: number;
+  terminal_outcome: SourceRunOutcome | null;
+  source_definition_version: number | null;
+  schedule_key: string | null;
+  scheduled_for: string | null;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;

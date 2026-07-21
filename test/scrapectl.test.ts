@@ -12,6 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  discoverFeedWithScrapectl,
+  discoverXTimelineWithScrapectl,
   extractWithScrapectl,
   ScrapectlExtractionError,
   scrapeWithScrapectl,
@@ -328,6 +330,81 @@ printf '%s' ${shellLiteral(JSON.stringify(envelope))}
     metadata: { title: "Extracted" },
   });
 }, 30_000);
+
+test("feed and X discovery use bounded explicit Scrapectl argv", async () => {
+  const sourceUrl = "https://blog.example/feed.xml";
+  const feed = {
+    schema_version: "1",
+    status: "success",
+    source_url: sourceUrl,
+    source_format: "rss",
+    validators: { etag: '"v1"', last_modified: null },
+    cursor: {
+      validators: { etag: '"v1"', last_modified: null },
+      newest_seen_at: null,
+      next_url: null,
+    },
+    items: [],
+    pagination: {
+      pages: [
+        {
+          url: sourceUrl,
+          page_format: "rss",
+          validators: { etag: '"v1"', last_modified: null },
+          item_count: 0,
+          next_url: null,
+        },
+      ],
+      complete: true,
+      stop_reason: "exhausted",
+      next_url: null,
+    },
+    warnings: [],
+    absence_implies_deletion: false,
+    failure: null,
+  };
+  const { dir, executable } = installScrapectl(`#!/bin/sh
+printf '%s\\n' "$@" > "$LOG"
+printf '%s' ${shellLiteral(JSON.stringify(feed))}
+`);
+  const input = join(dir, "feed.xml");
+  writeFileSync(input, "<rss/>");
+  process.env.LOG = join(dir, "feed-argv.txt");
+  const feedResult = await discoverFeedWithScrapectl({
+    sourceUrl,
+    recordedInputFile: input,
+    maxPages: 2,
+    maxItems: 7,
+  });
+  expect(feedResult.pagination.complete).toBe(true);
+  expect(readFileSync(process.env.LOG, "utf8")).toContain(
+    `discover-feed\n${input}\n--source-url\n${sourceUrl}\n`,
+  );
+
+  const timeline = {
+    handle: "person",
+    next_cursor: "123",
+    scraped_at: "2026-07-20T00:00:00.000Z",
+    tweets: [],
+    warnings: [],
+  };
+  writeExecutable(
+    executable,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > "$LOG"\nprintf '%s' ${shellLiteral(JSON.stringify(timeline))}\n`,
+  );
+  process.env.LOG = join(dir, "x-argv.txt");
+  const xResult = await discoverXTimelineWithScrapectl({
+    url: "https://x.com/person",
+    handle: "person",
+    sinceId: "456",
+    limit: 8,
+    maxScrolls: 3,
+  });
+  expect(xResult.next_cursor).toBe("123");
+  expect(readFileSync(process.env.LOG, "utf8")).toBe(
+    "fetch-links\nhttps://x.com/person\n--preset\nx-timeline\n--limit\n8\n--max-scrolls\n3\n--json\n--since-id\n456\n",
+  );
+});
 
 test("classified extraction failures map without parsing stderr", async () => {
   const url = "https://example.com/failure";

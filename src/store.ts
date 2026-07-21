@@ -46,7 +46,7 @@ import type {
   Sensitivity,
 } from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 9;
+export const RESEARCH_SCHEMA_VERSION = 11;
 
 /**
  * Default lease and retry policy. Durations are policy, not identity: callers
@@ -715,6 +715,108 @@ const MIGRATION_V9 = `
   UPDATE meta SET value='9' WHERE key='schema_version';
 `;
 
+const MIGRATION_V10 = `
+  ALTER TABLE sources ADD COLUMN definition_version INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE sources ADD COLUMN definition TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE sources ADD COLUMN definition_hash TEXT NOT NULL DEFAULT '';
+  ALTER TABLE sources ADD COLUMN collections TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE sources ADD COLUMN limits TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE sources ADD COLUMN credential_refs TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE sources ADD COLUMN paused INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE sources ADD COLUMN pause_reason TEXT;
+  ALTER TABLE sources ADD COLUMN health_state TEXT NOT NULL DEFAULT 'never';
+  ALTER TABLE sources ADD COLUMN health_detail TEXT;
+  ALTER TABLE sources ADD COLUMN last_evaluated_at TEXT;
+  ALTER TABLE sources ADD COLUMN last_success_at TEXT;
+  ALTER TABLE sources ADD COLUMN next_due_at TEXT;
+
+  ALTER TABLE runs ADD COLUMN attempted_cursor TEXT;
+  ALTER TABLE runs ADD COLUMN committed_checkpoint TEXT;
+  ALTER TABLE runs ADD COLUMN warnings TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE runs ADD COLUMN discovered_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE runs ADD COLUMN admitted_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE runs ADD COLUMN suppressed_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE runs ADD COLUMN terminal_outcome TEXT;
+  ALTER TABLE runs ADD COLUMN source_definition_version INTEGER;
+  ALTER TABLE runs ADD COLUMN schedule_key TEXT;
+  ALTER TABLE runs ADD COLUMN scheduled_for TEXT;
+
+  CREATE UNIQUE INDEX idx_sources_stable_id ON sources(identifier);
+  CREATE UNIQUE INDEX idx_source_runs_schedule
+    ON runs(source_id, schedule_key)
+    WHERE run_type='source_sync' AND schedule_key IS NOT NULL;
+  CREATE UNIQUE INDEX idx_source_runs_active
+    ON runs(source_id)
+    WHERE run_type='source_sync' AND state IN ('pending', 'active');
+
+  CREATE TABLE source_definition_versions (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+    definition_version INTEGER NOT NULL CHECK (definition_version >= 1),
+    definition_hash TEXT NOT NULL,
+    definition TEXT NOT NULL CHECK (json_valid(definition)),
+    created_at TEXT NOT NULL,
+    UNIQUE(source_id, definition_version),
+    UNIQUE(source_id, definition_hash)
+  );
+
+  CREATE TABLE source_audit_events (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+    action TEXT NOT NULL CHECK (action IN ('config_applied', 'paused', 'resumed')),
+    actor TEXT NOT NULL,
+    reason TEXT,
+    definition_version INTEGER NOT NULL,
+    definition_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_source_audit_events_source
+    ON source_audit_events(source_id, id);
+
+  CREATE TABLE source_checkpoints (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+    run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id) ON DELETE RESTRICT,
+    definition_version INTEGER NOT NULL,
+    value TEXT NOT NULL CHECK (json_valid(value)),
+    committed_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_source_checkpoints_source
+    ON source_checkpoints(source_id, id);
+
+  UPDATE meta SET value='10' WHERE key='schema_version';
+`;
+
+// Provider-neutral evidence for recurring source Observations. The base
+// observations table remains shared with URL fanout; this companion keeps a
+// source's stable entry identity and normalized change fingerprint without
+// persisting a Scrapectl/provider response schema.
+const MIGRATION_V11 = `
+  DROP INDEX idx_observations_legacy_identity;
+  CREATE UNIQUE INDEX idx_observations_legacy_identity
+    ON observations(run_id, resource_id, observed_locator)
+    WHERE parent_resource_id IS NULL AND ingress <> 'source_sync';
+
+  CREATE TABLE source_observation_details (
+    observation_id INTEGER PRIMARY KEY REFERENCES observations(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+    observation_key TEXT NOT NULL,
+    stable_id TEXT NOT NULL,
+    observed_version TEXT NOT NULL,
+    metadata TEXT NOT NULL CHECK (json_valid(metadata)),
+    admission_job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(run_id, observation_key)
+  );
+  CREATE INDEX idx_source_observations_stable
+    ON source_observation_details(source_id, stable_id, run_id DESC);
+  CREATE INDEX idx_source_observations_job
+    ON source_observation_details(admission_job_id);
+  UPDATE meta SET value='11' WHERE key='schema_version';
+`;
+
 const MEDIA_TYPE_PATTERN =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[ -~]+)?$/;
 const JOB_KIND_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -950,7 +1052,12 @@ export class ResearchStore {
     try {
       this.rejectUnsupportedExistingSchema();
       try {
-        this.db.exec("PRAGMA journal_mode=WAL;");
+        const journal = this.db.query("PRAGMA journal_mode").get() as {
+          journal_mode: string;
+        };
+        if (journal.journal_mode.toLowerCase() !== "wal") {
+          this.db.exec("PRAGMA journal_mode=WAL;");
+        }
       } catch {
         // WAL may be unavailable on unusual filesystems; transactions still work.
       }
@@ -2589,6 +2696,8 @@ export class ResearchStore {
       fencingToken: number;
       failureClass: FailureClass;
       summary?: unknown;
+      /** Fenced domain evidence committed with the failed attempt. */
+      apply?: (db: Database) => void;
     } & LifecycleOptions,
   ): FailResult {
     const now = input.now ?? new Date();
@@ -2602,6 +2711,7 @@ export class ResearchStore {
       const guard = this.guardActiveToken(input.fencingToken, now);
       if (guard.ok === false) return guard;
       const job = guard.job;
+      if (input.apply !== undefined) input.apply(this.db);
       this.db
         .query(
           `UPDATE attempts SET state='failed', failure_class=?, failure_summary=?,
@@ -2864,6 +2974,7 @@ export class ResearchStore {
     jobId: number;
     actor?: string;
     reason?: string;
+    apply?: (db: Database) => void;
     now?: Date;
   }): CancelResult {
     const now = input.now ?? new Date();
@@ -2878,6 +2989,7 @@ export class ResearchStore {
       }
       if (job.state === "cancelled") return { ok: true, job };
       this.assertTransition(job.state, "cancelled");
+      if (input.apply !== undefined) input.apply(this.db);
       if (job.current_attempt_id !== null) {
         this.db
           .query(
@@ -3284,6 +3396,17 @@ export class ResearchStore {
   }
 
   private initializeSchema(): void {
+    const hasMeta = this.db
+      .query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='meta' LIMIT 1",
+      )
+      .get();
+    if (hasMeta !== null) {
+      const current = this.db
+        .query("SELECT value FROM meta WHERE key='schema_version'")
+        .get() as { value: string } | null;
+      if (Number(current?.value) === RESEARCH_SCHEMA_VERSION) return;
+    }
     this.db
       .transaction(() => {
         this.db.exec(SCHEMA_V1);
@@ -3311,6 +3434,8 @@ export class ResearchStore {
         if (version < 7) this.db.exec(MIGRATION_V7);
         if (version < 8) this.db.exec(MIGRATION_V8);
         if (version < 9) this.db.exec(MIGRATION_V9);
+        if (version < 10) this.db.exec(MIGRATION_V10);
+        if (version < 11) this.db.exec(MIGRATION_V11);
       })
       .immediate();
   }

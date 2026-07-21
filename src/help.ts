@@ -51,7 +51,10 @@ export const COMMANDS = [
     summary: "Delete one selected document with explicit confirmation",
   },
   { name: "tags", summary: "List indexed tags with document counts" },
-  { name: "sources", summary: "List source types and source domains" },
+  {
+    name: "sources",
+    summary: "Apply, inspect, schedule, pause, and resume recurring sources",
+  },
   {
     name: "guide",
     summary: "Print the stable machine-readable agent contract",
@@ -90,9 +93,11 @@ Agent defaults:
   3. Fetch selected evidence: agentbrain get --document-id <id> --json or --chunk-id <id> --json
   4. Cite document_id, chunk_id when present, title, source_uri, and relation provenance when relevant.
 
-Search/get/stats/tags/sources/context use structurally read-only SQLite connections.
-Agentbrain submit is the durable admission boundary. Accepted intents are queued before any
-extraction or indexing; Scrapectl remains the sole URL extraction and network boundary.
+Search/get/stats/tags/context and source list/show/status use structurally read-only
+SQLite connections. Agentbrain submit is the durable admission boundary. Accepted intents
+are queued before any extraction or indexing; Scrapectl remains the sole URL extraction
+and network boundary. Source sync only admits durable source-run jobs; it performs no
+remote discovery and writes no documents inline.
 Backup creation uses a SQLite-consistent snapshot and never copies a live WAL file.
 Recovery import verifies the complete frozen generation and local Artifact hashes before
 admission; --dry-run writes no database or Artifact state and performs no network work.
@@ -385,13 +390,39 @@ Usage:
 Options:
   --limit <n>         Number of tags (default: 100, max: 500)
 `,
-  sources: `agentbrain sources — list source types and domains
+  sources: `agentbrain sources — operate recurring source definitions
 
 Usage:
-  agentbrain sources [--limit N] [--json]
+  agentbrain sources apply [--manifest PATH] [--overlay PATH] [--actor NAME] [--reason TEXT] [--json]
+  agentbrain sources list [--limit N] [--json]
+  agentbrain sources show SOURCE_ID [--json]
+  agentbrain sources status [SOURCE_ID] [--json]
+  agentbrain sources sync SOURCE_ID [--dry-run] [--json]
+  agentbrain sources sync --due [--dry-run] [--limit N] [--json]
+  agentbrain sources pause SOURCE_ID [--reason TEXT] [--actor NAME] [--json]
+  agentbrain sources resume SOURCE_ID [--reason TEXT] [--actor NAME] [--json]
 
-Options:
-  --limit <n>         Number of domains (default: 100, max: 500)
+Source IDs are stable declarative identities; mutable handles and homepages are payload,
+not identity. Definitions retain versioned schedules, bounded limits, collection and
+sensitivity policy, and credential references without credential values. Unknown future
+kinds remain listable and showable but source sync will not admit work for them.
+
+sources apply reads a versioned manifest (default: the bundled config/sources.yaml
+covering confirmed blog/X sources and disabled candidate X accounts) and durably creates
+or updates matching source definitions. It never toggles enabled, deletes a definition,
+or runs implicitly; an operator invokes it explicitly, and re-applying identical content
+is a no-op. Raising a source's version without changing its kind admits the new content;
+changing content without raising the version is refused.
+
+Schedule evaluation admits at most one catch-up Run for each overdue source and advances
+its next due time from the current evaluation, not once per missed wall-clock tick. Paused
+and disabled sources admit no Runs. Pause, resume, and configuration changes append audit
+evidence without removing earlier Runs or checkpoints.
+
+A Run's attempted cursor is in-progress evidence, separate from its committed checkpoint.
+A checkpoint may advance only after a complete successful window has durably admitted or
+explicitly suppressed every discovered observation. Source sync performs no HTTP work,
+remote discovery, extraction, or document writes; those remain Worker/provider work.
 `,
   guide: `agentbrain guide — machine-readable CLI contract for agents
 

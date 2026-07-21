@@ -45,7 +45,6 @@ import {
   humanDocument,
   humanMutation,
   humanSearch,
-  humanSources,
   humanStats,
   humanTags,
   searchJsonl,
@@ -71,7 +70,6 @@ const READ_COMMANDS = new Set([
   "search",
   "get",
   "tags",
-  "sources",
   "context",
   "doctor",
 ]);
@@ -193,6 +191,16 @@ async function runParsed(
     return;
   }
 
+  if (command === "sources") {
+    const { runSourceCommands } = await import("./sources-cli");
+    runSourceCommands(
+      parsed.globals.dbPath,
+      parsed.commandArgv,
+      parsed.globals,
+    );
+    return;
+  }
+
   if (command === "guide") {
     writeByFormat(
       "guide",
@@ -223,9 +231,6 @@ async function runParsed(
           break;
         case "tags":
           runTags(cache, parsed.commandArgv, parsed.globals);
-          break;
-        case "sources":
-          runSources(cache, parsed.commandArgv, parsed.globals);
           break;
         case "context":
           runContext(cache, parsed.commandArgv, parsed.globals);
@@ -418,26 +423,6 @@ function runTags(
     cache.tags(optNumber(opts, "limit")),
     globals,
     humanTags,
-  );
-}
-
-function runSources(
-  cache: ResearchCache,
-  argv: string[],
-  globals: GlobalOptions,
-): void {
-  const opts = parseOptions(argv, { limit: { type: "number", default: 100 } });
-  if (opts._.length > 0)
-    throw new CliError(
-      "unexpected_args",
-      `sources does not accept positional args: ${opts._.join(" ")}`,
-      { exitCode: 2 },
-    );
-  writeByFormat(
-    "sources",
-    cache.sources(optNumber(opts, "limit")),
-    globals,
-    humanSources,
   );
 }
 
