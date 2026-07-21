@@ -115,6 +115,7 @@ test("installer renders one private owned worker service idempotently", () => {
   expect(mode(fixture.state)).toBe(0o700);
   expect(mode(log)).toBe(0o600);
   expect(mode(service)).toBe(0o600);
+  expect(existsSync(join(fixture.state, "deployed-sha"))).toBe(false);
 
   const plutil = Bun.which("plutil");
   if (plutil !== null) {
@@ -234,6 +235,15 @@ test("installer unloads stale service before load and uninstall is idempotent", 
   expect(runInstaller(fixture, "--uninstall", env).exitCode).toBe(0);
 
   const domain = `gui/${process.getuid?.() ?? 0}`;
+  const sourceSha = decode(
+    Bun.spawnSync({
+      cmd: ["git", "-C", REPO, "rev-parse", "HEAD"],
+      stdout: "pipe",
+    }).stdout,
+  ).trim();
+  const receipt = join(fixture.state, "deployed-sha");
+  expect(readFileSync(receipt, "utf8")).toBe(`${sourceSha}\n`);
+  expect(mode(receipt)).toBe(0o600);
   expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
     `bootout ${domain}/agentbrain.worker`,
     `bootstrap ${domain} ${join(fixture.launchAgents, "agentbrain.worker.plist")}`,
@@ -249,6 +259,27 @@ test("installer unloads stale service before load and uninstall is idempotent", 
   ).toBe(false);
   expect(existsSync(join(fixture.state, "worker.log"))).toBe(true);
 }, 15_000);
+
+test("installer does not update a receipt when bootstrap or service verification fails", () => {
+  for (const body of [
+    '#!/usr/bin/env bash\nif [[ "$1" == bootstrap ]]; then exit 73; fi\nexit 1\n',
+    '#!/usr/bin/env bash\nif [[ "$1" == bootstrap ]]; then exit 0; fi\nexit 1\n',
+  ]) {
+    const fixture = setup();
+    mkdirSync(fixture.state, { recursive: true });
+    const receipt = join(fixture.state, "deployed-sha");
+    writeFileSync(receipt, `${"2".repeat(40)}\n`, { mode: 0o600 });
+    const launchctl = join(fixture.dir, "launchctl");
+    writeFileSync(launchctl, body);
+    chmodSync(launchctl, 0o700);
+
+    const failed = runInstaller(fixture, "--install", {
+      AGENTBRAIN_INSTALL_LAUNCHCTL: launchctl,
+    });
+    expect(failed.exitCode).not.toBe(0);
+    expect(readFileSync(receipt, "utf8")).toBe(`${"2".repeat(40)}\n`);
+  }
+}, 30_000);
 
 test("installer stops before mutation when an owned service cannot unload", () => {
   const fixture = setup();

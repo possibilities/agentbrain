@@ -44,6 +44,7 @@ RETIRED_ADAPTER_SOURCE="$ROOT/src/research-ingest-link.ts"
 PLIST_SOURCE="$ROOT/system/Library/LaunchAgents/agentbrain.worker.plist"
 SERVICE_DEST="$LAUNCH_AGENTS_DIR/agentbrain.worker.plist"
 LOG_PATH="$STATE_DIR/worker.log"
+DEPLOYED_SHA_PATH="$STATE_DIR/deployed-sha"
 SERVICE_LABEL="agentbrain.worker"
 OWNERSHIP_MARKER="agentbrain-installer-owned: agentbrain.worker.v1"
 EXPECTED_LEGACY_SOURCE="$(dirname "$ROOT")/hermes-greybird/bin/research-ingest-link"
@@ -142,6 +143,40 @@ check_private_paths() {
     echo "refusing unsafe worker log: $LOG_PATH" >&2
     return 1
   fi
+  if [[ -L "$DEPLOYED_SHA_PATH" || ( -e "$DEPLOYED_SHA_PATH" && ! -f "$DEPLOYED_SHA_PATH" ) ]]; then
+    echo "refusing unsafe deployment receipt: $DEPLOYED_SHA_PATH" >&2
+    return 1
+  fi
+}
+
+write_deployed_sha() {
+  local temporary
+  check_private_paths
+  temporary="$(mktemp "$STATE_DIR/.deployed-sha.XXXXXX")"
+  chmod 600 "$temporary"
+  printf '%s\n' "$DEPLOYED_SHA" >"$temporary"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$temporary" <<'PY'
+import os
+import sys
+with open(sys.argv[1], "rb") as receipt:
+    os.fsync(receipt.fileno())
+PY
+  fi
+  mv -f "$temporary" "$DEPLOYED_SHA_PATH"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$STATE_DIR" <<'PY'
+import os
+import sys
+fd = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    os.fsync(fd)
+except OSError:
+    pass
+finally:
+    os.close(fd)
+PY
+  fi
 }
 
 launchctl_available() {
@@ -230,6 +265,12 @@ if [[ "$ACTION" == uninstall ]]; then
   exit 0
 fi
 
+DEPLOYED_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+if [[ ! "$DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "source HEAD is not a full lowercase 40-hex SHA" >&2
+  exit 1
+fi
+
 check_destination "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL" "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL"
 check_service_destination
 check_private_paths
@@ -293,6 +334,12 @@ ln -sfn "$AGENTBRAIN_SOURCE" "$BIN_DIR/agentbrain"
 
 if launchctl_available; then
   "$LAUNCHCTL" bootstrap "gui/$(id -u)" "$SERVICE_DEST"
+  inspect_loaded_service
+  if [[ "$LOADED_SERVICE_STATE" != owned ]]; then
+    echo "loaded service failed ownership verification: $SERVICE_LABEL" >&2
+    exit 1
+  fi
+  write_deployed_sha
   printf 'installed and loaded %s\n' "$SERVICE_DEST"
 else
   printf 'installed %s (launchctl unavailable; service not loaded)\n' "$SERVICE_DEST"
