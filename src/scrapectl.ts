@@ -431,20 +431,6 @@ function runCommand(
   return new Promise((resolve, reject) => {
     const useProcessGroup = process.platform !== "win32";
     let child: ReturnType<typeof spawn>;
-    const unregisterProviderTerminator = registerProviderTerminator(() => {
-      if (useProcessGroup && child.pid !== undefined) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      } else {
-        child.kill("SIGKILL");
-      }
-      // A signal-driven parent exit must not leave killed grandchildren briefly
-      // observable as live provider processes.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
-    });
     try {
       child = spawn(executable, args, {
         detached: useProcessGroup,
@@ -453,7 +439,6 @@ function runCommand(
         windowsHide: true,
       });
     } catch (error) {
-      unregisterProviderTerminator();
       reject(error);
       return;
     }
