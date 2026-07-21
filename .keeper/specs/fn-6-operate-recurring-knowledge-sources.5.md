@@ -54,5 +54,5 @@ Keep candidate sources and deep X backfill disabled. On provider outage, jobs en
 - [ ] Deep historical X backfill remains explicitly disabled and no result claims complete historical coverage.
 
 ## Done summary
-
+Activated the 25 confirmed recurring sources (11 blogs daily, 14 X accounts hourly) via a reviewable config/sources.activation.yaml overlay, keeping all 13 x_account_candidate recommendations and deep X backfill disabled. Added an opt-in temporary-state smoke (scripts/smoke-recurring-sources.sh) that drives one blog and one X source through the durable schedule->discovery->checkpoint->overlap->pause loop, locked the activation contract with offline tests, and documented the bounded operator rollout in the README.
 ## Evidence

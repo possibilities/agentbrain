@@ -13,5 +13,6 @@
   "target_repo": "/Users/mike/code/agentbrain",
   "tier": "max",
   "title": "Validate activate recurring sources",
-  "updated_at": "2026-07-18T21:31:56.368000Z"
+  "updated_at": "2026-07-21T06:25:03.176000Z",
+  "worker_done_at": "2026-07-21T06:25:03.176000Z"
 }
