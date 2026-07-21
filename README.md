@@ -80,7 +80,7 @@ The idempotent installer creates only these owned entries:
 - `~/Library/LaunchAgents/agentbrain.worker.plist`, invoking only the installed `agentbrain worker` command;
 - `${XDG_STATE_HOME:-~/.local/state}/agentbrain/worker.log` in a private state directory.
 
-The state directory is mode `0700`; the rendered plist and log are mode `0600`; the service uses umask `077`. Its arguments contain no submitted content, URLs, Artifact paths, or credentials. Reinstall unloads the known label, atomically replaces only a marker-owned plist, and loads it again. The installer refuses unrelated command links, regular files, and foreign service files rather than taking them over.
+The state directory is mode `0700`; the rendered plist and log are mode `0600`; the service uses umask `077`. Its arguments contain no submitted content, URLs, Artifact paths, or credentials. Installation runs `bun install --frozen-lockfile` before changing the command or service, so immutable managed checkouts do not expose a runtime missing its dependencies. Reinstall unloads the known label, atomically replaces only a marker-owned plist, and loads it again. The installer may replace the exact legacy command link `/Users/mike/code/agentbrain/src/cli.ts`; managed deployments with a different known predecessor can set `AGENTBRAIN_INSTALL_LEGACY_SOURCE` to that one exact source. It refuses unrelated command links, regular files, and foreign service files rather than taking them over.
 
 Check operation with:
 

@@ -959,7 +959,7 @@ test("disposable rehearsal drives the frozen generation through the installed CL
     jobs: { queued: 581, blocked: 11, excluded: 37, created: 629, existing: 0 },
     effects: { candidate_outcomes_created: 1088, observations_created: 294 },
   });
-}, 300_000);
+}, 120_000);
 
 test("controlled online preparation rejects a live corpus divergent from its post-offline snapshot", () => {
   const fixture = resetOnlineGateFixture();

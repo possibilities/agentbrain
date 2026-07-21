@@ -26,6 +26,7 @@ import {
   SHA256_DIGEST_PATTERN,
 } from "./artifacts";
 import { CliError } from "./errors";
+import { openReadonlyDatabase } from "./sqlite";
 import { RESEARCH_SCHEMA_VERSION, type ResearchStore } from "./store";
 
 export const BACKUP_MANIFEST_VERSION = 1;
@@ -206,10 +207,7 @@ function snapshotMetadata(databasePath: string): {
   schemaVersion: number;
   references: BackupArtifactReference[];
 } {
-  const db = new Database(`file:${databasePath}?mode=ro`, {
-    readonly: true,
-    strict: true,
-  });
+  const db = openReadonlyDatabase(databasePath);
   try {
     const schema = db
       .query("SELECT value FROM meta WHERE key='schema_version'")

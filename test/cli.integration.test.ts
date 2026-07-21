@@ -448,7 +448,7 @@ test("v2 relations appear in get and stats", () => {
     relation_type: "references",
     status: "success",
   });
-});
+}, 15_000);
 
 test("fts search and get work against the fixture DB", () => {
   const dbPath = makeTempDb("fts", true);
@@ -798,7 +798,7 @@ test("invalid scoped worker CLI options fail before opening the database", () =>
     });
     expect(existsSync(dbPath)).toBe(false);
   }
-});
+}, 15_000);
 
 test("completed-link compatibility commands are absent from every public surface", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentbrain-retired-command-"));

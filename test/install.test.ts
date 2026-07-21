@@ -132,6 +132,87 @@ test("installer renders one private owned worker service idempotently", () => {
   expect(mode(log)).toBe(0o600);
 }, 15_000);
 
+test("installer replaces only the explicitly known legacy Agentbrain link", () => {
+  const fixture = setup();
+  const legacySource = join(fixture.dir, "legacy-checkout", "src", "cli.ts");
+  mkdirSync(dirname(legacySource), { recursive: true });
+  writeFileSync(legacySource, "#!/usr/bin/env bun\n");
+  symlinkSync(legacySource, join(fixture.bin, "agentbrain"));
+
+  const installed = runInstaller(fixture, "--install", {
+    AGENTBRAIN_INSTALL_LEGACY_SOURCE: legacySource,
+  });
+  expect(installed.exitCode, decode(installed.stderr)).toBe(0);
+  expect(readlinkSync(join(fixture.bin, "agentbrain"))).toBe(
+    join(REPO, "src/cli.ts"),
+  );
+}, 15_000);
+
+test("legacy migration allowlist still refuses an unrelated Agentbrain link", () => {
+  const fixture = setup();
+  const legacySource = join(fixture.dir, "legacy-checkout", "src", "cli.ts");
+  const unrelatedSource = join(fixture.dir, "unrelated", "cli.ts");
+  mkdirSync(dirname(legacySource), { recursive: true });
+  mkdirSync(dirname(unrelatedSource), { recursive: true });
+  writeFileSync(legacySource, "legacy");
+  writeFileSync(unrelatedSource, "unrelated");
+  const destination = join(fixture.bin, "agentbrain");
+  symlinkSync(unrelatedSource, destination);
+
+  const refused = runInstaller(fixture, "--install", {
+    AGENTBRAIN_INSTALL_LEGACY_SOURCE: legacySource,
+  });
+  expect(refused.exitCode).not.toBe(0);
+  expect(decode(refused.stderr)).toContain(
+    "refusing to overwrite unrelated symlink",
+  );
+  expect(readlinkSync(destination)).toBe(unrelatedSource);
+  expect(existsSync(fixture.launchAgents)).toBe(false);
+}, 15_000);
+
+test("installer resolves frozen dependencies before switching the runtime link", () => {
+  const fixture = setup();
+  const legacySource = join(fixture.dir, "legacy-checkout", "src", "cli.ts");
+  mkdirSync(dirname(legacySource), { recursive: true });
+  writeFileSync(legacySource, "#!/usr/bin/env bun\n");
+  const destination = join(fixture.bin, "agentbrain");
+  symlinkSync(legacySource, destination);
+
+  const realBun = Bun.which("bun");
+  if (realBun === null) throw new Error("bun is required for installer tests");
+  const wrapperDir = join(fixture.dir, "wrapped-bin");
+  const wrapper = join(wrapperDir, "bun");
+  const installLog = join(fixture.dir, "bun-install.args");
+  const linkAtInstall = join(fixture.dir, "link-at-install");
+  mkdirSync(wrapperDir);
+  writeFileSync(
+    wrapper,
+    `#!/usr/bin/env bash
+if [[ "\${1:-}" == install ]]; then
+  printf '%s\\n' "$*" > "$AGENTBRAIN_TEST_INSTALL_LOG"
+  readlink "$AGENTBRAIN_TEST_COMMAND_LINK" > "$AGENTBRAIN_TEST_LINK_AT_INSTALL"
+fi
+exec "$AGENTBRAIN_TEST_REAL_BUN" "$@"
+`,
+  );
+  chmodSync(wrapper, 0o700);
+
+  const installed = runInstaller(fixture, "--install", {
+    AGENTBRAIN_INSTALL_LEGACY_SOURCE: legacySource,
+    AGENTBRAIN_TEST_COMMAND_LINK: destination,
+    AGENTBRAIN_TEST_INSTALL_LOG: installLog,
+    AGENTBRAIN_TEST_LINK_AT_INSTALL: linkAtInstall,
+    AGENTBRAIN_TEST_REAL_BUN: realBun,
+    PATH: `${wrapperDir}:${process.env.PATH ?? ""}`,
+  });
+  expect(installed.exitCode, decode(installed.stderr)).toBe(0);
+  expect(readFileSync(installLog, "utf8").trim()).toBe(
+    "install --frozen-lockfile",
+  );
+  expect(readFileSync(linkAtInstall, "utf8").trim()).toBe(legacySource);
+  expect(readlinkSync(destination)).toBe(join(REPO, "src/cli.ts"));
+}, 15_000);
+
 test("installer unloads stale service before load and uninstall is idempotent", () => {
   const fixture = setup();
   const launchctl = join(fixture.dir, "launchctl");

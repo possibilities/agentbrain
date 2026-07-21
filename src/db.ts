@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { existsSync, statSync } from "node:fs";
 import { CliError } from "./errors";
 import type { QueryFilters } from "./query";
@@ -12,6 +12,7 @@ import {
   truncateContent,
   validateQueryFilters,
 } from "./query";
+import { openReadonlyDatabase } from "./sqlite";
 import { RESEARCH_SCHEMA_VERSION } from "./store";
 import type {
   Attempt,
@@ -55,10 +56,7 @@ export class ResearchCache {
         },
       );
     }
-    this.db = new Database(`file:${dbPath}?mode=ro`, {
-      readonly: true,
-      strict: true,
-    });
+    this.db = openReadonlyDatabase(dbPath);
     try {
       this.rejectUnsupportedSchema();
     } catch (error) {

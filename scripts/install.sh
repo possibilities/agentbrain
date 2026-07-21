@@ -34,11 +34,12 @@ if (( $# > 1 )); then
   exit 2
 fi
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BIN_DIR="${AGENTBRAIN_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 LAUNCH_AGENTS_DIR="${AGENTBRAIN_INSTALL_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 STATE_DIR="${AGENTBRAIN_INSTALL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agentbrain}"
 AGENTBRAIN_SOURCE="$ROOT/src/cli.ts"
+KNOWN_LEGACY_AGENTBRAIN_SOURCE="${AGENTBRAIN_INSTALL_LEGACY_SOURCE:-/Users/mike/code/agentbrain/src/cli.ts}"
 RETIRED_ADAPTER_SOURCE="$ROOT/src/research-ingest-link.ts"
 PLIST_SOURCE="$ROOT/system/Library/LaunchAgents/agentbrain.worker.plist"
 SERVICE_DEST="$LAUNCH_AGENTS_DIR/agentbrain.worker.plist"
@@ -66,6 +67,7 @@ canonical_path() {
 }
 
 AGENTBRAIN_CANONICAL="$(canonical_path "$AGENTBRAIN_SOURCE")"
+KNOWN_LEGACY_AGENTBRAIN_CANONICAL="$(canonical_path "$KNOWN_LEGACY_AGENTBRAIN_SOURCE")"
 RETIRED_ADAPTER_CANONICAL="$(canonical_path "$RETIRED_ADAPTER_SOURCE")"
 LEGACY_CANONICAL="$(canonical_path "$EXPECTED_LEGACY_SOURCE")"
 
@@ -86,6 +88,7 @@ symlink_is_owned() {
 check_destination() {
   local destination="$1"
   local expected="$2"
+  local known_legacy="${3:-}"
 
   if [[ ! -e "$destination" && ! -L "$destination" ]]; then
     return 0
@@ -95,6 +98,9 @@ check_destination() {
     return 1
   fi
   if symlink_is_owned "$destination" "$expected"; then
+    return 0
+  fi
+  if [[ -n "$known_legacy" ]] && symlink_is_owned "$destination" "$known_legacy"; then
     return 0
   fi
 
@@ -190,10 +196,14 @@ unload_owned_service() {
 preflight_owned_removal() {
   local destination="$1"
   local expected="$2"
+  local known_legacy="${3:-}"
   if [[ ! -e "$destination" && ! -L "$destination" ]]; then
     return 0
   fi
   if symlink_is_owned "$destination" "$expected"; then
+    return 0
+  fi
+  if [[ -n "$known_legacy" ]] && symlink_is_owned "$destination" "$known_legacy"; then
     return 0
   fi
   echo "refusing to remove foreign command: $destination" >&2
@@ -201,7 +211,7 @@ preflight_owned_removal() {
 }
 
 if [[ "$ACTION" == uninstall ]]; then
-  preflight_owned_removal "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL"
+  preflight_owned_removal "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL" "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL"
   check_service_destination
   check_loaded_service
 
@@ -211,7 +221,8 @@ if [[ "$ACTION" == uninstall ]]; then
   if service_is_owned; then
     rm -f "$SERVICE_DEST"
   fi
-  if symlink_is_owned "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL"; then
+  if symlink_is_owned "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL" ||
+    symlink_is_owned "$BIN_DIR/agentbrain" "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL"; then
     rm -f "$BIN_DIR/agentbrain"
   fi
   remove_known_retired_link
@@ -219,10 +230,15 @@ if [[ "$ACTION" == uninstall ]]; then
   exit 0
 fi
 
-check_destination "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL"
+check_destination "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL" "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL"
 check_service_destination
 check_private_paths
 check_loaded_service
+
+(
+  cd "$ROOT"
+  bun install --frozen-lockfile
+)
 
 mkdir -p "$BIN_DIR" "$LAUNCH_AGENTS_DIR" "$STATE_DIR"
 chmod 700 "$STATE_DIR"

@@ -325,7 +325,7 @@ test("queued URL extraction promotes and commits through fenced completion", asy
     "--markdown",
   );
   store.close();
-}, 60_000);
+});
 
 test("retry after index failure reuses the promoted URL Artifact", async () => {
   const { root, store, artifacts } = fixture();
@@ -386,7 +386,7 @@ test("retry after index failure reuses the promoted URL Artifact", async () => {
     content,
   });
   store.close();
-}, 60_000);
+});
 
 test("recovery completion links a cross-candidate collision job to the document owner", async () => {
   const { store, artifacts } = fixture();

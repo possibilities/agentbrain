@@ -127,7 +127,7 @@ export function buildGuide(): unknown {
     },
     safety: {
       read_connections:
-        "Read commands open SQLite with mode=ro/readonly and never initialize or migrate.",
+        "Read commands open SQLite with Bun's readonly option and never initialize or migrate.",
       writes:
         "Submit and its ingest alias write only durable jobs and required Artifact snapshots; materialization is restricted to the fenced worker path. Operator transitions and explicit content reveal are audited.",
       urls: "Admission validates HTTP(S) syntax and queues normalized intent without network work. The worker delegates all URL extraction and network policy to Scrapectl through a versioned envelope and rejects unknown envelope versions.",

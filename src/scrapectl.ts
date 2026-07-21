@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { findExecutable } from "./executable";
 import { sanitizeExternalError } from "./sanitize";
@@ -95,30 +95,35 @@ export class ScrapectlExtractionError extends Error {
 
 type CancellationSignal = "SIGHUP" | "SIGINT" | "SIGTERM";
 
-type ProviderTerminator = () => void;
+type ProviderTerminator = () => void | Promise<void>;
 
 const activeProviderTerminators = new Set<ProviderTerminator>();
+let parentCancellationStarted = false;
 const CANCELLATION_EXIT_CODES: Record<CancellationSignal, number> = {
   SIGHUP: 129,
   SIGINT: 130,
   SIGTERM: 143,
 };
 
-function exitForCancellation(signal: CancellationSignal): never {
-  for (const terminate of [...activeProviderTerminators]) {
-    try {
-      terminate();
-    } catch {
-      // Cancellation cleanup is best effort; the parent must still exit.
-    }
-  }
+async function exitForCancellation(signal: CancellationSignal): Promise<void> {
+  if (parentCancellationStarted) return;
+  parentCancellationStarted = true;
+  await Promise.allSettled(
+    [...activeProviderTerminators].map(async (terminate) => terminate()),
+  );
   process.exit(CANCELLATION_EXIT_CODES[signal]);
 }
 
-const cancellationHandlers: Record<CancellationSignal, () => never> = {
-  SIGHUP: () => exitForCancellation("SIGHUP"),
-  SIGINT: () => exitForCancellation("SIGINT"),
-  SIGTERM: () => exitForCancellation("SIGTERM"),
+const cancellationHandlers: Record<CancellationSignal, () => void> = {
+  SIGHUP: () => {
+    void exitForCancellation("SIGHUP");
+  },
+  SIGINT: () => {
+    void exitForCancellation("SIGINT");
+  },
+  SIGTERM: () => {
+    void exitForCancellation("SIGTERM");
+  },
 };
 
 function registerProviderTerminator(terminate: ProviderTerminator): () => void {
@@ -308,15 +313,35 @@ function runCommand(
     let spawnError: unknown;
     let terminationStarted = false;
     let escalationTimer: ReturnType<typeof setTimeout> | undefined;
+    let markChildClosed = (): void => {};
+    const childClosed = new Promise<void>((resolveClosed) => {
+      markChildClosed = resolveClosed;
+    });
 
     const signalAttempt = (signal: NodeJS.Signals): void => {
       if (useProcessGroup && child.pid !== undefined) {
+        let groupSignaled = false;
         try {
           process.kill(-child.pid, signal);
-          return;
+          groupSignaled = true;
         } catch {
-          // Fall through if the child failed before its process group existed.
+          // The group may not have existed yet; the native fallback retries it.
         }
+        // Bun has intermittently failed to deliver negative-PID group signals
+        // on both hosted Linux and Darwin despite reporting success. A POSIX
+        // shell kill reaches the same process-group contract through the OS.
+        const nativeKill = spawnSync(
+          "/bin/sh",
+          [
+            "-c",
+            'kill -s "$1" -- "-$2"',
+            "agentbrain-group-kill",
+            signal.slice(3),
+            String(child.pid),
+          ],
+          { stdio: "ignore" },
+        );
+        if (nativeKill.status === 0 || groupSignaled) return;
       }
       try {
         child.kill(signal);
@@ -324,7 +349,16 @@ function runCommand(
         // The attempt has already exited.
       }
     };
-    const terminateOnParentExit = (): void => signalAttempt("SIGKILL");
+    const terminateOnParentExit = async (): Promise<void> => {
+      signalAttempt("SIGKILL");
+      const retry = setInterval(() => signalAttempt("SIGKILL"), 25);
+      try {
+        await childClosed;
+      } finally {
+        clearInterval(retry);
+        signalAttempt("SIGKILL");
+      }
+    };
     const unregisterProviderTerminator = registerProviderTerminator(
       terminateOnParentExit,
     );
@@ -377,6 +411,7 @@ function runCommand(
         // The direct process may exit while descendants still hold no pipes.
         signalAttempt("SIGKILL");
       }
+      markChildClosed();
       resolve({
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),

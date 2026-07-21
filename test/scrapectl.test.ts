@@ -38,6 +38,7 @@ afterEach(() => {
   delete process.env.LOG;
   delete process.env.COUNT_FILE;
   delete process.env.CHILD_PID_FILE;
+  delete process.env.PROVIDER_PID_FILE;
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -61,27 +62,93 @@ function writeExecutable(path: string, script: string): void {
   chmodSync(path, 0o755);
 }
 
+interface ProcessSnapshot {
+  state: string;
+  identity: string;
+  processGroup: number;
+}
+
+function linuxProcSnapshot(pid: number): ProcessSnapshot | null {
+  try {
+    const value = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = value.lastIndexOf(") ");
+    if (commandEnd < 0) return null;
+    const command = value.slice(value.indexOf("(") + 1, commandEnd);
+    const fields = value
+      .slice(commandEnd + 2)
+      .trim()
+      .split(/\s+/);
+    const state = fields[0];
+    const processGroup = Number(fields[2]);
+    const startedAt = fields[19];
+    return state === undefined || startedAt === undefined
+      ? null
+      : {
+          state,
+          identity: `${startedAt} ${processGroup} ${command}`,
+          processGroup,
+        };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function processSnapshot(pid: number): ProcessSnapshot | null {
+  let stat: ReturnType<typeof Bun.spawnSync>;
+  try {
+    stat = Bun.spawnSync({
+      cmd: [
+        "ps",
+        "-ww",
+        "-o",
+        "stat=",
+        "-o",
+        "lstart=",
+        "-o",
+        "pgid=",
+        "-o",
+        "command=",
+        "-p",
+        String(pid),
+      ],
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+  } catch (error) {
+    if (
+      process.platform === "linux" &&
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      return linuxProcSnapshot(pid);
+    }
+    throw error;
+  }
+  if (stat.exitCode !== 0) return null;
+  const fields = new TextDecoder().decode(stat.stdout).trim().split(/\s+/);
+  const state = fields.shift();
+  const processGroup = Number(fields[5]);
+  return state === undefined
+    ? null
+    : { state, identity: fields.join(" "), processGroup };
+}
+
 async function waitForProcessExit(
   pid: number,
+  expectedIdentity?: string,
   attempts = 200,
   delayMs = 50,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      process.kill(pid, 0);
-      const stat = Bun.spawnSync({
-        cmd: ["ps", "-o", "stat=", "-p", String(pid)],
-        stdout: "pipe",
-        stderr: "ignore",
-      });
-      const status = new TextDecoder().decode(stat.stdout).trim();
-      if (stat.exitCode === 0 && status.includes("Z")) {
-        return true;
-      }
-      await Bun.sleep(delayMs);
-    } catch {
+    const snapshot = processSnapshot(pid);
+    if (
+      snapshot === null ||
+      snapshot.state.includes("Z") ||
+      (expectedIdentity !== undefined && snapshot.identity !== expectedIdentity)
+    ) {
       return true;
     }
+    await Bun.sleep(delayMs);
   }
   return false;
 }
@@ -652,12 +719,15 @@ wait
 }, 30_000);
 
 test("parent cancellation kills detached Scrapectl descendants and preserves signal exits", async () => {
-  if (process.platform !== "linux") return;
+  if (process.platform === "win32") return;
   const { dir } = installScrapectl(`#!/bin/sh
+printf '%s' "$$" > "$PROVIDER_PID_FILE"
 sh -c 'trap "" HUP INT TERM; exec sleep 30' &
 printf '%s' "$!" > "$CHILD_PID_FILE"
 wait
 `);
+  const providerPidFile = join(dir, "provider.pid");
+  process.env.PROVIDER_PID_FILE = providerPidFile;
 
   const parentScript = join(dir, "provider-parent.ts");
   writeFileSync(
@@ -691,11 +761,20 @@ wait
       await parent.exited;
       throw new Error(`provider fixture did not start for ${signal}`);
     }
+    const providerPid = Number(readFileSync(providerPidFile, "utf8"));
     const descendantPid = Number(readFileSync(pidFile, "utf8"));
+    const descendant = processSnapshot(descendantPid);
+    const descendantIdentity = descendant?.identity;
+    expect(descendantIdentity).toBeDefined();
+    expect(descendant?.processGroup).toBe(providerPid);
     parent.kill(signal);
     const exitCode = await parent.exited;
 
-    const alive = !(await waitForProcessExit(descendantPid));
+    const alive = !(await waitForProcessExit(
+      descendantPid,
+      descendantIdentity,
+    ));
+    const descendantAfterWait = processSnapshot(descendantPid);
     if (alive) {
       try {
         process.kill(descendantPid, "SIGKILL");
@@ -704,9 +783,9 @@ wait
       }
     }
     expect(exitCode).toBe(expectedExitCode);
-    expect(alive).toBe(false);
+    expect(alive, JSON.stringify(descendantAfterWait)).toBe(false);
   }
-}, 30_000);
+}, 60_000);
 
 test("empty and oversized Markdown plus oversized command output fail without retry", async () => {
   const { dir, executable } = installScrapectl(`#!/bin/sh

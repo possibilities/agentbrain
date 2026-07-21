@@ -180,7 +180,7 @@ test("a WAL snapshot includes committed writes while an older reader stays activ
     content: "first committed document",
   });
 
-  const reader = new Database(`file:${dbPath}?mode=ro`, { readonly: true });
+  const reader = new Database(dbPath, { readonly: true });
   reader.exec("BEGIN");
   expect(reader.query("SELECT COUNT(*) AS count FROM documents").get()).toEqual(
     { count: 1 },

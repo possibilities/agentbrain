@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { lstatSync, statfsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -18,6 +18,7 @@ import type {
   VerifiedRecoveryCandidate,
   VerifiedRecoveryGeneration,
 } from "./recovery";
+import { openReadonlyDatabase } from "./sqlite";
 import {
   RECOVERY_OFFLINE_SCOPE_KIND,
   RECOVERY_ONLINE_SCOPE_KIND,
@@ -1210,9 +1211,8 @@ export function prepareRecoveryOnlineBackfill(
     );
   }
 
-  const snapshotDb = new Database(
-    `file:${join(resolve(options.postOfflineSnapshot), BACKUP_DATABASE_FILE)}?mode=ro`,
-    { readonly: true, strict: true },
+  const snapshotDb = openReadonlyDatabase(
+    join(resolve(options.postOfflineSnapshot), BACKUP_DATABASE_FILE),
   );
   let snapshotGate: OfflineGateResult;
   let snapshotInventory: JobInventory;
