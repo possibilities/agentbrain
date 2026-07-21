@@ -36,5 +36,5 @@ Use a small static or extracted-function temporary-HOME test that verifies the `
 - [ ] The targeted lightweight installer test passes without executing the full installer, package sync, model, browser, or network.
 
 ## Done summary
-
+Wired Pi's global profile to symlink ~/.pi/agent/skills/brain at Keeper's canonical plan-plugin brain skill via the existing never-clobber install_skill_link helper, plus lightweight temp-HOME tests covering fresh install, idempotency, stale-link replacement, and foreign-file preservation.
 ## Evidence
