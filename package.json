@@ -16,7 +16,8 @@
     "format": "biome check --write src test",
     "typecheck": "tsc --noEmit",
     "test": "bun test --parallel=1 --max-concurrency=1 --timeout=30000",
-    "check": "bun run typecheck && bun run lint && bun run test"
+    "check": "bun run typecheck && bun run lint && bun run test",
+    "test:gate": "bun run check"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.0",
