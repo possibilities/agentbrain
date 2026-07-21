@@ -325,7 +325,7 @@ function runCommand(
           process.kill(-child.pid, signal);
           groupSignaled = true;
         } catch {
-          // The group may not have existed yet; the native fallback retries it.
+          // The group may not have existed yet; the POSIX fallback retries it.
         }
         // Bun has intermittently failed to deliver negative-PID group signals
         // on both hosted Linux and Darwin despite reporting success. A POSIX
