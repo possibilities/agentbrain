@@ -20,9 +20,16 @@ import {
   type ExtractionProvider,
   extractWithScrapectl,
   SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+  ScrapectlDiscoveryError,
   ScrapectlExtractionError,
+  type SourceDiscoveryProvider,
   validateExtractionEnvelope,
 } from "./scrapectl";
+import {
+  dispatchSourceRun,
+  SourceRunDispatchCancellationError,
+  SourceRunDispatchError,
+} from "./source-worker";
 import { DEFAULT_LIFECYCLE_POLICY, type ResearchStore } from "./store";
 import { cleanText } from "./text";
 import type {
@@ -86,6 +93,12 @@ export interface WorkerOptions {
   artifactStore?: ArtifactStore;
   materialize?: JobMaterializer;
   extract?: ExtractionProvider;
+  /** Provider seam for offline source-run tests. */
+  sourceDiscovery?: SourceDiscoveryProvider;
+  /** @deprecated Use sourceDiscovery. */
+  discovery?: SourceDiscoveryProvider;
+  /** Fault-injection seam immediately before a source Checkpoint write. */
+  beforeSourceCheckpointCommit?: () => void;
   now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
   policy?: Partial<LifecyclePolicy>;
@@ -518,6 +531,10 @@ export const defaultMaterializer: JobMaterializer = async (
 };
 
 function classifyFailure(error: unknown): FailureClass {
+  if (error instanceof SourceRunDispatchError) return error.failureClass;
+  if (error instanceof ScrapectlDiscoveryError) {
+    return error.disposition === "cancelled" ? "permanent" : error.disposition;
+  }
   if (error instanceof ScrapectlExtractionError) {
     return error.disposition === "cancelled" ? "permanent" : error.disposition;
   }
@@ -995,7 +1012,32 @@ export async function runWorker(
           controller.abort();
         }
       }, heartbeatMs);
+      const sourceJob = claim.job.kind === "source_sync";
       try {
+        if (sourceJob) {
+          const dispatch = await dispatchSourceRun(store, claim.job, {
+            discovery: options.sourceDiscovery ?? options.discovery,
+            signal: controller.signal,
+            now,
+            beforeCheckpointCommit: options.beforeSourceCheckpointCommit,
+          });
+          if (controller.signal.aborted || lostLease) {
+            result.fenced += 1;
+            continue;
+          }
+          const completionTime = now();
+          const completed = store.completeJob({
+            fencingToken: claim.fencing_token,
+            now: completionTime,
+            apply: () => {
+              dispatch.commit(completionTime);
+            },
+          });
+          if (completed.ok) result.completed += 1;
+          else result.fenced += 1;
+          continue;
+        }
+
         const intent = parseIntent(claim.job);
         const documents = await materialize(claim.job, intent, {
           artifactStore,
@@ -1025,7 +1067,8 @@ export async function runWorker(
           continue;
         }
         if (
-          error instanceof ScrapectlExtractionError &&
+          (error instanceof ScrapectlExtractionError ||
+            error instanceof ScrapectlDiscoveryError) &&
           error.disposition === "cancelled"
         ) {
           const guard = store.heartbeat({
@@ -1038,22 +1081,34 @@ export async function runWorker(
             result.fenced += 1;
             continue;
           }
+          const cancellationTime = now();
           const cancelled = store.cancelJob({
             jobId: claim.job.id,
             actor: workerId,
             reason: sanitizeExternalError(error),
-            now: now(),
+            ...(error instanceof SourceRunDispatchCancellationError
+              ? { apply: () => error.commitEvidence(cancellationTime) }
+              : {}),
+            now: cancellationTime,
           });
           if (cancelled.ok) result.failed += 1;
           else result.fenced += 1;
           continue;
         }
-        const failureClass = classifyFailure(error);
+        const failureClass = sourceJob
+          ? error instanceof SourceRunDispatchError
+            ? error.failureClass
+            : "infra"
+          : classifyFailure(error);
+        const failureTime = now();
         const failed = store.failAttempt({
           fencingToken: claim.fencing_token,
           failureClass,
           summary: sanitizeExternalError(error),
-          now: now(),
+          ...(error instanceof SourceRunDispatchError
+            ? { apply: () => error.commitEvidence(failureTime) }
+            : {}),
+          now: failureTime,
           policy: options.policy,
           random: options.random,
         });

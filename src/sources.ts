@@ -730,6 +730,49 @@ export interface SourceApplyResult {
   changed: boolean;
 }
 
+export interface SourceRunExecutionContext {
+  run: Run;
+  source: Source;
+  definition: SourceDefinition;
+  checkpoint: unknown | null;
+}
+
+/** One provider-neutral Observation ready for durable source fanout. */
+export interface SourceObservationAdmission {
+  /** Stable within a replayed Run; duplicates retain the provider stableId. */
+  observationKey: string;
+  stableId: string;
+  observedVersion: string;
+  resourceKey: { type: string; value: string };
+  locator: string | null;
+  metadata: Record<string, unknown>;
+  suppressionReason: string | null;
+  admission: {
+    idempotencyKey: string;
+    intent: string;
+  } | null;
+}
+
+interface SourceAdmissionJob {
+  id: number;
+  resource_id: number | null;
+  intent: string | null;
+}
+
+export interface SourceRunWindowCommit {
+  runId: number;
+  observations: readonly SourceObservationAdmission[];
+  attemptedCursor: unknown;
+  warnings: readonly string[];
+  disposition: "success" | "partial" | "retry" | "failed" | "cancelled";
+  checkpoint?: unknown;
+  healthDetail: string;
+  pauseReason?: string;
+  /** Fault-injection seam exercised before the Checkpoint statement. */
+  beforeCheckpointCommit?: () => void;
+  now?: Date;
+}
+
 function limitCodePoints(value: string, limit: number): string {
   return Array.from(value).slice(0, limit).join("");
 }
@@ -891,6 +934,50 @@ export class SourceRegistry {
     return transaction.immediate();
   }
 
+  sourceRunExecution(runId: number): SourceRunExecutionContext {
+    const run = this.requireSourceRun(runId);
+    const source = this.db
+      .query(`SELECT ${SOURCE_COLUMNS} FROM sources WHERE id=?`)
+      .get(run.source_id) as Source | null;
+    if (source === null || run.source_definition_version === null) {
+      throw new CliError(
+        "source_run_not_found",
+        `source Run ${runId} has no durable source definition`,
+      );
+    }
+    const version = this.db
+      .query(
+        `SELECT definition FROM source_definition_versions
+         WHERE source_id=? AND definition_version=?`,
+      )
+      .get(source.id, run.source_definition_version) as {
+      definition: string;
+    } | null;
+    if (version === null) {
+      throw new CliError(
+        "source_definition_not_found",
+        `source Run ${runId} definition version is unavailable`,
+      );
+    }
+    let definitionValue: unknown;
+    let checkpoint: unknown | null = null;
+    try {
+      definitionValue = JSON.parse(version.definition) as unknown;
+      checkpoint = run.checkpoint === null ? null : JSON.parse(run.checkpoint);
+    } catch {
+      throw new CliError(
+        "invalid_source_state",
+        `source Run ${runId} has invalid durable JSON state`,
+      );
+    }
+    return {
+      run,
+      source,
+      definition: validateSourceDefinition(definitionValue),
+      checkpoint,
+    };
+  }
+
   startSourceRun(input: {
     runId: number;
     attemptedCursor?: unknown;
@@ -983,6 +1070,7 @@ export class SourceRegistry {
     warnings?: readonly string[];
     counts?: SourceRunCounts;
     healthDetail?: string;
+    pauseReason?: string;
     now?: Date;
   }): Run {
     if (
@@ -1017,10 +1105,24 @@ export class SourceRegistry {
           : this.sourceStateJson(input.attemptedCursor, "attempted cursor");
       let checkpoint: string | null = null;
       if (input.checkpoint !== undefined) {
+        const durable = this.db
+          .query(
+            `SELECT COUNT(*) AS discovered,
+                    COALESCE(SUM(CASE
+                      WHEN o.suppressed=0 AND d.admission_job_id IS NOT NULL
+                      THEN 1 ELSE 0 END), 0) AS admitted,
+                    COALESCE(SUM(CASE WHEN o.suppressed=1 THEN 1 ELSE 0 END), 0) AS suppressed
+             FROM source_observation_details d
+             JOIN observations o ON o.id=d.observation_id
+             WHERE d.run_id=?`,
+          )
+          .get(run.id) as SourceRunCounts;
         if (
           input.outcome !== "success" ||
-          warnings.length !== 0 ||
-          counts.discovered !== counts.admitted + counts.suppressed
+          counts.discovered !== counts.admitted + counts.suppressed ||
+          Number(durable.discovered) !== counts.discovered ||
+          Number(durable.admitted) !== counts.admitted ||
+          Number(durable.suppressed) !== counts.suppressed
         ) {
           throw new CliError(
             "unsafe_checkpoint",
@@ -1069,21 +1171,26 @@ export class SourceRegistry {
           run.id,
         );
       const healthState: SourceHealthState =
-        input.outcome === "success" && warnings.length === 0
-          ? "healthy"
+        input.outcome === "failed" || input.outcome === "cancelled"
+          ? "unhealthy"
           : input.outcome === "partial" || warnings.length > 0
             ? "warning"
-            : "unhealthy";
+            : "healthy";
       const healthDetail =
         input.healthDetail === undefined
           ? (warnings[0] ?? input.outcome)
           : limitCodePoints(sanitizeExternalError(input.healthDetail), 500);
+      const pauseReason =
+        input.pauseReason === undefined
+          ? null
+          : this.validatedSourceReason(input.pauseReason);
       this.db
         .query(
           `UPDATE sources SET checkpoint=COALESCE(?, checkpoint),
              health_state=?, health_detail=?, last_evaluated_at=?,
              last_success_at=CASE WHEN ?='success' THEN ? ELSE last_success_at END,
-             updated_at=? WHERE id=?`,
+             paused=CASE WHEN ? IS NULL THEN paused ELSE 1 END,
+             pause_reason=COALESCE(?, pause_reason), updated_at=? WHERE id=?`,
         )
         .run(
           checkpoint,
@@ -1092,9 +1199,35 @@ export class SourceRegistry {
           timestamp,
           input.outcome,
           timestamp,
+          pauseReason,
+          pauseReason,
           timestamp,
           run.source_id,
         );
+      if (pauseReason !== null) {
+        const source = this.db
+          .query(
+            "SELECT definition_version, definition_hash FROM sources WHERE id=?",
+          )
+          .get(run.source_id) as {
+          definition_version: number;
+          definition_hash: string;
+        };
+        this.db
+          .query(
+            `INSERT INTO source_audit_events(
+               source_id, action, actor, reason, definition_version,
+               definition_hash, created_at
+             ) VALUES (?, 'paused', 'source-worker', ?, ?, ?, ?)`,
+          )
+          .run(
+            run.source_id,
+            pauseReason,
+            source.definition_version,
+            source.definition_hash,
+            timestamp,
+          );
+      }
       return this.requireSourceRun(input.runId);
     });
     return transaction.immediate();
@@ -1112,6 +1245,460 @@ export class SourceRegistry {
       ...input,
       outcome: "success",
     });
+  }
+
+  /**
+   * Persist a discovery window's Observations and Admissions. A successful
+   * Checkpoint shares one SQLite transaction with every resource job or
+   * Suppressed observation in the window.
+   */
+  commitSourceRunWindow(input: SourceRunWindowCommit): Run {
+    if (input.observations.length > 10_000) {
+      throw new CliError(
+        "source_window_too_large",
+        "source discovery window exceeds the 10000-Observation bound",
+      );
+    }
+    const timestamp = (input.now ?? new Date()).toISOString();
+    const transaction = this.db.transaction((): Run => {
+      const context = this.sourceRunExecution(input.runId);
+      if (context.run.terminal_outcome !== null) {
+        if (
+          (input.disposition === "success" &&
+            context.run.terminal_outcome === "success") ||
+          (input.disposition === "partial" &&
+            context.run.terminal_outcome === "partial") ||
+          (input.disposition === "failed" &&
+            context.run.terminal_outcome === "failed") ||
+          (input.disposition === "cancelled" &&
+            context.run.terminal_outcome === "cancelled")
+        ) {
+          return context.run;
+        }
+        throw new CliError(
+          "source_run_terminal",
+          `source Run ${input.runId} is already terminal`,
+        );
+      }
+
+      const observationKeys = new Set<string>();
+      for (const observation of input.observations) {
+        const stableId = String(observation.stableId ?? "").trim();
+        const observationKey = String(observation.observationKey ?? "").trim();
+        if (
+          stableId.length === 0 ||
+          Array.from(stableId).length > 512 ||
+          observationKey.length === 0 ||
+          Array.from(observationKey).length > 600 ||
+          observationKeys.has(observationKey)
+        ) {
+          throw new CliError(
+            "bad_source_observation",
+            "source Observations require unique bounded Observation keys and stable entry IDs",
+          );
+        }
+        observationKeys.add(observationKey);
+        if (
+          !observation.resourceKey.type.trim() ||
+          !observation.resourceKey.value.trim() ||
+          Array.from(observation.resourceKey.type).length > 100 ||
+          Array.from(observation.resourceKey.value).length > 4_096
+        ) {
+          throw new CliError(
+            "bad_source_observation",
+            "source Observation Resource keys must be bounded and non-empty",
+          );
+        }
+        const metadata = this.sourceStateJson(
+          observation.metadata,
+          "Observation metadata",
+        );
+        if (Buffer.byteLength(metadata, "utf8") > 16 * 1024) {
+          throw new CliError(
+            "bad_source_observation",
+            "source Observation metadata exceeds its 16 KiB bound",
+          );
+        }
+        const suppressionReason =
+          observation.suppressionReason === null
+            ? null
+            : this.validatedSourceReason(observation.suppressionReason);
+        if ((observation.admission === null) !== (suppressionReason !== null)) {
+          throw new CliError(
+            "bad_source_observation",
+            "every source Observation must have either an Admission or a suppression reason",
+          );
+        }
+
+        const previous = this.db
+          .query(
+            `SELECT o.resource_id, d.observed_version
+             FROM source_observation_details d
+             JOIN observations o ON o.id=d.observation_id
+             WHERE d.source_id=? AND d.stable_id=? AND o.suppressed=0
+             ORDER BY d.run_id DESC LIMIT 1`,
+          )
+          .get(context.source.id, stableId) as {
+          resource_id: number;
+          observed_version: string;
+        } | null;
+        const observedVersionChanged =
+          previous !== null &&
+          previous.observed_version !== observation.observedVersion;
+        const keyed = this.db
+          .query("SELECT id FROM resources WHERE key_type=? AND key_value=?")
+          .get(observation.resourceKey.type, observation.resourceKey.value) as {
+          id: number;
+        } | null;
+        const aliased =
+          observation.locator === null
+            ? null
+            : (this.db
+                .query(
+                  `SELECT resource_id AS id FROM resource_aliases
+                   WHERE locator=? ORDER BY id ASC LIMIT 1`,
+                )
+                .get(observation.locator) as { id: number } | null);
+        let resourceId = previous?.resource_id ?? keyed?.id ?? aliased?.id;
+        if (resourceId === undefined) {
+          resourceId = Number(
+            this.db
+              .query(
+                `INSERT INTO resources(
+                   key_type, key_value, kind, sensitivity, created_at, updated_at
+                 ) VALUES (?, ?, 'url', ?, ?, ?)`,
+              )
+              .run(
+                observation.resourceKey.type,
+                observation.resourceKey.value,
+                context.source.sensitivity,
+                timestamp,
+                timestamp,
+              ).lastInsertRowid,
+          );
+        } else {
+          this.db
+            .query(
+              `UPDATE resources SET sensitivity=CASE
+                 WHEN (SELECT rank FROM sensitivity_levels WHERE level=?) >
+                      (SELECT rank FROM sensitivity_levels WHERE level=resources.sensitivity)
+                 THEN ? ELSE sensitivity END, updated_at=? WHERE id=?`,
+            )
+            .run(
+              context.source.sensitivity,
+              context.source.sensitivity,
+              timestamp,
+              resourceId,
+            );
+        }
+
+        this.db
+          .query(
+            `INSERT INTO resource_aliases(
+               resource_id, alias_type, locator, evidence,
+               first_observed_at, last_observed_at
+             ) VALUES (?, 'source_entry_id', ?, 'source_discovery', ?, ?)
+             ON CONFLICT(resource_id, alias_type, locator) DO UPDATE SET
+               last_observed_at=excluded.last_observed_at`,
+          )
+          .run(
+            resourceId,
+            `${context.source.identifier}:${stableId}`,
+            timestamp,
+            timestamp,
+          );
+        if (observation.locator !== null) {
+          this.db
+            .query(
+              `INSERT INTO resource_aliases(
+                 resource_id, alias_type, locator, evidence,
+                 first_observed_at, last_observed_at
+               ) VALUES (?, 'source_observed_url', ?, 'source_discovery', ?, ?)
+               ON CONFLICT(resource_id, alias_type, locator) DO UPDATE SET
+                 last_observed_at=excluded.last_observed_at`,
+            )
+            .run(resourceId, observation.locator, timestamp, timestamp);
+        }
+
+        const existingDetail = this.db
+          .query(
+            `SELECT observation_id FROM source_observation_details
+             WHERE run_id=? AND observation_key=?`,
+          )
+          .get(input.runId, observationKey) as {
+          observation_id: number;
+        } | null;
+        let observationId: number;
+        if (existingDetail === null) {
+          observationId = Number(
+            this.db
+              .query(
+                `INSERT INTO observations(
+                   resource_id, source_id, run_id, ingress, observed_locator,
+                   suppressed, suppressed_reason, observed_at
+                 ) VALUES (?, ?, ?, 'source_sync', ?, ?, ?, ?)`,
+              )
+              .run(
+                resourceId,
+                context.source.id,
+                input.runId,
+                observation.locator,
+                suppressionReason === null ? 0 : 1,
+                suppressionReason,
+                timestamp,
+              ).lastInsertRowid,
+          );
+          this.db
+            .query(
+              `INSERT INTO source_observation_details(
+                 observation_id, source_id, run_id, observation_key, stable_id,
+                 observed_version, metadata, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              observationId,
+              context.source.id,
+              input.runId,
+              observationKey,
+              stableId,
+              observation.observedVersion,
+              metadata,
+              timestamp,
+              timestamp,
+            );
+        } else {
+          observationId = existingDetail.observation_id;
+          this.db
+            .query(
+              `UPDATE observations SET resource_id=?, observed_locator=?,
+                 suppressed=?, suppressed_reason=?, observed_at=? WHERE id=?`,
+            )
+            .run(
+              resourceId,
+              observation.locator,
+              suppressionReason === null ? 0 : 1,
+              suppressionReason,
+              timestamp,
+              observationId,
+            );
+          this.db
+            .query(
+              `UPDATE source_observation_details SET observed_version=?,
+                 metadata=?, updated_at=? WHERE observation_id=?`,
+            )
+            .run(
+              observation.observedVersion,
+              metadata,
+              timestamp,
+              observationId,
+            );
+        }
+
+        let admissionJobId: number | null = null;
+        if (observation.admission !== null) {
+          let job = observedVersionChanged
+            ? null
+            : (this.db
+                .query(
+                  `SELECT id, resource_id, intent FROM jobs
+                   WHERE resource_id=? AND kind='url'
+                   ORDER BY CASE state WHEN 'completed' THEN 0 ELSE 1 END, id ASC
+                   LIMIT 1`,
+                )
+                .get(resourceId) as SourceAdmissionJob | null);
+          if (
+            job === null &&
+            !observedVersionChanged &&
+            observation.locator !== null
+          ) {
+            job = this.db
+              .query(
+                `SELECT id, resource_id, intent FROM jobs
+                 WHERE kind='url' AND intent IS NOT NULL
+                   AND json_extract(
+                     CASE WHEN json_valid(intent) THEN intent ELSE NULL END,
+                     '$.payload.url.url'
+                   )=?
+                 ORDER BY CASE state WHEN 'completed' THEN 0 ELSE 1 END, id ASC
+                 LIMIT 1`,
+              )
+              .get(observation.locator) as SourceAdmissionJob | null;
+          }
+          if (job === null) {
+            job = this.db
+              .query(
+                "SELECT id, resource_id, intent FROM jobs WHERE idempotency_key=?",
+              )
+              .get(
+                observation.admission.idempotencyKey,
+              ) as SourceAdmissionJob | null;
+            if (
+              job !== null &&
+              (job.intent !== observation.admission.intent ||
+                (job.resource_id !== null && job.resource_id !== resourceId))
+            ) {
+              throw new CliError(
+                "idempotency_conflict",
+                "source Admission conflicts with an existing durable intent",
+              );
+            }
+            if (job === null) {
+              const inserted = this.db
+                .query(
+                  `INSERT INTO jobs(
+                     idempotency_key, kind, intent, resource_id, source_id,
+                     run_id, state, sensitivity, run_at, created_at, updated_at
+                   ) VALUES (?, 'url', ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+                )
+                .run(
+                  observation.admission.idempotencyKey,
+                  observation.admission.intent,
+                  resourceId,
+                  context.source.id,
+                  input.runId,
+                  context.source.sensitivity,
+                  timestamp,
+                  timestamp,
+                  timestamp,
+                );
+              job = {
+                id: Number(inserted.lastInsertRowid),
+                resource_id: resourceId,
+                intent: observation.admission.intent,
+              };
+              this.recordTransition(
+                job.id,
+                null,
+                null,
+                "queued",
+                "source-worker",
+                "source_observation_admitted",
+                null,
+                timestamp,
+              );
+            }
+          }
+          if (job !== null) {
+            if (job.resource_id !== null && job.resource_id !== resourceId) {
+              throw new CliError(
+                "resource_identity_conflict",
+                "source Admission resolved to a job for a different Resource",
+              );
+            }
+            admissionJobId = job.id;
+            this.db
+              .query(
+                `UPDATE jobs SET resource_id=COALESCE(resource_id, ?),
+                   sensitivity=CASE
+                     WHEN (SELECT rank FROM sensitivity_levels WHERE level=?) >
+                          (SELECT rank FROM sensitivity_levels WHERE level=jobs.sensitivity)
+                     THEN ? ELSE sensitivity END, updated_at=? WHERE id=?`,
+              )
+              .run(
+                resourceId,
+                context.source.sensitivity,
+                context.source.sensitivity,
+                timestamp,
+                job.id,
+              );
+          }
+
+          for (const slug of context.definition.collections) {
+            this.db
+              .query(
+                `INSERT OR IGNORE INTO collections(
+                   slug, title, sensitivity, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?)`,
+              )
+              .run(
+                slug,
+                slug,
+                context.source.sensitivity,
+                timestamp,
+                timestamp,
+              );
+            this.db
+              .query(
+                `INSERT OR IGNORE INTO collection_memberships(
+                   collection_id, resource_id, added_at
+                 ) SELECT id, ?, ? FROM collections WHERE slug=?`,
+              )
+              .run(resourceId, timestamp, slug);
+          }
+        }
+        this.db
+          .query(
+            `UPDATE source_observation_details SET admission_job_id=?,
+               updated_at=? WHERE observation_id=?`,
+          )
+          .run(admissionJobId, timestamp, observationId);
+      }
+
+      const countRows = this.db
+        .query(
+          `SELECT COUNT(*) AS discovered,
+                  COALESCE(SUM(CASE WHEN o.suppressed=0 THEN 1 ELSE 0 END), 0) AS admitted,
+                  COALESCE(SUM(CASE WHEN o.suppressed=1 THEN 1 ELSE 0 END), 0) AS suppressed
+           FROM source_observation_details d
+           JOIN observations o ON o.id=d.observation_id WHERE d.run_id=?`,
+        )
+        .get(input.runId) as SourceRunCounts;
+      const counts: SourceRunCounts = {
+        discovered: Number(countRows.discovered),
+        admitted: Number(countRows.admitted),
+        suppressed: Number(countRows.suppressed),
+      };
+      const priorWarnings = this.parseSourceWarnings(
+        this.requireSourceRun(input.runId).warnings,
+      );
+      const mergedWarnings = [
+        ...new Set([...priorWarnings, ...input.warnings]),
+      ];
+      const warnings = this.validatedSourceWarnings(
+        mergedWarnings.length <= 100
+          ? mergedWarnings
+          : [...mergedWarnings.slice(0, 99), "warnings_truncated"],
+      );
+
+      if (input.disposition === "retry") {
+        this.recordSourceRunProgress({
+          runId: input.runId,
+          attemptedCursor: input.attemptedCursor,
+          warnings,
+          counts,
+          now: new Date(timestamp),
+        });
+        this.db
+          .query(
+            `UPDATE sources SET health_state='warning', health_detail=?,
+               last_evaluated_at=?, updated_at=? WHERE id=?`,
+          )
+          .run(
+            limitCodePoints(sanitizeExternalError(input.healthDetail), 500),
+            timestamp,
+            timestamp,
+            context.source.id,
+          );
+        return this.requireSourceRun(input.runId);
+      }
+      if (input.disposition === "success") {
+        input.beforeCheckpointCommit?.();
+      }
+      return this.finishSourceRun({
+        runId: input.runId,
+        outcome: input.disposition,
+        attemptedCursor: input.attemptedCursor,
+        ...(input.disposition === "success"
+          ? { checkpoint: input.checkpoint }
+          : {}),
+        warnings,
+        counts,
+        healthDetail: input.healthDetail,
+        pauseReason: input.pauseReason,
+        now: new Date(timestamp),
+      });
+    });
+    return transaction.immediate();
   }
 
   private applySourceDefinition(

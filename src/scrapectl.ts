@@ -13,7 +13,7 @@ import type {
   ExtractorIdentity,
   FailureClass,
 } from "./types";
-import { normalizedWebUrl, validateHttpUrl } from "./url";
+import { normalizedWebUrl, validateHttpUrl, xStatusId } from "./url";
 
 export const SCRAPECTL_DEFAULT_TIMEOUT_MS = 120_000;
 export const SCRAPECTL_OUTPUT_MAX_BYTES = 20_000_000;
@@ -73,6 +73,145 @@ export type ExtractionProvider = (
   options?: ExtractionOptions,
 ) => ExtractionSuccess | Promise<ExtractionSuccess>;
 
+export interface DiscoveryWarning {
+  code: string;
+  message: string;
+  page_url?: string | null;
+}
+
+export interface FeedDiscoveryItem {
+  stable_id: string;
+  upstream_id: string | null;
+  identity_source: "upstream_id" | "canonical_url" | "hashed_upstream_id";
+  url: string | null;
+  candidate_urls: string[];
+  title: string;
+  published_at: string | null;
+  updated_at: string | null;
+  tombstone: boolean;
+}
+
+export interface FeedDiscoveryEnvelope {
+  schema_version: "1";
+  status: "success" | "partial" | "failure";
+  source_url: string;
+  source_format: "rss" | "atom" | "archive" | "mixed" | "unknown";
+  validators: { etag: string | null; last_modified: string | null };
+  cursor: {
+    validators: { etag: string | null; last_modified: string | null };
+    newest_seen_at: string | null;
+    next_url: string | null;
+  };
+  items: FeedDiscoveryItem[];
+  pagination: {
+    pages: Array<{
+      url: string;
+      page_format: "rss" | "atom" | "archive";
+      validators: { etag: string | null; last_modified: string | null };
+      item_count: number;
+      next_url: string | null;
+    }>;
+    complete: boolean;
+    stop_reason:
+      | "exhausted"
+      | "failed"
+      | "page_limit"
+      | "item_limit"
+      | "loop"
+      | "missing_page"
+      | "response_limit"
+      | "timeout"
+      | "cancelled"
+      | "malformed_page";
+    next_url: string | null;
+  };
+  warnings: DiscoveryWarning[];
+  absence_implies_deletion: false;
+  failure: {
+    code: string;
+    retryable: boolean;
+    message: string;
+  } | null;
+}
+
+export interface XTimelineItem {
+  id: string;
+  url: string;
+  text: string;
+  created_at: string;
+  is_reply: boolean;
+  is_repost: boolean;
+  is_quote: boolean;
+  is_pinned: boolean;
+  article_urls: string[];
+}
+
+export interface XTimelineDiscoveryEnvelope {
+  handle: string;
+  /** Diagnostic oldest item only; never a seekable historical cursor. */
+  next_cursor: string | null;
+  scraped_at: string;
+  tweets: XTimelineItem[];
+  warnings: DiscoveryWarning[];
+}
+
+export interface FeedDiscoveryRequest {
+  sourceUrl: string;
+  sourceKind?: "auto" | "feed" | "archive";
+  /** Current Scrapectl supports recorded feed responses at this boundary. */
+  recordedInputFile?: string;
+  /** Prior committed validators for conditional Scrapectl-owned transport. */
+  validators?: { etag: string | null; lastModified: string | null };
+  /** Validators attached to an offline recorded response fixture. */
+  recordedValidators?: { etag?: string; lastModified?: string };
+  since?: string;
+  maxResponseBytes?: number;
+  maxPages: number;
+  maxItems: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface XTimelineDiscoveryRequest {
+  url: string;
+  handle: string;
+  sinceId?: string;
+  limit: number;
+  maxScrolls: number;
+  includeReplies?: boolean;
+  includeReposts?: boolean;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface SourceDiscoveryProvider {
+  discoverFeed(
+    request: FeedDiscoveryRequest,
+  ): FeedDiscoveryEnvelope | Promise<FeedDiscoveryEnvelope>;
+  discoverXTimeline(
+    request: XTimelineDiscoveryRequest,
+  ): XTimelineDiscoveryEnvelope | Promise<XTimelineDiscoveryEnvelope>;
+}
+
+export type DiscoveryDisposition = FailureClass | "cancelled";
+
+export class ScrapectlDiscoveryError extends Error {
+  constructor(
+    message: string,
+    readonly disposition: DiscoveryDisposition,
+    readonly outcome:
+      | "infrastructure"
+      | "rate_limit"
+      | "auth_config"
+      | "permanent"
+      | "cancellation"
+      | "protocol",
+  ) {
+    super(message);
+    this.name = "ScrapectlDiscoveryError";
+  }
+}
+
 export type ExtractionDisposition = FailureClass | "cancelled";
 
 export class ScrapectlExtractionError extends Error {
@@ -103,7 +242,6 @@ const CANCELLATION_EXIT_CODES: Record<CancellationSignal, number> = {
   SIGINT: 130,
   SIGTERM: 143,
 };
-
 function exitForCancellation(signal: CancellationSignal): never {
   for (const terminate of [...activeProviderTerminators]) {
     try {
@@ -287,6 +425,20 @@ function runCommand(
   return new Promise((resolve, reject) => {
     const useProcessGroup = process.platform !== "win32";
     let child: ReturnType<typeof spawn>;
+    const unregisterProviderTerminator = registerProviderTerminator(() => {
+      if (useProcessGroup && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      } else {
+        child.kill("SIGKILL");
+      }
+      // A signal-driven parent exit must not leave killed grandchildren briefly
+      // observable as live provider processes.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+    });
     try {
       child = spawn(executable, args, {
         detached: useProcessGroup,
@@ -295,6 +447,7 @@ function runCommand(
         windowsHide: true,
       });
     } catch (error) {
+      unregisterProviderTerminator();
       reject(error);
       return;
     }
@@ -325,9 +478,6 @@ function runCommand(
       }
     };
     const terminateOnParentExit = (): void => signalAttempt("SIGKILL");
-    const unregisterProviderTerminator = registerProviderTerminator(
-      terminateOnParentExit,
-    );
     process.once("exit", terminateOnParentExit);
 
     const terminateAttempt = (): void => {
@@ -1113,3 +1263,701 @@ export async function extractWithScrapectl(
   }
   return envelopeFailure(envelope.failure);
 }
+
+function discoveryProtocol(detail: string): never {
+  throw new ScrapectlDiscoveryError(
+    `scrapectl discovery protocol defect: ${detail}`,
+    "permanent",
+    "protocol",
+  );
+}
+
+function discoveryRecord(
+  value: unknown,
+  keys: readonly string[],
+  name: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return discoveryProtocol(`${name} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((key, index) => key !== expected[index])
+  ) {
+    return discoveryProtocol(`${name} has unknown or missing fields`);
+  }
+  return record;
+}
+
+function discoveryText(
+  value: unknown,
+  name: string,
+  maximum: number,
+  minimum = 0,
+): string {
+  if (typeof value !== "string") {
+    return discoveryProtocol(`${name} must be text`);
+  }
+  const length = codePointLength(value);
+  if (length < minimum || length > maximum) {
+    return discoveryProtocol(`${name} is outside its size bound`);
+  }
+  return value;
+}
+
+function discoveryNullableText(
+  value: unknown,
+  name: string,
+  maximum: number,
+): string | null {
+  return value === null ? null : discoveryText(value, name, maximum);
+}
+
+function discoveryUrl(value: unknown, name: string): string {
+  const url = discoveryText(value, name, 4_096, 1);
+  try {
+    validateHttpUrl(url);
+  } catch {
+    return discoveryProtocol(`${name} is not an absolute HTTP(S) URL`);
+  }
+  return normalizedWebUrl(url);
+}
+
+function parseDiscoveryWarnings(
+  value: unknown,
+  maximum: number,
+  feed: boolean,
+): DiscoveryWarning[] {
+  if (!Array.isArray(value) || value.length > maximum) {
+    return discoveryProtocol("discovery warnings are invalid");
+  }
+  return value.map((item) => {
+    const warning = discoveryRecord(
+      item,
+      feed ? ["code", "message", "page_url"] : ["code", "message"],
+      "discovery warning",
+    );
+    return {
+      code: discoveryText(warning.code, "warning code", 100, 1),
+      message: discoveryText(warning.message, "warning message", 200),
+      ...(feed
+        ? {
+            page_url:
+              warning.page_url === null
+                ? null
+                : discoveryUrl(warning.page_url, "warning page URL"),
+          }
+        : {}),
+    };
+  });
+}
+
+const FEED_WARNING_CODES = new Set([
+  "invalid_date",
+  "naive_date_assumed_utc",
+  "unsafe_url_omitted",
+  "entry_without_identity",
+  "response_limit_reached",
+  "page_limit_reached",
+  "item_limit_reached",
+  "pagination_loop",
+  "page_not_recorded",
+  "malformed_page",
+  "unsupported_page",
+  "no_archive_entries",
+  "undated_item",
+  "validator_omitted",
+  "warnings_truncated",
+]);
+
+const FEED_INCOMPLETE_WARNING_CODES = new Set([
+  "invalid_date",
+  "unsafe_url_omitted",
+  "entry_without_identity",
+  "response_limit_reached",
+  "page_limit_reached",
+  "item_limit_reached",
+  "pagination_loop",
+  "page_not_recorded",
+  "malformed_page",
+  "unsupported_page",
+  "no_archive_entries",
+  "undated_item",
+  "warnings_truncated",
+]);
+
+const FEED_FAILURE_CODES = new Set([
+  "invalid_options",
+  "unsafe_source_url",
+  "response_limit_exceeded",
+  "malformed_xml",
+  "unsupported_source",
+  "malformed_archive",
+  "timeout",
+  "cancelled",
+  "input_error",
+  "internal_error",
+]);
+
+function parseFeedValidators(value: unknown): {
+  etag: string | null;
+  last_modified: string | null;
+} {
+  const validators = discoveryRecord(
+    value,
+    ["etag", "last_modified"],
+    "feed validators",
+  );
+  return {
+    etag: discoveryNullableText(validators.etag, "feed ETag", 512),
+    last_modified: discoveryNullableText(
+      validators.last_modified,
+      "feed Last-Modified",
+      512,
+    ),
+  };
+}
+
+export function validateFeedDiscoveryEnvelope(
+  value: unknown,
+  expectedSourceUrl: string,
+  options: { maxItems?: number; maxPages?: number } = {},
+): FeedDiscoveryEnvelope {
+  const record = discoveryRecord(
+    value,
+    [
+      "schema_version",
+      "status",
+      "source_url",
+      "source_format",
+      "validators",
+      "cursor",
+      "items",
+      "pagination",
+      "warnings",
+      "absence_implies_deletion",
+      "failure",
+    ],
+    "feed discovery envelope",
+  );
+  if (record.schema_version !== "1") {
+    return discoveryProtocol("feed discovery schema version is unsupported");
+  }
+  if (!new Set(["success", "partial", "failure"]).has(String(record.status))) {
+    return discoveryProtocol("feed discovery status is unsupported");
+  }
+  const sourceUrl = discoveryUrl(record.source_url, "feed source URL");
+  if (sourceUrl !== normalizedWebUrl(expectedSourceUrl)) {
+    return discoveryProtocol("feed source URL does not match the request");
+  }
+  if (
+    !new Set(["rss", "atom", "archive", "mixed", "unknown"]).has(
+      String(record.source_format),
+    )
+  ) {
+    return discoveryProtocol("feed source format is unsupported");
+  }
+  const itemLimit = Math.min(options.maxItems ?? 10_000, 10_000);
+  if (!Array.isArray(record.items) || record.items.length > itemLimit) {
+    return discoveryProtocol("feed discovery items exceed their bound");
+  }
+  const items = record.items.map((item) => {
+    const entry = discoveryRecord(
+      item,
+      [
+        "stable_id",
+        "upstream_id",
+        "identity_source",
+        "url",
+        "candidate_urls",
+        "title",
+        "published_at",
+        "updated_at",
+        "tombstone",
+      ],
+      "feed discovery item",
+    );
+    if (
+      !new Set(["upstream_id", "canonical_url", "hashed_upstream_id"]).has(
+        String(entry.identity_source),
+      ) ||
+      typeof entry.tombstone !== "boolean" ||
+      !Array.isArray(entry.candidate_urls) ||
+      entry.candidate_urls.length > 16
+    ) {
+      return discoveryProtocol("feed discovery item is invalid");
+    }
+    return {
+      stable_id: discoveryText(entry.stable_id, "feed stable ID", 512, 1),
+      upstream_id: discoveryNullableText(
+        entry.upstream_id,
+        "feed upstream ID",
+        512,
+      ),
+      identity_source:
+        entry.identity_source as FeedDiscoveryItem["identity_source"],
+      url: entry.url === null ? null : discoveryUrl(entry.url, "feed item URL"),
+      candidate_urls: entry.candidate_urls.map((url) =>
+        discoveryUrl(url, "feed candidate URL"),
+      ),
+      title: discoveryText(entry.title, "feed item title", 500),
+      published_at: discoveryNullableText(
+        entry.published_at,
+        "feed publication time",
+        40,
+      ),
+      updated_at: discoveryNullableText(
+        entry.updated_at,
+        "feed update time",
+        40,
+      ),
+      tombstone: entry.tombstone,
+    };
+  });
+  const pagination = discoveryRecord(
+    record.pagination,
+    ["pages", "complete", "stop_reason", "next_url"],
+    "feed pagination evidence",
+  );
+  const pageLimit = Math.min(options.maxPages ?? 100, 100);
+  if (
+    !Array.isArray(pagination.pages) ||
+    pagination.pages.length > pageLimit ||
+    typeof pagination.complete !== "boolean"
+  ) {
+    return discoveryProtocol("feed pagination evidence is invalid");
+  }
+  const stopReasons = new Set([
+    "exhausted",
+    "failed",
+    "page_limit",
+    "item_limit",
+    "loop",
+    "missing_page",
+    "response_limit",
+    "timeout",
+    "cancelled",
+    "malformed_page",
+  ]);
+  if (!stopReasons.has(String(pagination.stop_reason))) {
+    return discoveryProtocol("feed pagination stop reason is unsupported");
+  }
+  const pages = pagination.pages.map((item) => {
+    const page = discoveryRecord(
+      item,
+      ["url", "page_format", "validators", "item_count", "next_url"],
+      "feed page evidence",
+    );
+    if (
+      !new Set(["rss", "atom", "archive"]).has(String(page.page_format)) ||
+      !Number.isSafeInteger(page.item_count) ||
+      (page.item_count as number) < 0
+    ) {
+      return discoveryProtocol("feed page evidence is invalid");
+    }
+    return {
+      url: discoveryUrl(page.url, "feed page URL"),
+      page_format: page.page_format as "rss" | "atom" | "archive",
+      validators: parseFeedValidators(page.validators),
+      item_count: page.item_count as number,
+      next_url:
+        page.next_url === null
+          ? null
+          : discoveryUrl(page.next_url, "feed next page URL"),
+    };
+  });
+  const cursor = discoveryRecord(
+    record.cursor,
+    ["validators", "newest_seen_at", "next_url"],
+    "feed discovery cursor",
+  );
+  let failure: FeedDiscoveryEnvelope["failure"] = null;
+  if (record.failure !== null) {
+    const detail = discoveryRecord(
+      record.failure,
+      ["code", "retryable", "message"],
+      "feed discovery failure",
+    );
+    if (
+      typeof detail.retryable !== "boolean" ||
+      typeof detail.code !== "string" ||
+      !FEED_FAILURE_CODES.has(detail.code)
+    ) {
+      return discoveryProtocol("feed discovery failure is invalid");
+    }
+    failure = {
+      code: discoveryText(detail.code, "feed failure code", 100, 1),
+      retryable: detail.retryable,
+      message: discoveryText(detail.message, "feed failure message", 200),
+    };
+  }
+  const validators = parseFeedValidators(record.validators);
+  const cursorValidators = parseFeedValidators(cursor.validators);
+  const cursorNextUrl =
+    cursor.next_url === null
+      ? null
+      : discoveryUrl(cursor.next_url, "feed cursor next URL");
+  const paginationNextUrl =
+    pagination.next_url === null
+      ? null
+      : discoveryUrl(pagination.next_url, "feed boundary URL");
+  const warnings = parseDiscoveryWarnings(record.warnings, 101, true);
+  if (warnings.some((warning) => !FEED_WARNING_CODES.has(warning.code))) {
+    return discoveryProtocol("feed discovery warning code is unsupported");
+  }
+  const status = record.status as FeedDiscoveryEnvelope["status"];
+  const complete = pagination.complete as boolean;
+  const stopReason =
+    pagination.stop_reason as FeedDiscoveryEnvelope["pagination"]["stop_reason"];
+  const successfulBoundary =
+    complete &&
+    stopReason === "exhausted" &&
+    cursorNextUrl === null &&
+    paginationNextUrl === null;
+  if (
+    record.absence_implies_deletion !== false ||
+    (status === "success" && failure !== null) ||
+    (status === "failure" && failure === null) ||
+    (status === "success" && !successfulBoundary) ||
+    (complete && status !== "success") ||
+    cursorNextUrl !== paginationNextUrl ||
+    JSON.stringify(validators) !== JSON.stringify(cursorValidators) ||
+    (status === "success" &&
+      warnings.some((warning) =>
+        FEED_INCOMPLETE_WARNING_CODES.has(warning.code),
+      ))
+  ) {
+    return discoveryProtocol("feed discovery completion evidence is invalid");
+  }
+  return {
+    schema_version: "1",
+    status,
+    source_url: sourceUrl,
+    source_format:
+      record.source_format as FeedDiscoveryEnvelope["source_format"],
+    validators,
+    cursor: {
+      validators: cursorValidators,
+      newest_seen_at: discoveryNullableText(
+        cursor.newest_seen_at,
+        "feed newest item time",
+        40,
+      ),
+      next_url: cursorNextUrl,
+    },
+    items,
+    pagination: {
+      pages,
+      complete,
+      stop_reason: stopReason,
+      next_url: paginationNextUrl,
+    },
+    warnings,
+    absence_implies_deletion: false,
+    failure,
+  };
+}
+
+export function validateXTimelineDiscoveryEnvelope(
+  value: unknown,
+  expectedHandle: string,
+  options: { maxItems?: number } = {},
+): XTimelineDiscoveryEnvelope {
+  const record = discoveryRecord(
+    value,
+    ["handle", "next_cursor", "scraped_at", "tweets", "warnings"],
+    "X timeline discovery envelope",
+  );
+  const handle = discoveryText(record.handle, "X timeline handle", 20, 1);
+  if (
+    handle.replace(/^@/, "").toLowerCase() !==
+    expectedHandle.replace(/^@/, "").toLowerCase()
+  ) {
+    return discoveryProtocol("X timeline handle does not match the request");
+  }
+  const maxItems = Math.min(options.maxItems ?? 10_000, 10_000);
+  if (!Array.isArray(record.tweets) || record.tweets.length > maxItems) {
+    return discoveryProtocol("X timeline items exceed their bound");
+  }
+  const tweets = record.tweets.map((item) => {
+    const tweet = discoveryRecord(
+      item,
+      [
+        "id",
+        "url",
+        "text",
+        "created_at",
+        "is_reply",
+        "is_repost",
+        "is_quote",
+        "is_pinned",
+        "article_urls",
+      ],
+      "X timeline item",
+    );
+    const id = discoveryText(tweet.id, "X status ID", 30, 1);
+    const url = discoveryUrl(tweet.url, "X status URL");
+    if (!/^\d+$/.test(id) || xStatusId(url) !== id) {
+      return discoveryProtocol("X timeline item identity is invalid");
+    }
+    if (
+      typeof tweet.is_reply !== "boolean" ||
+      typeof tweet.is_repost !== "boolean" ||
+      typeof tweet.is_quote !== "boolean" ||
+      typeof tweet.is_pinned !== "boolean" ||
+      !Array.isArray(tweet.article_urls) ||
+      tweet.article_urls.length > 16
+    ) {
+      return discoveryProtocol("X timeline item metadata is invalid");
+    }
+    return {
+      id,
+      url,
+      text: discoveryText(tweet.text, "X timeline text", 20_000),
+      created_at: discoveryText(tweet.created_at, "X creation time", 100),
+      is_reply: tweet.is_reply,
+      is_repost: tweet.is_repost,
+      is_quote: tweet.is_quote,
+      is_pinned: tweet.is_pinned,
+      article_urls: tweet.article_urls.map((url) =>
+        discoveryUrl(url, "X Article URL"),
+      ),
+    };
+  });
+  const nextCursor = discoveryNullableText(
+    record.next_cursor,
+    "X diagnostic oldest item ID",
+    30,
+  );
+  if (nextCursor !== null && !/^\d+$/.test(nextCursor)) {
+    return discoveryProtocol("X diagnostic oldest item ID is invalid");
+  }
+  return {
+    handle,
+    next_cursor: nextCursor,
+    scraped_at: discoveryText(record.scraped_at, "X scrape time", 100),
+    tweets,
+    warnings: parseDiscoveryWarnings(record.warnings, 100, false),
+  };
+}
+
+function discoveryCommandFailure(
+  detail: string,
+  prefix: string,
+): ScrapectlDiscoveryError {
+  const sanitized = sanitizeExternalError(detail);
+  if (/429|rate.?limit|throttl/i.test(detail)) {
+    return new ScrapectlDiscoveryError(
+      `${prefix} was rate limited: ${sanitized}`,
+      "item_transient",
+      "rate_limit",
+    );
+  }
+  if (/auth|login|credential|unauthorized|forbidden|cookie/i.test(detail)) {
+    return new ScrapectlDiscoveryError(
+      `${prefix} authentication/configuration failed: ${sanitized}`,
+      "auth_config",
+      "auth_config",
+    );
+  }
+  return new ScrapectlDiscoveryError(
+    `${prefix} failed: ${sanitized}`,
+    "infra",
+    "infrastructure",
+  );
+}
+
+async function runDiscoveryCommand(
+  args: string[],
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<CommandResult> {
+  if (signal?.aborted) {
+    throw new ScrapectlDiscoveryError(
+      "scrapectl discovery was cancelled",
+      "cancelled",
+      "cancellation",
+    );
+  }
+  const executable = findExecutable("scrapectl");
+  if (executable === null) {
+    throw new ScrapectlDiscoveryError(
+      "scrapectl discovery infrastructure is unavailable",
+      "infra",
+      "infrastructure",
+    );
+  }
+  let result: CommandResult;
+  try {
+    result = await runCommand(
+      executable,
+      args,
+      timeoutMs,
+      SCRAPECTL_OUTPUT_MAX_BYTES,
+      signal,
+    );
+  } catch (error) {
+    throw new ScrapectlDiscoveryError(
+      `scrapectl discovery infrastructure failed: ${sanitizeExternalError(error)}`,
+      "infra",
+      "infrastructure",
+    );
+  }
+  if (result.aborted) {
+    throw new ScrapectlDiscoveryError(
+      "scrapectl discovery was cancelled",
+      "cancelled",
+      "cancellation",
+    );
+  }
+  if (result.outputExceeded) {
+    return discoveryProtocol("discovery command output exceeded its bound");
+  }
+  if (result.timedOut) {
+    throw new ScrapectlDiscoveryError(
+      `scrapectl discovery timed out after ${timeoutMs}ms`,
+      "item_transient",
+      "infrastructure",
+    );
+  }
+  if (result.spawnError !== undefined) {
+    throw new ScrapectlDiscoveryError(
+      `scrapectl discovery infrastructure failed: ${sanitizeExternalError(result.spawnError)}`,
+      "infra",
+      "infrastructure",
+    );
+  }
+  if (result.signal !== null) {
+    const cancelled = new Set(["SIGHUP", "SIGINT", "SIGTERM"]).has(
+      result.signal,
+    );
+    throw new ScrapectlDiscoveryError(
+      `scrapectl discovery terminated by ${result.signal}`,
+      cancelled ? "cancelled" : "infra",
+      cancelled ? "cancellation" : "infrastructure",
+    );
+  }
+  return result;
+}
+
+export async function discoverFeedWithScrapectl(
+  request: FeedDiscoveryRequest,
+): Promise<FeedDiscoveryEnvelope> {
+  const sourceUrl = normalizedWebUrl(request.sourceUrl);
+  if (request.recordedInputFile === undefined) {
+    throw new ScrapectlDiscoveryError(
+      "scrapectl feed discovery requires a Scrapectl-owned recorded response input; remote feed transport is not exposed by the installed contract",
+      "auth_config",
+      "auth_config",
+    );
+  }
+  const timeoutMs = positiveInteger(
+    request.timeoutMs ?? SCRAPECTL_DEFAULT_TIMEOUT_MS,
+    "scrapectl feed discovery timeout",
+    SCRAPECTL_TIMEOUT_MAX_MS,
+  );
+  const maxPages = positiveInteger(request.maxPages, "feed page limit", 100);
+  const maxItems = positiveInteger(request.maxItems, "feed item limit", 10_000);
+  const args = [
+    "discover-feed",
+    request.recordedInputFile,
+    "--source-url",
+    sourceUrl,
+    "--source-kind",
+    request.sourceKind ?? "auto",
+    "--max-response-bytes",
+    String(request.maxResponseBytes ?? 2_000_000),
+    "--max-pages",
+    String(maxPages),
+    "--max-items",
+    String(maxItems),
+    "--timeout-seconds",
+    String(Math.max(0.001, timeoutMs / 1_000)),
+    "--format",
+    "json",
+  ];
+  if (request.recordedValidators?.etag !== undefined) {
+    args.push("--etag", request.recordedValidators.etag);
+  }
+  if (request.recordedValidators?.lastModified !== undefined) {
+    args.push("--last-modified", request.recordedValidators.lastModified);
+  }
+  if (request.since !== undefined) args.push("--since", request.since);
+  const result = await runDiscoveryCommand(args, timeoutMs, request.signal);
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(result.stdout) as unknown;
+  } catch {
+    if (result.status !== 0) {
+      throw discoveryCommandFailure(result.stderr, "scrapectl feed discovery");
+    }
+    return discoveryProtocol("feed discovery command returned malformed JSON");
+  }
+  const envelope = validateFeedDiscoveryEnvelope(decoded, sourceUrl, {
+    maxItems,
+    maxPages,
+  });
+  if ((envelope.status === "failure") !== (result.status !== 0)) {
+    return discoveryProtocol(
+      "feed discovery status disagrees with command exit",
+    );
+  }
+  return envelope;
+}
+
+export async function discoverXTimelineWithScrapectl(
+  request: XTimelineDiscoveryRequest,
+): Promise<XTimelineDiscoveryEnvelope> {
+  const url = normalizedWebUrl(request.url);
+  const timeoutMs = positiveInteger(
+    request.timeoutMs ?? SCRAPECTL_DEFAULT_TIMEOUT_MS,
+    "scrapectl X discovery timeout",
+    SCRAPECTL_TIMEOUT_MAX_MS,
+  );
+  const limit = positiveInteger(request.limit, "X timeline item limit", 10_000);
+  const maxScrolls = positiveInteger(
+    request.maxScrolls,
+    "X timeline scroll limit",
+    100,
+  );
+  const args = [
+    "fetch-links",
+    url,
+    "--preset",
+    "x-timeline",
+    "--limit",
+    String(limit),
+    "--max-scrolls",
+    String(maxScrolls),
+    "--json",
+  ];
+  if (request.sinceId !== undefined) {
+    if (!/^\d+$/.test(request.sinceId)) {
+      return discoveryProtocol("X since_id is invalid");
+    }
+    args.push("--since-id", request.sinceId);
+  }
+  if (request.includeReplies === true) args.push("--include-replies");
+  if (request.includeReposts === true) args.push("--include-reposts");
+  const result = await runDiscoveryCommand(args, timeoutMs, request.signal);
+  if (result.status !== 0) {
+    throw discoveryCommandFailure(result.stderr, "scrapectl X discovery");
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(result.stdout) as unknown;
+  } catch {
+    return discoveryProtocol("X discovery command returned malformed JSON");
+  }
+  return validateXTimelineDiscoveryEnvelope(decoded, request.handle, {
+    maxItems: limit,
+  });
+}
+
+export const sourceDiscoveryWithScrapectl: SourceDiscoveryProvider = {
+  discoverFeed: discoverFeedWithScrapectl,
+  discoverXTimeline: discoverXTimelineWithScrapectl,
+};

@@ -215,11 +215,21 @@ test("pause, config history, attempted cursors, and committed checkpoints remain
     sourceId: "blog-one",
     now: new Date("2026-07-20T01:00:00.000Z"),
   });
+  expect(() =>
+    registry.commitSourceCheckpoint({
+      runId: second.run_id as number,
+      checkpoint: { entry_id: "unsafe-fabricated-counts" },
+      attemptedCursor: { page: "done" },
+      counts: { discovered: 2, admitted: 1, suppressed: 1 },
+      now: new Date("2026-07-20T01:04:00.000Z"),
+    }),
+  ).toThrow("checkpoint requires a complete successful discovery window");
   registry.commitSourceCheckpoint({
     runId: second.run_id as number,
     checkpoint: { entry_id: "stable-42" },
     attemptedCursor: { page: "done" },
-    counts: { discovered: 2, admitted: 1, suppressed: 1 },
+    warnings: ["benign_item_warning"],
+    counts: { discovered: 0, admitted: 0, suppressed: 0 },
     now: new Date("2026-07-20T01:05:00.000Z"),
   });
   expect(registry.sourceCheckpoints("blog-one")).toHaveLength(1);
@@ -276,6 +286,7 @@ test("pause, config history, attempted cursors, and committed checkpoints remain
     display_name: "Renamed Blog",
     paused: false,
     checkpoint: { present: true, run_id: second.run_id },
+    health: { state: "warning", detail: "benign_item_warning" },
   });
   store.close();
 });
