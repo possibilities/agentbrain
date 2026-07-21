@@ -41,5 +41,5 @@ Add only lightweight file/frontmatter/prose assertions and existing skill-ID lin
 - [ ] Targeted static tests and skill-ID lint pass without model, network, browser, live DB, or full-plugin execution.
 
 ## Done summary
-
+Added the model-invocable plan:brain skill teaching Agentbrain save/find/watch/job-status routing, near-miss exclusions, citation/truncation/untrusted-content retrieval discipline, and job/attempt/reveal-content safety; added one /hack delegation bullet outside BAKE regions; pinned both with static consistency-skills.test.ts coverage.
 ## Evidence
