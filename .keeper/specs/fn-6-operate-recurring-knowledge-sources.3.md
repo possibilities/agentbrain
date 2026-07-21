@@ -55,5 +55,5 @@ Exercise source runs with fake providers and disabled manifests before enabling 
 - [ ] X forward polling never presents the diagnostic oldest-item cursor as resumable historical pagination.
 
 ## Done summary
-
+Added source-worker.ts dispatching due blog/X source-run jobs through Scrapectl discovery, normalizing observations, admitting/suppressing resource jobs transactionally, and advancing blog/X checkpoints only on complete windows with bounded overlap and safe partial/failure handling.
 ## Evidence
