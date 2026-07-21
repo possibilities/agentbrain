@@ -111,6 +111,24 @@ The LaunchAgent drains already admitted ingestion jobs only. Installation does *
 
 Legacy provenance labels such as `source=linkctl` remain queryable as historical data. They do not identify a live Ingress or an installed command.
 
+## Recurring sources
+
+A Source is a recurring producer or discovery definition, such as a blog feed or an X account. Two kinds are currently supported and executable: `blog_source` (feed/homepage discovery) and `x_account` (forward-only X timeline polling by stable post ID, never claiming complete historical pagination). Any other kind, including the disabled `x_account_candidate` recommendation records below, is listable and showable but never admits a Run.
+
+The bundled manifest at `config/sources.yaml` currently encodes the 11 confirmed blog sources and 14 confirmed X accounts recovered from historical operator evidence, plus 13 recommended-but-unconfirmed X accounts represented as `x_account_candidate` — disabled candidate evidence, not active configuration. Every definition in the bundled manifest ships `enabled: false`; applying it creates or updates durable source rows without scheduling any Run. Confirmed blogs default to daily cadence, confirmed X accounts to hourly, each with an explicit bounded `limits.max_items_per_run` / `limits.max_pages_per_run` so a later first activation cannot silently request an unbounded or deep-historical X backfill. Enabling confirmed sources in controlled cohorts remains a later, explicit operator rollout.
+
+```bash
+agentbrain sources apply --json
+agentbrain sources list --json
+agentbrain sources show blog.simon-willison --json
+agentbrain sources status --json
+agentbrain sources sync --due --dry-run --json
+agentbrain sources pause x.karpathy --reason "provider smoke pending" --json
+agentbrain sources resume x.karpathy --json
+```
+
+`sources apply` reads a manifest (default: `config/sources.yaml`) and durably creates or updates matching source definitions; it never toggles `enabled` and never runs implicitly. Re-applying identical content is a no-op; raising `version` admits changed content, while changing content without raising `version` is refused. `sources list` / `show` / `status` expose kind, cadence, bounded limits, collection and sensitivity policy, checkpoint presence, and health without credentials, payload secrets, or private content — `credential_refs` are opaque reference names, never credential values. `sources sync --due` performs schedule evaluation only: it durably admits at most one catch-up Run per overdue source and advances that source's next due time, without performing HTTP work, remote discovery, or extraction itself. Discovery and extraction remain the Worker/Scrapectl path once a Run's `source_sync` job is claimed. `sources pause` / `resume` append audit evidence and immediately block or unblock admission without discarding earlier Runs or checkpoints.
+
 ## Legacy corpus recovery
 
 Recovery admits one immutable, hash-bound frozen generation of legacy candidate evidence. A generation binds its candidate manifest, private reconciliation, public summary, and checksum inventory under a single `sha256-` generation ID and is verified in full before any state changes:

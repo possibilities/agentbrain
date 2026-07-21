@@ -3,7 +3,9 @@ import { ResearchCache } from "./db";
 import { CliError } from "./errors";
 import { formatList, writeByFormat } from "./format";
 import {
+  DEFAULT_SOURCE_MANIFEST_PATH,
   listSources,
+  readSourceManifest,
   SourceRegistry,
   showSource,
   sourceStatuses,
@@ -189,9 +191,46 @@ export function runSourceCommands(
     }
     return;
   }
+  if (subcommand === "apply") {
+    const opts = parseOptions(args, {
+      manifest: { type: "string" },
+      overlay: { type: "string" },
+      actor: { type: "string", default: "operator" },
+      reason: { type: "string" },
+    });
+    if (opts._.length !== 0) {
+      throw new CliError(
+        "unexpected_args",
+        "sources apply accepts no positional arguments",
+        { exitCode: 2 },
+      );
+    }
+    const manifestPath =
+      optString(opts, "manifest") ?? DEFAULT_SOURCE_MANIFEST_PATH;
+    const overlayPath = optString(opts, "overlay");
+    const manifest = readSourceManifest(manifestPath, overlayPath);
+    const store = new ResearchStore(dbPath);
+    try {
+      const registry = new SourceRegistry(store);
+      const data = registry.applySourceManifest(manifest, {
+        actor: optString(opts, "actor"),
+        reason: optString(opts, "reason"),
+      });
+      writeByFormat(
+        "sources apply",
+        data,
+        globals,
+        (value) => `${JSON.stringify(value, null, 2)}\n`,
+        { readOnly: false },
+      );
+    } finally {
+      store.close();
+    }
+    return;
+  }
   throw new CliError(
     "bad_sources_command",
-    "sources requires one of: list, show, status, sync, pause, resume",
+    "sources requires one of: list, show, status, sync, pause, resume, apply",
     { exitCode: 2 },
   );
 }

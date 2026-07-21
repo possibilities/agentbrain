@@ -53,7 +53,7 @@ export const COMMANDS = [
   { name: "tags", summary: "List indexed tags with document counts" },
   {
     name: "sources",
-    summary: "Inspect, schedule, pause, and resume recurring sources",
+    summary: "Apply, inspect, schedule, pause, and resume recurring sources",
   },
   {
     name: "guide",
@@ -393,6 +393,7 @@ Options:
   sources: `agentbrain sources — operate recurring source definitions
 
 Usage:
+  agentbrain sources apply [--manifest PATH] [--overlay PATH] [--actor NAME] [--reason TEXT] [--json]
   agentbrain sources list [--limit N] [--json]
   agentbrain sources show SOURCE_ID [--json]
   agentbrain sources status [SOURCE_ID] [--json]
@@ -405,6 +406,13 @@ Source IDs are stable declarative identities; mutable handles and homepages are 
 not identity. Definitions retain versioned schedules, bounded limits, collection and
 sensitivity policy, and credential references without credential values. Unknown future
 kinds remain listable and showable but source sync will not admit work for them.
+
+sources apply reads a versioned manifest (default: the bundled config/sources.yaml
+covering confirmed blog/X sources and disabled candidate X accounts) and durably creates
+or updates matching source definitions. It never toggles enabled, deletes a definition,
+or runs implicitly; an operator invokes it explicitly, and re-applying identical content
+is a no-op. Raising a source's version without changing its kind admits the new content;
+changing content without raising the version is refused.
 
 Schedule evaluation admits at most one catch-up Run for each overdue source and advances
 its next due time from the current evaluation, not once per missed wall-clock tick. Paused

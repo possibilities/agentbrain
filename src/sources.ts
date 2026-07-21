@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { CliError } from "./errors";
 import { sanitizeExternalError } from "./sanitize";
 import type {
@@ -49,6 +50,17 @@ const KNOWN_SOURCE_KIND_SET = new Set<KnownSourceKind>([
 ]);
 const MAX_SOURCES = 1_000;
 const MAX_DEFINITION_BYTES = 128 * 1024;
+
+/**
+ * Bundled confirmed/candidate source manifest shipped with the repo. Never
+ * applied implicitly; an operator or `sources apply` reads and applies it.
+ */
+export const DEFAULT_SOURCE_MANIFEST_PATH = join(
+  import.meta.dir,
+  "..",
+  "config",
+  "sources.yaml",
+);
 const SOURCE_COLUMNS = `id, source_type, identifier, display_name, enabled,
   sensitivity, schedule, checkpoint, definition_version, definition,
   definition_hash, collections, limits, credential_refs, paused, pause_reason,
