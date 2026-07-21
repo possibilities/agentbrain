@@ -54,5 +54,5 @@ Land all definitions disabled; the final live task enables confirmed sources in 
 - [ ] Worker due evaluation creates durable source-run jobs rather than executing discovery inline.
 
 ## Done summary
-
+Materialized the confirmed source manifest (11 blogs + 14 X accounts, disabled by default with locked daily/hourly cadences and bounded caps) plus 13 disabled x_account_candidate rows, and added the agentbrain sources apply command to install/update it.
 ## Evidence
