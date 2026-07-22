@@ -34,6 +34,7 @@ import {
   showJob,
   showRun,
 } from "./jobs";
+import { parseTags } from "./query";
 import { readRecoveryGeneration } from "./recovery";
 import {
   executeRecoveryOnlineBackfill,
@@ -54,6 +55,7 @@ import {
   RECOVERY_ONLINE_SCOPE_KIND,
   ResearchStore,
 } from "./store";
+import { deriveStructuralTags } from "./tagging";
 import { normalizeTags } from "./text";
 import type {
   GlobalOptions,
@@ -73,7 +75,13 @@ const READ_COMMANDS = new Set([
   "context",
   "doctor",
 ]);
-const MUTATION_COMMANDS = new Set(["submit", "ingest", "delete", "worker"]);
+const MUTATION_COMMANDS = new Set([
+  "submit",
+  "ingest",
+  "delete",
+  "retag",
+  "worker",
+]);
 
 interface IngestRequest {
   version: number;
@@ -100,6 +108,25 @@ interface DeleteRequest {
   confirm: "delete";
 }
 
+interface RetagRequest {
+  dryRun: boolean;
+}
+
+interface RetagChange {
+  document_id: number;
+  before: string[];
+  after: string[];
+}
+
+interface RetagResult {
+  success: true;
+  dry_run: boolean;
+  documents_scanned: number;
+  documents_changed: number;
+  documents_unchanged: number;
+  changes: RetagChange[];
+}
+
 const INGEST_OPTION_SPECS = {
   "intent-version": { type: "number", default: SUBMISSION_VERSION },
   kind: { type: "string" },
@@ -124,6 +151,10 @@ const DELETE_OPTION_SPECS = {
   "document-id": { type: "number" },
   "source-uri": { type: "string" },
   confirm: { type: "string" },
+} as const;
+
+const RETAG_OPTION_SPECS = {
+  "dry-run": { type: "boolean", default: false },
 } as const;
 
 const WORKER_SCOPE_KINDS = new Set([
@@ -278,6 +309,24 @@ async function runParsed(
       const store = new ResearchStore(parsed.globals.dbPath);
       try {
         executeDelete(store, request, parsed.globals);
+      } finally {
+        store.close();
+      }
+      return;
+    }
+
+    if (command === "retag") {
+      const request = parseRetagRequest(parsed.commandArgv);
+      if (!existsSync(parsed.globals.dbPath)) {
+        throw new CliError(
+          "db_not_found",
+          `research cache DB not found: ${parsed.globals.dbPath}`,
+          { hint: "Pass --db PATH or set AGENTBRAIN_DB." },
+        );
+      }
+      const store = new ResearchStore(parsed.globals.dbPath);
+      try {
+        executeRetag(store, request, parsed.globals);
       } finally {
         store.close();
       }
@@ -1255,6 +1304,113 @@ function executeDelete(
 ): void {
   const result = store.deleteDocument(request);
   writeByFormat("delete", result, globals, humanMutation, { readOnly: false });
+}
+
+function parseRetagRequest(argv: string[]): RetagRequest {
+  const opts = parseOptions(argv, RETAG_OPTION_SPECS);
+  if (opts._.length > 0) {
+    throw new CliError(
+      "unexpected_args",
+      `retag does not accept positional args: ${opts._.join(" ")}`,
+      { exitCode: 2 },
+    );
+  }
+  return { dryRun: optBoolean(opts, "dry-run") };
+}
+
+/**
+ * Collection slugs for one document via the resources join, mirroring
+ * ResearchStore's private lookup. Duplicated here (rather than reusing a
+ * store-internal helper) so --dry-run can preview derived tags through
+ * read-only queries without going through the mutating retagDocument path.
+ */
+function retagCollectionSlugs(
+  store: ResearchStore,
+  documentId: number,
+): string[] {
+  const hasResources =
+    store.db
+      .query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='resources' LIMIT 1",
+      )
+      .get() !== null;
+  if (!hasResources) return [];
+  return (
+    store.db
+      .query(
+        `SELECT col.slug AS slug
+         FROM resources r
+         JOIN collection_memberships cm ON cm.resource_id = r.id
+         JOIN collections col ON col.id = cm.collection_id
+         WHERE r.document_id = ?
+         ORDER BY col.slug ASC`,
+      )
+      .all(documentId) as { slug: string }[]
+  ).map((row) => row.slug);
+}
+
+function executeRetag(
+  store: ResearchStore,
+  request: RetagRequest,
+  globals: GlobalOptions,
+): void {
+  const documentIds = (
+    store.db.query("SELECT id FROM documents ORDER BY id ASC").all() as {
+      id: number;
+    }[]
+  ).map((row) => row.id);
+
+  let changed = 0;
+  let unchanged = 0;
+  const changes: RetagChange[] = [];
+
+  for (const documentId of documentIds) {
+    const doc = store.db
+      .query("SELECT tags, source_type, source_uri FROM documents WHERE id=?")
+      .get(documentId) as {
+      tags: string;
+      source_type: string;
+      source_uri: string;
+    } | null;
+    if (doc === null) continue;
+    const before = parseTags(doc.tags);
+
+    if (request.dryRun) {
+      const after = deriveStructuralTags({
+        existingTags: before,
+        sourceType: doc.source_type,
+        sourceUri: doc.source_uri,
+        collectionSlugs: retagCollectionSlugs(store, documentId),
+      });
+      if (JSON.stringify(after) === JSON.stringify(before)) {
+        unchanged += 1;
+      } else {
+        changed += 1;
+        changes.push({ document_id: documentId, before, after });
+      }
+      continue;
+    }
+
+    const result = store.retagDocument(documentId);
+    if (result.status === "updated") {
+      changed += 1;
+      changes.push({ document_id: documentId, before, after: result.tags });
+    } else {
+      unchanged += 1;
+    }
+  }
+
+  const data: RetagResult = {
+    success: true,
+    dry_run: request.dryRun,
+    documents_scanned: documentIds.length,
+    documents_changed: changed,
+    documents_unchanged: unchanged,
+    changes,
+  };
+  writeByFormat("retag", data, globals, humanMutation, {
+    readOnly: request.dryRun,
+  });
 }
 
 function parseSearchMode(value: string): SearchMode {

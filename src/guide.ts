@@ -63,6 +63,7 @@ export function buildGuide(): unknown {
         "jobs retry/cancel/exclude",
         "jobs show --reveal-content",
         "delete",
+        "retag",
       ],
       submission_contract: {
         version: 1,
@@ -121,6 +122,8 @@ export function buildGuide(): unknown {
       doctor:
         "Read-only database, Artifact-reference, lease, schema, and provider health checks.",
       delete: "Delete exactly one selected document with --confirm delete.",
+      retag:
+        "Deterministically derive and apply structural tags (source_type, URL domain, collection) across every document, keeping documents.tags and chunks_fts.tags in sync; idempotent; --dry-run previews without writing.",
       tags: "Tag discovery.",
       sources: "Source-type and domain discovery.",
       prompt: "Prompt another harness to generate docs from this help surface.",
@@ -136,6 +139,8 @@ export function buildGuide(): unknown {
       directories:
         "Traversal streams entries, caps at 20000 entries/10000 supported candidates, and skips sensitive path components by default.",
       deletion: "Requires exactly one selector and literal --confirm delete.",
+      retagging:
+        "Derives structural tags only from source_type, URL domain, and collection membership; always preserves legacy-recovery and user tags; --dry-run performs no write.",
       no_raw_sql: true,
       owns_durable_ingestion_ledger: true,
       no_browser_or_network_implementation: true,
@@ -167,6 +172,7 @@ Inspect:
   agentbrain jobs --help
   agentbrain doctor --help
   agentbrain delete --help
+  agentbrain retag --help
   agentbrain stats --help
   agentbrain tags --help
   agentbrain sources --help

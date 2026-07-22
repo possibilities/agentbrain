@@ -50,6 +50,10 @@ export const COMMANDS = [
     name: "delete",
     summary: "Delete one selected document with explicit confirmation",
   },
+  {
+    name: "retag",
+    summary: "Derive and apply structural tags across every document",
+  },
   { name: "tags", summary: "List indexed tags with document counts" },
   {
     name: "sources",
@@ -381,6 +385,23 @@ Usage:
 
 Exactly one selector and the literal confirmation token are required. The document,
 chunks, and FTS rows are removed transactionally; inbound relation targets become null.
+`,
+  retag: `agentbrain retag — derive and apply structural tags
+
+Usage:
+  agentbrain retag [--dry-run] [--json]
+
+Options:
+  --dry-run           Report per-document tag diffs and counts without writing
+
+Deterministically derives structural tags from each document's source_type, URL
+domain, and collection membership, unioned with its existing tags (legacy-recovery
+and any user tag are always preserved). Every document's documents.tags and the
+denormalized chunks_fts.tags are kept in sync in one transaction per changed document.
+Re-running retag is idempotent: a document whose derived tags already match its
+stored tags is reported unchanged and is not rewritten. --dry-run computes and
+reports the same per-document before/after tag diffs and totals without touching
+the database.
 `,
   tags: `agentbrain tags — list tags
 
