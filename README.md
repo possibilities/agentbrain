@@ -186,6 +186,17 @@ Deletion is intentionally guarded:
 agentbrain delete --document-id 123 --confirm delete --json
 ```
 
+## Structural retagging
+
+`retag` deterministically derives structural tags (from `source_type`, URL domain, and collection membership) and applies them across every document, keeping `documents.tags` and the denormalized `chunks_fts.tags` in sync and always preserving `legacy-recovery` and any user tag:
+
+```bash
+agentbrain retag --dry-run --json
+agentbrain retag --json
+```
+
+`--dry-run` reports the same per-document tag diffs and scanned/changed/unchanged counts without writing. Re-running `retag` is idempotent: a document whose derived tags already match its stored tags is reported unchanged.
+
 ## Agent discovery and checks
 
 Use `agentbrain guide --json` for the machine-readable command and ownership contract, and `agentbrain prompt` to generate harness-local instructions.
