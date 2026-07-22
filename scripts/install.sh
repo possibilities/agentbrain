@@ -90,6 +90,7 @@ check_destination() {
   local destination="$1"
   local expected="$2"
   local known_legacy="${3:-}"
+  local known_managed="${4:-}"
 
   if [[ ! -e "$destination" && ! -L "$destination" ]]; then
     return 0
@@ -102,6 +103,9 @@ check_destination() {
     return 0
   fi
   if [[ -n "$known_legacy" ]] && symlink_is_owned "$destination" "$known_legacy"; then
+    return 0
+  fi
+  if [[ -n "$known_managed" ]] && symlink_is_owned "$destination" "$known_managed"; then
     return 0
   fi
 
@@ -147,6 +151,34 @@ check_private_paths() {
     echo "refusing unsafe deployment receipt: $DEPLOYED_SHA_PATH" >&2
     return 1
   fi
+}
+
+previous_managed_agentbrain_source() {
+  local target_root previous_sha previous_checkout candidate
+  local current_origin previous_origin previous_status receipt_size
+
+  [[ "$(basename "$ROOT")" == "$DEPLOYED_SHA" ]] || return 1
+  target_root="$(dirname "$ROOT")"
+  [[ "$(basename "$target_root")" == agentbrain ]] || return 1
+  [[ -f "$DEPLOYED_SHA_PATH" && ! -L "$DEPLOYED_SHA_PATH" ]] || return 1
+
+  receipt_size="$(wc -c <"$DEPLOYED_SHA_PATH")"
+  [[ "$receipt_size" -eq 41 ]] || return 1
+  IFS= read -r previous_sha <"$DEPLOYED_SHA_PATH" || return 1
+  [[ "$previous_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ "$previous_sha" != "$DEPLOYED_SHA" ]] || return 1
+
+  previous_checkout="$target_root/$previous_sha"
+  candidate="$previous_checkout/src/cli.ts"
+  [[ -f "$candidate" && ! -L "$candidate" ]] || return 1
+  [[ "$(git -C "$previous_checkout" rev-parse HEAD 2>/dev/null)" == "$previous_sha" ]] || return 1
+  current_origin="$(git -C "$ROOT" config --get remote.origin.url 2>/dev/null)" || return 1
+  previous_origin="$(git -C "$previous_checkout" config --get remote.origin.url 2>/dev/null)" || return 1
+  [[ -n "$current_origin" && "$previous_origin" == "$current_origin" ]] || return 1
+  previous_status="$(git -C "$previous_checkout" status --porcelain --untracked-files=all 2>/dev/null)" || return 1
+  [[ -z "$previous_status" ]] || return 1
+
+  canonical_path "$candidate"
 }
 
 write_deployed_sha() {
@@ -271,9 +303,14 @@ if [[ ! "$DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
-check_destination "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL" "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL"
-check_service_destination
 check_private_paths
+PREVIOUS_MANAGED_AGENTBRAIN_CANONICAL="$(previous_managed_agentbrain_source || true)"
+check_destination \
+  "$BIN_DIR/agentbrain" \
+  "$AGENTBRAIN_CANONICAL" \
+  "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL" \
+  "$PREVIOUS_MANAGED_AGENTBRAIN_CANONICAL"
+check_service_destination
 check_loaded_service
 
 (

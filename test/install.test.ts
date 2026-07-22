@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -51,10 +52,11 @@ function runInstaller(
   fixture: Fixture,
   action?: "--install" | "--uninstall" | "--help",
   extraEnv: Record<string, string> = {},
+  repo: string = REPO,
 ) {
   return Bun.spawnSync({
     cmd: ["bash", "scripts/install.sh", ...(action ? [action] : [])],
-    cwd: REPO,
+    cwd: repo,
     env: {
       ...process.env,
       HOME: fixture.home,
@@ -75,6 +77,59 @@ function decode(value: string | Uint8Array): string {
 
 function mode(path: string): number {
   return statSync(path).mode & 0o777;
+}
+
+function gitOutput(repo: string, ...args: string[]): string {
+  const result = Bun.spawnSync({
+    cmd: ["git", "-C", repo, ...args],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(result.exitCode, decode(result.stderr)).toBe(0);
+  return decode(result.stdout).trim();
+}
+
+function setupManagedCheckouts(fixture: Fixture) {
+  const currentSha = gitOutput(REPO, "rev-parse", "HEAD");
+  const previousSha = gitOutput(REPO, "rev-parse", "HEAD^");
+  const targetRoot = join(fixture.dir, "checkouts", "agentbrain");
+  const currentCheckout = join(targetRoot, currentSha);
+  const previousCheckout = join(targetRoot, previousSha);
+  mkdirSync(targetRoot, { recursive: true });
+
+  for (const checkout of [currentCheckout, previousCheckout]) {
+    const cloned = Bun.spawnSync({
+      cmd: ["git", "clone", "--quiet", REPO, checkout],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(cloned.exitCode, decode(cloned.stderr)).toBe(0);
+  }
+  const checkedOut = Bun.spawnSync({
+    cmd: [
+      "git",
+      "-C",
+      previousCheckout,
+      "checkout",
+      "--quiet",
+      "--detach",
+      previousSha,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(checkedOut.exitCode, decode(checkedOut.stderr)).toBe(0);
+  copyFileSync(
+    join(REPO, "scripts", "install.sh"),
+    join(currentCheckout, "scripts", "install.sh"),
+  );
+
+  return {
+    currentCheckout,
+    currentSha,
+    previousSha,
+    previousSource: join(previousCheckout, "src", "cli.ts"),
+  };
 }
 
 function plistProgramArguments(plist: string): string[] {
@@ -148,6 +203,42 @@ test("installer replaces only the explicitly known legacy Agentbrain link", () =
     join(REPO, "src/cli.ts"),
   );
 }, 15_000);
+
+test("installer upgrades only a receipt-matched managed checkout link", () => {
+  const fixture = setup();
+  const managed = setupManagedCheckouts(fixture);
+  mkdirSync(fixture.state, { recursive: true });
+  const receipt = join(fixture.state, "deployed-sha");
+  writeFileSync(receipt, `${managed.previousSha}\n`, { mode: 0o600 });
+  const destination = join(fixture.bin, "agentbrain");
+  symlinkSync(managed.previousSource, destination);
+
+  const installed = runInstaller(
+    fixture,
+    "--install",
+    {},
+    managed.currentCheckout,
+  );
+  expect(installed.exitCode, decode(installed.stderr)).toBe(0);
+  expect(readlinkSync(destination)).toBe(
+    join(realpathSync(managed.currentCheckout), "src", "cli.ts"),
+  );
+
+  rmSync(destination);
+  symlinkSync(managed.previousSource, destination);
+  writeFileSync(receipt, `${managed.currentSha}\n`, { mode: 0o600 });
+  const refused = runInstaller(
+    fixture,
+    "--install",
+    {},
+    managed.currentCheckout,
+  );
+  expect(refused.exitCode).not.toBe(0);
+  expect(decode(refused.stderr)).toContain(
+    "refusing to overwrite unrelated symlink",
+  );
+  expect(readlinkSync(destination)).toBe(managed.previousSource);
+}, 30_000);
 
 test("legacy migration allowlist still refuses an unrelated Agentbrain link", () => {
   const fixture = setup();
