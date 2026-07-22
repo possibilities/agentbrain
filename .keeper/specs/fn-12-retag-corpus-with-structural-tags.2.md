@@ -50,5 +50,6 @@ Subprocess CLI tests over a temp DB seeded with documents: run `retag --json` an
 - [ ] `bun run check` passes.
 
 ## Done summary
-
+Added the retag mutation CLI command that applies Task 1's structural-tag derivation and targeted FTS-synced write across every document by id, with --dry-run preview, idempotent counts/diffs, and registration on every CLI surface (COMMANDS, MUTATION_COMMANDS, dispatch, help, guide). Documented in CONTEXT.md, README.md, and new ADR 0013.
 ## Evidence
+- Commits: 156950a32d85fe9285020443c1b5c5812b205b29
