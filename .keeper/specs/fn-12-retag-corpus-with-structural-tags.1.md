@@ -53,5 +53,6 @@ Unit-test the derivation across source_type/domain/collection combinations inclu
 - [ ] `bun run check` passes.
 
 ## Done summary
-
+Added a deterministic structural-tag derivation (source_type + domain + collection, dot-free, sorted per group) in src/tagging.ts, and a ResearchStore.retagDocument method that syncs documents.tags and chunks_fts.tags in one transaction via delete+reinsert, verified idempotent on re-run and guarded for pre-migration DBs lacking resources.
 ## Evidence
+- Commits: fa84fbe777f5099f422a0794771adc5080eaa258
