@@ -9,6 +9,7 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -91,13 +92,12 @@ function gitOutput(repo: string, ...args: string[]): string {
 
 function setupManagedCheckouts(fixture: Fixture) {
   const currentSha = gitOutput(REPO, "rev-parse", "HEAD");
-  const previousSha = gitOutput(REPO, "rev-parse", "HEAD^");
   const targetRoot = join(fixture.dir, "checkouts", "agentbrain");
   const currentCheckout = join(targetRoot, currentSha);
-  const previousCheckout = join(targetRoot, previousSha);
+  const previousStaging = join(targetRoot, "previous-staging");
   mkdirSync(targetRoot, { recursive: true });
 
-  for (const checkout of [currentCheckout, previousCheckout]) {
+  for (const checkout of [currentCheckout, previousStaging]) {
     const cloned = Bun.spawnSync({
       cmd: ["git", "clone", "--quiet", REPO, checkout],
       stdout: "pipe",
@@ -105,20 +105,26 @@ function setupManagedCheckouts(fixture: Fixture) {
     });
     expect(cloned.exitCode, decode(cloned.stderr)).toBe(0);
   }
-  const checkedOut = Bun.spawnSync({
-    cmd: [
-      "git",
-      "-C",
-      previousCheckout,
-      "checkout",
-      "--quiet",
-      "--detach",
-      previousSha,
-    ],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  expect(checkedOut.exitCode, decode(checkedOut.stderr)).toBe(0);
+  gitOutput(
+    previousStaging,
+    "config",
+    "user.name",
+    "Agentbrain Installer Test",
+  );
+  gitOutput(previousStaging, "config", "user.email", "installer-test@invalid");
+  gitOutput(
+    previousStaging,
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--quiet",
+    "--allow-empty",
+    "-m",
+    "test previous deployment",
+  );
+  const previousSha = gitOutput(previousStaging, "rev-parse", "HEAD");
+  const previousCheckout = join(targetRoot, previousSha);
+  renameSync(previousStaging, previousCheckout);
   copyFileSync(
     join(REPO, "scripts", "install.sh"),
     join(currentCheckout, "scripts", "install.sh"),
