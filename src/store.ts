@@ -10,7 +10,9 @@ import type {
 } from "./artifacts";
 import { isSafeArtifactStoragePath, SHA256_DIGEST_PATTERN } from "./artifacts";
 import { CliError } from "./errors";
+import { parseTags } from "./query";
 import { sanitizeExternalError } from "./sanitize";
+import { deriveStructuralTags } from "./tagging";
 import {
   chunkMarkdown,
   chunkText,
@@ -113,6 +115,13 @@ export interface UpsertDocumentResult {
   source_type?: string;
   size_chars: number;
   chunk_count?: number;
+  tags: string[];
+}
+
+export interface RetagDocumentResult {
+  success: true;
+  status: "unchanged" | "updated";
+  document_id: number;
   tags: string[];
 }
 
@@ -909,7 +918,7 @@ function isExpired(leaseExpiresAt: string, now: Date): boolean {
   return Date.parse(leaseExpiresAt) <= now.getTime();
 }
 
-function pythonStyleTagJson(tags: string[]): string {
+export function pythonStyleTagJson(tags: string[]): string {
   return `[${tags.map((tag) => JSON.stringify(tag)).join(", ")}]`;
 }
 
@@ -1635,6 +1644,115 @@ export class ResearchStore {
         deleted_document_id: row.id,
         title: row.title,
         source_uri: row.source_uri,
+      };
+    });
+    return transaction.immediate();
+  }
+
+  private hasResourcesTable(): boolean {
+    return (
+      this.db
+        .query(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='resources' LIMIT 1",
+        )
+        .get() !== null
+    );
+  }
+
+  private collectionSlugsForDocument(documentId: number): string[] {
+    if (!this.hasResourcesTable()) return [];
+    return (
+      this.db
+        .query(
+          `SELECT col.slug AS slug
+           FROM resources r
+           JOIN collection_memberships cm ON cm.resource_id = r.id
+           JOIN collections col ON col.id = cm.collection_id
+           WHERE r.document_id = ?
+           ORDER BY col.slug ASC`,
+        )
+        .all(documentId) as { slug: string }[]
+    ).map((row) => row.slug);
+  }
+
+  /**
+   * Re-derive and write one document's structural tags, keeping
+   * `documents.tags` and the denormalized `chunks_fts.tags` in sync without
+   * re-chunking. `chunks_fts` is a regular fts5 table, so a partial-column
+   * UPDATE is unsafe here — every chunk's FTS row is deleted and reinserted
+   * with all indexed columns, mirroring deleteDocument's targeted idiom.
+   * A no-op when the derived tag JSON is unchanged, which is what makes
+   * repeated retag runs byte-identical.
+   */
+  retagDocument(documentId: number): RetagDocumentResult {
+    const transaction = this.db.transaction((): RetagDocumentResult => {
+      const doc = this.db
+        .query(
+          "SELECT id, source_type, source_uri, title, tags FROM documents WHERE id=?",
+        )
+        .get(documentId) as {
+        id: number;
+        source_type: string;
+        source_uri: string;
+        title: string | null;
+        tags: string;
+      } | null;
+      if (doc === null) throw new CliError("not_found", "document not found");
+
+      const tags = deriveStructuralTags({
+        existingTags: parseTags(doc.tags),
+        sourceType: doc.source_type,
+        sourceUri: doc.source_uri,
+        collectionSlugs: this.collectionSlugsForDocument(documentId),
+      });
+      const tagsJson = pythonStyleTagJson(tags);
+      if (tagsJson === doc.tags) {
+        return {
+          success: true,
+          status: "unchanged",
+          document_id: doc.id,
+          tags,
+        };
+      }
+
+      this.db
+        .query("UPDATE documents SET tags=? WHERE id=?")
+        .run(tagsJson, documentId);
+
+      const chunks = this.db
+        .query(
+          "SELECT id, content FROM chunks WHERE document_id=? ORDER BY chunk_index ASC",
+        )
+        .all(documentId) as { id: number; content: string }[];
+      this.db
+        .query(
+          "DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id=?)",
+        )
+        .run(documentId);
+      const tagsText = tags.join(" ");
+      for (const chunk of chunks) {
+        this.db
+          .query(
+            `INSERT INTO chunks_fts(
+               rowid, document_id, chunk_id, title, content, tags, source_uri
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            chunk.id,
+            documentId,
+            chunk.id,
+            doc.title,
+            chunk.content,
+            tagsText,
+            doc.source_uri,
+          );
+      }
+
+      return {
+        success: true,
+        status: "updated",
+        document_id: doc.id,
+        tags,
       };
     });
     return transaction.immediate();
