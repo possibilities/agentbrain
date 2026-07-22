@@ -1,6 +1,15 @@
 import { hostname } from "node:os";
 import { type DurableSubmissionIntent, RECOVERY_JOB_PREFIX } from "./admission";
 import {
+  AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_BYTES,
+  AgentscrapeDiscoveryError,
+  AgentscrapeExtractionError,
+  type ExtractionProvider,
+  extractWithAgentscrape,
+  type SourceDiscoveryProvider,
+  validateExtractionEnvelope,
+} from "./agentscrape";
+import {
   ArtifactStore,
   ArtifactStoreError,
   isSafeArtifactStoragePath,
@@ -16,15 +25,6 @@ import {
 } from "./extract";
 import { planQueuedUrlFanout, QUEUED_FANOUT_JOB_PREFIX } from "./link-ingest";
 import { sanitizeExternalError } from "./sanitize";
-import {
-  type ExtractionProvider,
-  extractWithScrapectl,
-  SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
-  ScrapectlDiscoveryError,
-  ScrapectlExtractionError,
-  type SourceDiscoveryProvider,
-  validateExtractionEnvelope,
-} from "./scrapectl";
 import {
   dispatchSourceRun,
   SourceRunDispatchCancellationError,
@@ -221,10 +221,46 @@ function requireArtifact(value: unknown): IntentArtifact {
   return artifact as unknown as IntentArtifact;
 }
 
+function hasBoundedIdentityText(
+  value: unknown,
+  maximumCodePoints: number,
+  minimumCodePoints = 0,
+): value is string {
+  return (
+    typeof value === "string" &&
+    [...value].length >= minimumCodePoints &&
+    [...value].length <= maximumCodePoints &&
+    Buffer.byteLength(value, "utf8") <= maximumCodePoints * 4
+  );
+}
+
+function hasValidHistoricalExtractor(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const extractor = value as Record<string, unknown>;
+  const keys = [
+    "name",
+    "version",
+    "implementation",
+    "implementation_version",
+  ].sort();
+  return (
+    Object.keys(extractor).length === keys.length &&
+    !Object.keys(extractor)
+      .sort()
+      .some((key, index) => key !== keys[index]) &&
+    hasBoundedIdentityText(extractor.name, 100, 1) &&
+    hasBoundedIdentityText(extractor.version, 100) &&
+    hasBoundedIdentityText(extractor.implementation, 100) &&
+    hasBoundedIdentityText(extractor.implementation_version, 100)
+  );
+}
+
 function cacheRecord(value: unknown): PromotedUrlExtraction {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new ScrapectlExtractionError(
-      "scrapectl protocol defect: cached extraction record is invalid",
+    throw new AgentscrapeExtractionError(
+      "agentscrape protocol defect: cached extraction record is invalid",
       "permanent",
       "protocol",
     );
@@ -245,12 +281,13 @@ function cacheRecord(value: unknown): PromotedUrlExtraction {
       .some((key, index) => key !== keys[index]) ||
     Object.keys(record).length !== keys.length ||
     record.record_version !== 1 ||
+    !hasValidHistoricalExtractor(record.extractor) ||
     record.artifact === null ||
     typeof record.artifact !== "object" ||
     Array.isArray(record.artifact)
   ) {
-    throw new ScrapectlExtractionError(
-      "scrapectl protocol defect: cached extraction record is invalid",
+    throw new AgentscrapeExtractionError(
+      "agentscrape protocol defect: cached extraction record is invalid",
       "permanent",
       "protocol",
     );
@@ -276,8 +313,8 @@ function cacheRecord(value: unknown): PromotedUrlExtraction {
     typeof artifact.storage_path !== "string" ||
     !isSafeArtifactStoragePath(artifact.storage_path, artifact.sha256)
   ) {
-    throw new ScrapectlExtractionError(
-      "scrapectl protocol defect: cached extraction Artifact is invalid",
+    throw new AgentscrapeExtractionError(
+      "agentscrape protocol defect: cached extraction Artifact is invalid",
       "permanent",
       "protocol",
     );
@@ -311,7 +348,7 @@ function extractionFromCache(
       status: "success",
       requested_url: record.requested_url,
       final_url: record.final_url,
-      extractor: record.extractor,
+      extractor: { ...record.extractor, name: "agentscrape" },
       artifacts: [
         {
           artifact_type: record.artifact.artifact_type,
@@ -330,8 +367,8 @@ function extractionFromCache(
     { maxContentBytes },
   );
   if (envelope.status !== "success") {
-    throw new ScrapectlExtractionError(
-      "scrapectl protocol defect: cached extraction is not successful",
+    throw new AgentscrapeExtractionError(
+      "agentscrape protocol defect: cached extraction is not successful",
       "permanent",
       "protocol",
     );
@@ -395,12 +432,12 @@ function urlDocument(
     {
       type: "extractor_requested_url",
       locator: extraction.requested_url,
-      evidence: "scrapectl",
+      evidence: "agentscrape",
     },
     {
       type: "redirect_resolved_url",
       locator: extraction.final_url,
-      evidence: "scrapectl",
+      evidence: "agentscrape",
     },
   ];
   return {
@@ -424,7 +461,7 @@ function urlDocument(
       artifactRole: record.artifact.artifact_role,
       storagePath: record.artifact.storage_path,
       provenance: {
-        schema_version: "1",
+        schema_version: String(record.record_version),
         requested_url: record.requested_url,
         final_url: record.final_url,
         extractor: record.extractor,
@@ -454,7 +491,7 @@ export const defaultMaterializer: JobMaterializer = async (
     const url = intent.payload.url.url;
     const maxContentBytes = Math.min(
       options.max_bytes,
-      SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+      AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_BYTES,
     );
     const cached = extractionFromCache(
       context.artifactStore,
@@ -474,8 +511,8 @@ export const defaultMaterializer: JobMaterializer = async (
         maxContentBytes,
       });
       if (validated.status !== "success") {
-        throw new ScrapectlExtractionError(
-          "scrapectl protocol defect: extraction provider returned a failure value",
+        throw new AgentscrapeExtractionError(
+          "agentscrape protocol defect: extraction provider returned a failure value",
           "permanent",
           "protocol",
         );
@@ -532,10 +569,10 @@ export const defaultMaterializer: JobMaterializer = async (
 
 function classifyFailure(error: unknown): FailureClass {
   if (error instanceof SourceRunDispatchError) return error.failureClass;
-  if (error instanceof ScrapectlDiscoveryError) {
+  if (error instanceof AgentscrapeDiscoveryError) {
     return error.disposition === "cancelled" ? "permanent" : error.disposition;
   }
-  if (error instanceof ScrapectlExtractionError) {
+  if (error instanceof AgentscrapeExtractionError) {
     return error.disposition === "cancelled" ? "permanent" : error.disposition;
   }
   if (error instanceof ArtifactStoreError) return "infra";
@@ -867,7 +904,7 @@ export async function runWorker(
   const sleep = options.sleep ?? defaultSleep;
   const artifactStore = options.artifactStore ?? new ArtifactStore();
   const materialize = options.materialize ?? defaultMaterializer;
-  const extract = options.extract ?? extractWithScrapectl;
+  const extract = options.extract ?? extractWithAgentscrape;
   if (
     !Number.isFinite(pollMs) ||
     pollMs < 1 ||
@@ -1067,8 +1104,8 @@ export async function runWorker(
           continue;
         }
         if (
-          (error instanceof ScrapectlExtractionError ||
-            error instanceof ScrapectlDiscoveryError) &&
+          (error instanceof AgentscrapeExtractionError ||
+            error instanceof AgentscrapeDiscoveryError) &&
           error.disposition === "cancelled"
         ) {
           const guard = store.heartbeat({

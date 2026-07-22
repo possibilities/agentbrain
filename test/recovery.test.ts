@@ -426,14 +426,14 @@ afterEach(() => {
 test("dry-run verifies the complete locked generation without state or network", () => {
   const fixture = makeFixture();
   const bin = join(fixture.root, "bin");
-  const invoked = join(fixture.root, "scrapectl-invoked");
+  const invoked = join(fixture.root, "agentscrape-invoked");
   mkdirSync(bin);
-  const scrapectl = join(bin, "scrapectl");
+  const agentscrape = join(bin, "agentscrape");
   writeFileSync(
-    scrapectl,
+    agentscrape,
     `#!/bin/sh\ntouch ${JSON.stringify(invoked)}\nexit 97\n`,
   );
-  chmodSync(scrapectl, 0o755);
+  chmodSync(agentscrape, 0o755);
   const dbPath = join(fixture.root, "dry-run.db");
   const artifactStore = join(fixture.root, "dry-run-artifacts");
   const proc = Bun.spawnSync({

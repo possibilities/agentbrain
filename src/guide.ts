@@ -8,10 +8,10 @@ export function buildGuide(): unknown {
       agentbot: "Human-facing saved-link ingress.",
       agentbrain:
         "Durable admission, ingestion jobs and attempts, Artifact storage, index schema, search, retrieval, context, and deletion.",
-      scrapectl:
+      agentscrape:
         "All URL fetching, browser/session behavior, backend hardening, and extraction invoked by the Agentbrain worker.",
       boundary:
-        "Every public ingestion intent is durable before materialization. Admission performs no network work, and URL workers delegate extraction to Scrapectl without direct HTTP fallback.",
+        "Every public ingestion intent is durable before materialization. Admission performs no network work, and URL workers delegate extraction to Agentscrape without direct HTTP fallback.",
       decision_record:
         "docs/adr/0003-agentbrain-owns-durable-ingestion.md and docs/adr/0005-public-ingestion-admission-contract.md",
       glossary: "CONTEXT.md",
@@ -117,7 +117,7 @@ export function buildGuide(): unknown {
       ingest:
         "Queued compatibility alias for submit; it cannot write documents directly.",
       worker:
-        "Lease due jobs, delegate URL extraction through the versioned Scrapectl envelope, materialize outside write transactions, heartbeat, and commit fenced outcomes; --once drains work due now.",
+        "Lease due jobs, delegate URL extraction through the versioned Agentscrape envelope, materialize outside write transactions, heartbeat, and commit fenced outcomes; --once drains work due now.",
       jobs: "Content-safe ingestion ledger listing, detail, statistics, retry, cancellation, exclusion, and explicit audited Artifact reveal.",
       doctor:
         "Read-only database, Artifact-reference, lease, schema, and provider health checks.",
@@ -133,7 +133,7 @@ export function buildGuide(): unknown {
         "Read commands open SQLite with Bun's readonly option and never initialize or migrate.",
       writes:
         "Submit and its ingest alias write only durable jobs and required Artifact snapshots; materialization is restricted to the fenced worker path. Operator transitions and explicit content reveal are audited.",
-      urls: "Admission validates HTTP(S) syntax and queues normalized intent without network work. The worker delegates all URL extraction and network policy to Scrapectl through a versioned envelope and rejects unknown envelope versions.",
+      urls: "Admission validates HTTP(S) syntax and queues normalized intent without network work. The worker delegates all URL extraction and network policy to Agentscrape through a versioned envelope and rejects unknown envelope versions.",
       local_documents:
         "Text, file, and directory bytes are captured as immutable Artifacts before acknowledgement and parsed only after a worker leases the job.",
       directories:
@@ -146,7 +146,7 @@ export function buildGuide(): unknown {
       no_browser_or_network_implementation: true,
     },
     opt_in_smoke: {
-      command: "./scripts/smoke-scrapectl-url-ingest.sh [url]",
+      command: "./scripts/smoke-agentscrape-url-ingest.sh [url]",
       normal_checks_are_offline: true,
       temporary_state_only: true,
       behavior:
@@ -182,9 +182,9 @@ Document:
 2. Exact --json examples and the citation fields.
 3. Zero-result recovery through alternate terms, tags, and sources.
 4. Generic explicit ingestion and guarded deletion.
-5. The ownership boundary: Agentbrain owns durable admission, ingestion jobs, Artifact snapshots, and index writes; Scrapectl owns URL extraction/network/backend behavior.
+5. The ownership boundary: Agentbrain owns durable admission, ingestion jobs, Artifact snapshots, and index writes; Agentscrape owns URL extraction/network/backend behavior.
 6. Queued and duplicate submission acknowledgements, explicit idempotency conflicts, and --wait observation.
-7. The opt-in real Scrapectl smoke: temporary database, queued URL Admission, worker --once, search verification, and preserved failed evidence.
+7. The opt-in real Agentscrape smoke: temporary database, queued URL Admission, worker --once, search verification, and preserved failed evidence.
 8. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.hermes/research-cache/research.db.
 
 Keep it short enough for an AGENTS.md / CLAUDE.md / harness instruction file.`;

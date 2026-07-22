@@ -2,7 +2,7 @@
 
 Agentbrain owns Mike's local research index and is its sole durable ingestion authority. It owns Admission, the SQLite ingestion queue, Attempts, Artifacts, schema, Resources, Documents, chunks, FTS, and provenance. Read commands use structurally read-only SQLite connections; mutation commands use the separate writable store. The database remains at `~/.hermes/research-cache/research.db`; `--db PATH` wins over `AGENTBRAIN_DB`, which wins over that default.
 
-An Ingress such as the CLI submits intent at Admission. Admission validates it and durably creates or identifies an immutable ingestion job before returning; it does not materialize content. The Worker is Agentbrain's executor: it leases jobs, delegates extraction, and commits fenced outcomes, while Agentbrain remains the index owner. A retry creates another Attempt instead of replacing the job. Scrapectl remains the URL extraction and network-policy boundary, but it does not own Agentbrain's queue or index.
+An Ingress such as the CLI submits intent at Admission. Admission validates it and durably creates or identifies an immutable ingestion job before returning; it does not materialize content. The Worker is Agentbrain's executor: it leases jobs, delegates extraction, and commits fenced outcomes, while Agentbrain remains the index owner. A retry creates another Attempt instead of replacing the job. Agentscrape remains the URL extraction and network-policy boundary, but it does not own Agentbrain's queue or index.
 
 Architecture references:
 
@@ -37,7 +37,9 @@ agentbrain submit https://example.com/article --kind url --max-bytes 5000000 --j
 
 Text and local file bytes are captured as immutable Artifacts before acknowledgement. URL Admission performs syntax validation and queues normalized intent without network work. A new intent returns `queued`; a replay returns `duplicate` with the same job identity. Materialization happens only after a Worker leases the job.
 
-For URL jobs, the Worker invokes PATH-resolved `scrapectl fetch-markdown URL --envelope --max-content-bytes N --max-relations N` without a shell. Scrapectl owns fetching, browser/session behavior, redirects, credentials, backend retries, and extraction hardening. Agentbrain rejects incompatible envelope versions, bounds and sanitizes extractor output, and remains the only component allowed to mutate the index.
+For URL jobs, the Worker invokes PATH-resolved `agentscrape fetch-markdown URL --envelope --max-content-bytes N --max-relations N` without a shell. Agentscrape owns fetching, browser/session behavior, redirects, credentials, backend retries, and extraction hardening. The live schema-v1 envelope must identify `agentscrape`; malformed and unknown versions are protocol defects. Agentbrain bounds and sanitizes extractor output and remains the only component allowed to mutate the index.
+
+Successful extraction bytes are promoted before index commit so a retry does not refetch. New promotion records retain `record_version: 1` and carry extractor identity `agentscrape`. Existing version-1 records remain readable with their bounded opaque historical extractor identity preserved in provenance; replay validates the same URL, digest, path, size, and content constraints and does not rewrite the record, Artifact bytes, or SQLite merely to rename provenance.
 
 Operate the queue explicitly with:
 
@@ -127,7 +129,7 @@ agentbrain sources pause x.karpathy --reason "provider smoke pending" --json
 agentbrain sources resume x.karpathy --json
 ```
 
-`sources apply` reads a manifest (default: `config/sources.yaml`) and durably creates or updates matching source definitions; it never toggles `enabled` and never runs implicitly. Re-applying identical content is a no-op; raising `version` admits changed content, while changing content without raising `version` is refused. `sources list` / `show` / `status` expose kind, cadence, bounded limits, collection and sensitivity policy, checkpoint presence, and health without credentials, payload secrets, or private content — `credential_refs` are opaque reference names, never credential values. `sources sync --due` performs schedule evaluation only: it durably admits at most one catch-up Run per overdue source and advances that source's next due time, without performing HTTP work, remote discovery, or extraction itself. Discovery and extraction remain the Worker/Scrapectl path once a Run's `source_sync` job is claimed. `sources pause` / `resume` append audit evidence and immediately block or unblock admission without discarding earlier Runs or checkpoints.
+`sources apply` reads a manifest (default: `config/sources.yaml`) and durably creates or updates matching source definitions; it never toggles `enabled` and never runs implicitly. Re-applying identical content is a no-op; raising `version` admits changed content, while changing content without raising `version` is refused. `sources list` / `show` / `status` expose kind, cadence, bounded limits, collection and sensitivity policy, checkpoint presence, and health without credentials, payload secrets, or private content — `credential_refs` are opaque reference names, never credential values. `sources sync --due` performs schedule evaluation only: it durably admits at most one catch-up Run per overdue source and advances that source's next due time, without performing HTTP work, remote discovery, or extraction itself. Discovery and extraction remain the Worker/Agentscrape path once a Run's `source_sync` job is claimed. `sources pause` / `resume` append audit evidence and immediately block or unblock admission without discarding earlier Runs or checkpoints.
 
 ### Activating confirmed cohorts
 
@@ -145,7 +147,7 @@ The recurring-sources smoke is opt-in and outside `bun test`. It applies the man
 ./scripts/smoke-recurring-sources.sh [blog.simon-willison] [x.simonw]
 ```
 
-Run it only after Scrapectl and any required browser farm / X session are up. It never touches the configured production database or the recurring Sources activated there.
+Run it only after Agentscrape and any required browser farm / X session are up. It never touches the configured production database or the recurring Sources activated there.
 
 ## Legacy corpus recovery
 
@@ -162,15 +164,15 @@ agentbrain recovery online --manifest-generation ~/.local/share/agentbrain/recov
   --snapshot-digest POST_OFFLINE_DATABASE_SHA256 --execute --json
 ```
 
-Dry-run verifies every descriptor, checksum, candidate row, and local Markdown front-matter without writing to the database or the Artifact store and without invoking Scrapectl. It reports the exact accounting only: 1,088 candidate outcomes, 294 Secretary observations, 118 provenance merges, 13 appended exact candidates, 584 ordered `legacy-links` memberships, and 581 approved offline artifacts. Comparison URIs are diagnostic aliases; they never collapse candidate outcomes.
+Dry-run verifies every descriptor, checksum, candidate row, and local Markdown front-matter without writing to the database or the Artifact store and without invoking Agentscrape. It reports the exact accounting only: 1,088 candidate outcomes, 294 Secretary observations, 118 provenance merges, 13 appended exact candidates, 584 ordered `legacy-links` memberships, and 581 approved offline artifacts. Comparison URIs are diagnostic aliases; they never collapse candidate outcomes.
 
 Admission is offline, idempotent, and resumable. It creates one pending recovery Run, stable candidate outcomes, body-free observations, 581 runnable offline file jobs, 11 blocked jobs, and 37 exclusions; review and evidence-only cohorts create no jobs at all. `--authorize-offline` immutably binds the Run to the generation digest and logical `recovery_offline` kind. Ordinary workers then skip the controlled Run, while the matching scoped command claims only its 581 recovery file jobs. The two human-approved candidates for **controlled online backfill** are admitted as **blocked** jobs and are never eligible for the offline scope; egress stays deferred to the separate downstream online phase.
 
-`recovery online` refuses to prepare work unless the offline Run is terminal and exactly reconciled, the post-offline snapshot independently restore-verifies, all Artifact/FTS/integrity/quiescence gates pass, all three supplied digests match, and the immutable allowlist maps exactly two distinct approved candidate evidence rows to their original blocked jobs. Preparation creates a separate immutable `recovery_online` Run with two URL jobs; `--execute` holds its concurrency-one execution lease and delegates each acquisition only to Scrapectl. Item failures preserve sibling isolation, shared provider/auth/config/integrity failures pause the Run, replay never substitutes work, and a terminal non-success reports `completed_with_review`. Rollback covers local database/Artifact effects only—remote requests cannot be undone.
+`recovery online` refuses to prepare work unless the offline Run is terminal and exactly reconciled, the post-offline snapshot independently restore-verifies, all Artifact/FTS/integrity/quiescence gates pass, all three supplied digests match, and the immutable allowlist maps exactly two distinct approved candidate evidence rows to their original blocked jobs. Preparation creates a separate immutable `recovery_online` Run with two URL jobs; `--execute` holds its concurrency-one execution lease and delegates each acquisition only to Agentscrape. Item failures preserve sibling isolation, shared provider/auth/config/integrity failures pause the Run, replay never substitutes work, and a terminal non-success reports `completed_with_review`. Rollback covers local database/Artifact effects only—remote requests cannot be undone.
 
 Every recovery surface is sanitized: output carries opaque generation/candidate/Run/Attempt IDs, bounded states and classifications, aggregate counts, and snapshot/Artifact hashes, never exact candidate URLs, private locators, message bodies, chat/session identifiers, credentials, or unsafe evidence.
 
-Before any live admission, prove the whole path end to end in throwaway roots with a forbidden Scrapectl on PATH:
+Before any live admission, prove the whole path end to end in throwaway roots with a forbidden Agentscrape on PATH:
 
 ```bash
 ./scripts/rehearse-recovery-import.sh
@@ -207,12 +209,12 @@ Run all project checks with:
 bun run check
 ```
 
-`bun test` uses the vendored generic Scrapectl contract fixture at `test/fixtures/extraction-generic.expected.json`, so fresh runners do not need a sibling `arthack` checkout. Set `SCRAPECTL_CONTRACT_FIXTURE` to validate against an explicit alternate fixture path.
+`bun test` uses the vendored generic Agentscrape contract fixture at `test/fixtures/extraction-generic.expected.json`, so fresh runners do not need a sibling `arthack` checkout. Set `AGENTSCRAPE_CONTRACT_FIXTURE` to validate against an explicit alternate fixture path.
 
-The real Scrapectl smoke is opt-in and outside `bun test`. It creates a temporary database and Artifact root, submits a queued URL job, drains it with `worker --once`, verifies the materialized document is searchable, and deletes the temporary state only after success:
+The real Agentscrape smoke is opt-in and outside `bun test`. It creates a temporary database and Artifact root, submits a queued URL job, drains it with `worker --once`, verifies the materialized document is searchable, and deletes the temporary state only after success:
 
 ```bash
-./scripts/smoke-scrapectl-url-ingest.sh [https://example.com/]
+./scripts/smoke-agentscrape-url-ingest.sh [https://example.com/]
 ```
 
-Run it only after the human has brought Scrapectl and any required browser farm up. If the smoke fails, it preserves the temporary directory and JSON evidence so the admitted job and Attempt can be inspected without touching the live database or configured recurring Sources.
+Run it only after the human has brought Agentscrape and any required browser farm up. If the smoke fails, it preserves the temporary directory and JSON evidence so the admitted job and Attempt can be inspected without touching the live database or configured recurring Sources.

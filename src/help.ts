@@ -99,7 +99,7 @@ Agent defaults:
 
 Search/get/stats/tags/context and source list/show/status use structurally read-only
 SQLite connections. Agentbrain submit is the durable admission boundary. Accepted intents
-are queued before any extraction or indexing; Scrapectl remains the sole URL extraction
+are queued before any extraction or indexing; Agentscrape remains the sole URL extraction
 and network boundary. Source sync only admits durable source-run jobs; it performs no
 remote discovery and writes no documents inline.
 Backup creation uses a SQLite-consistent snapshot and never copies a live WAL file.
@@ -264,7 +264,7 @@ two URL jobs already bound to that Run and hold a single fenced execution lease.
 workers skip every operator-controlled Run.
 
 Materialization happens outside SQLite write transactions. URL jobs delegate a versioned
-extraction envelope to Scrapectl; unknown envelope versions are protocol defects rather
+extraction envelope to Agentscrape; unknown envelope versions are protocol defects rather
 than provider-schema fallbacks. Completion and failure are fenced by the attempt token.
 Signal shutdown stops new claims and leaves unfinished work recoverable through lease
 expiry.
@@ -338,12 +338,12 @@ Online options:
   --generation-digest <sha256>    Explicit pinned frozen-generation digest
   --approval-digest <sha256>      Explicit immutable online-allowlist file digest
   --snapshot-digest <sha256>      Explicit post-offline snapshot database digest
-  --execute                       Drain eligible work now through Scrapectl; otherwise prepare only
+  --execute                       Drain eligible work now through Agentscrape; otherwise prepare only
   --worker-id <id>                Opaque scoped Worker identity
   --json                          Emit a sanitized stable evidence envelope
 
 The importer accepts only the hash-bound 1,088-row frozen recovery contract. It verifies
-all generation files and approved local Markdown without invoking Scrapectl or any other
+all generation files and approved local Markdown without invoking Agentscrape or any other
 network backend. Linkctl frontmatter is parsed locally; its exact URL must match the
 candidate, while only the frontmatter-free body enters the Artifact store.
 
@@ -363,7 +363,7 @@ Online preparation restore-verifies the pinned post-offline snapshot, rechecks S
 Artifact, FTS, retrieval, permission, disk, worker-quiescence, offline Run, generation,
 and exact two-candidate approval gates before creating a separate immutable online Run.
 The recovery_online scope maps only its two URL jobs, and ordinary Workers are fenced
-while its concurrency-one execution lease is active. --execute invokes Scrapectl as the
+while its concurrency-one execution lease is active. --execute invokes Agentscrape as the
 sole extractor. Item-specific failure leaves the sibling eligible; shared infrastructure,
 authentication, configuration, or integrity failure pauses before another claim. Replay
 skips completed effects and resumes only the same incomplete jobs. Terminal non-success
@@ -375,7 +375,7 @@ Usage:
   agentbrain doctor [--json]
 
 Uses a structurally read-only database connection. Reports safe status/count data for
-SQLite integrity, schema, Artifact references, leases, and Scrapectl availability.
+SQLite integrity, schema, Artifact references, leases, and Agentscrape availability.
 Exits 1 when a required check fails.
 `,
   delete: `agentbrain delete — delete one indexed document

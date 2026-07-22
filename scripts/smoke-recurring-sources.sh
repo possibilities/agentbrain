@@ -9,7 +9,7 @@ set -euo pipefail
 # absence deletes nothing, and pause immediately blocks admission. It never
 # touches the configured production database or Artifact store.
 #
-# Bring Scrapectl and any required browser farm / X session up first. Live
+# Bring Agentscrape and any required browser farm / X session up first. Live
 # discovery may legitimately yield zero items or a classified failure; the smoke
 # still passes when the durable ledger behaves, and prints per-source status so
 # the operator can judge provider health.
@@ -39,8 +39,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! command -v scrapectl >/dev/null 2>&1; then
-  echo "scrapectl is not on PATH; bring the URL extractor and browser farm up before running this opt-in smoke" >&2
+if ! command -v agentscrape >/dev/null 2>&1; then
+  echo "agentscrape is not on PATH; bring the URL extractor and browser farm up before running this opt-in smoke" >&2
   exit 127
 fi
 

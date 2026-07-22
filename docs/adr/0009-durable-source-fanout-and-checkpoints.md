@@ -11,7 +11,7 @@ Discovery surfaces are also incomplete. X timeline pagination may return warning
 
 ## Decision
 
-- **Scrapectl emits authoritative typed outbound relations.** Supported automatic classes begin with `content_link`, `article`, and `quoted_post`; reply and repost relations require intentional provider support rather than generic URL guessing.
+- **Agentscrape emits authoritative typed outbound relations.** Supported automatic classes begin with `content_link`, `article`, and `quoted_post`; reply and repost relations require intentional provider support rather than generic URL guessing.
 - **Eligible X children are bounded.** External HTTP(S) destinations, X Articles, and quoted X posts may be admitted automatically. Profiles, author chrome, media assets, analytics, and navigation are excluded.
 - **Automatic fanout remains one hop and is capped at 25 eligible children per root.** A child created through fanout does not recursively create another automatic content-link layer.
 - **Suppression is durable.** Discoveries omitted by type policy, safety policy, duplication, or the fanout cap are recorded as observations with a reason and ordering evidence rather than silently discarded.
@@ -20,7 +20,7 @@ Discovery surfaces are also incomplete. X timeline pagination may return warning
 - **Source checkpoints advance after durable fanout.** A committed discovery window may advance only after every discovered item is durably admitted, explicitly recognized as existing equivalent intent, or durably suppressed according to policy.
 - **Checkpoint and pagination cursor are distinct.** In-progress provider cursors may support one run, while a stable high-water identifier anchors incremental recovery across runs.
 - **Partial discovery blocks unsafe advancement.** Provider warnings, truncated traversal, malformed pages, or uncertain boundaries retain run evidence but do not advance past an unproven checkpoint.
-- **Forward X polling uses stable post IDs.** `since_id` is the incremental checkpoint. Historical backfill uses separate state and cannot claim resumable completeness until Scrapectl exposes a genuinely seekable older-page contract.
+- **Forward X polling uses stable post IDs.** `since_id` is the incremental checkpoint. Historical backfill uses separate state and cannot claim resumable completeness until Agentscrape exposes a genuinely seekable older-page contract.
 - **Absence is not deletion.** Missing items from bounded feeds, timelines, or partial discovery responses do not remove resources or collection membership. Explicit upstream tombstones or a source-specific authoritative deletion signal are required.
 - **No-new-content runs may succeed.** A complete discovery run that proves no newer items may update health and observation timestamps without manufacturing jobs.
 
@@ -35,4 +35,4 @@ Discovery surfaces are also incomplete. X timeline pagination may return warning
 
 ## Related
 
-This applies transactional derived work from [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), job completion semantics from [ADR 0004](0004-durable-ingestion-job-lifecycle.md), conservative identity from [ADR 0006](0006-conservative-resource-identity.md), and the Scrapectl envelope from [ADR 0007](0007-synchronous-scrapectl-extraction-contract.md). See [`CONTEXT.md`](../../CONTEXT.md) for observation and checkpoint terminology.
+This applies transactional derived work from [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), job completion semantics from [ADR 0004](0004-durable-ingestion-job-lifecycle.md), conservative identity from [ADR 0006](0006-conservative-resource-identity.md), and the Agentscrape envelope from [ADR 0007](0007-synchronous-agentscrape-extraction-contract.md). See [`CONTEXT.md`](../../CONTEXT.md) for observation and checkpoint terminology.

@@ -4,7 +4,7 @@ set -euo pipefail
 # Disposable rehearsal of the frozen legacy recovery import. It drives the real
 # hash-bound generation and local Markdown artifacts through dry-run, admission,
 # an offline worker drain, retrieval, backup/restore, and idempotent replay in a
-# throwaway database and Artifact store, with a forbidden Scrapectl on PATH so no
+# throwaway database and Artifact store, with a forbidden Agentscrape on PATH so no
 # fetch can occur. It prints only counts, opaque generation IDs, and snapshot
 # hashes; never exact candidate URLs, bodies, private locators, or paths.
 
@@ -28,7 +28,7 @@ db_path="$tmp_dir/rehearsal.db"
 home_dir="$tmp_dir/home"
 data_home="$tmp_dir/data"
 bin_dir="$tmp_dir/bin"
-sentinel="$tmp_dir/scrapectl-invoked"
+sentinel="$tmp_dir/agentscrape-invoked"
 
 cleanup() {
   local status=$?
@@ -42,14 +42,14 @@ trap cleanup EXIT
 
 mkdir -p "$home_dir" "$data_home" "$bin_dir"
 
-# A forbidden Scrapectl: any invocation trips the sentinel and fails, so a run
+# A forbidden Agentscrape: any invocation trips the sentinel and fails, so a run
 # that reached the network cannot pass.
-cat >"$bin_dir/scrapectl" <<EOF
+cat >"$bin_dir/agentscrape" <<EOF
 #!/bin/sh
 touch "$sentinel"
 exit 97
 EOF
-chmod 0755 "$bin_dir/scrapectl"
+chmod 0755 "$bin_dir/agentscrape"
 
 agentbrain_json() {
   HOME="$home_dir" XDG_DATA_HOME="$data_home" PATH="$bin_dir:$PATH" \
@@ -71,7 +71,7 @@ if (String(value) !== expected) {
 
 assert_absent() {
   if [ -e "$1" ]; then
-    echo "network guard tripped: $1 exists (Scrapectl was invoked)" >&2
+    echo "network guard tripped: $1 exists (Agentscrape was invoked)" >&2
     exit 1
   fi
 }

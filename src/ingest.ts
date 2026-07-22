@@ -1,5 +1,6 @@
 import { opendirSync, realpathSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
+import { type ScrapeProvider, scrapeWithAgentscrape } from "./agentscrape";
 import {
   DEFAULT_EXTENSIONS,
   DEFAULT_MAX_BYTES,
@@ -7,7 +8,6 @@ import {
   inferTitleFromSource,
   looksSensitiveComponent,
 } from "./extract";
-import { type ScrapeProvider, scrapeWithScrapectl } from "./scrapectl";
 import type { ResearchStore, UpsertDocumentResult } from "./store";
 import { normalizeTags, sha256Text } from "./text";
 import { normalizedWebUrl, sourceTypeForUrl } from "./url";
@@ -29,7 +29,7 @@ export interface IngestOptions {
   force?: boolean;
   skipSecrets?: boolean;
   scrape?: ScrapeProvider;
-  scrapectlTimeoutMs?: number;
+  agentscrapeTimeoutMs?: number;
   /** Test seam; callers cannot raise the production hard limit. */
   directoryTraversalLimit?: number;
   /** Test seam; callers cannot raise the production hard limit. */
@@ -148,11 +148,11 @@ export async function ingestSource(
   }
   if (sourceType === "url") {
     const requestedUrl = normalizedWebUrl(source);
-    const scrape = options.scrape ?? scrapeWithScrapectl;
+    const scrape = options.scrape ?? scrapeWithAgentscrape;
     const scraped = await scrape(requestedUrl, {
       maxMarkdownBytes: maxBytes,
       maxMarkdownCodePoints: maxBytes,
-      timeoutMs: options.scrapectlTimeoutMs,
+      timeoutMs: options.agentscrapeTimeoutMs,
     });
     const sourceUri = requestedUrl;
     return store.upsertDocument({

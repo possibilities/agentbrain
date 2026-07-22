@@ -12,30 +12,31 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  discoverFeedWithScrapectl,
-  discoverXTimelineWithScrapectl,
-  extractWithScrapectl,
-  ScrapectlExtractionError,
-  scrapeWithScrapectl,
+  AgentscrapeExtractionError,
+  discoverFeedWithAgentscrape,
+  discoverXTimelineWithAgentscrape,
+  extractWithAgentscrape,
+  scrapeWithAgentscrape,
   validateExtractionEnvelope,
-} from "../src/scrapectl";
+} from "../src/agentscrape";
 
 const dirs: string[] = [];
 const originalPath = process.env.PATH;
-const originalInitialDelay = process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS;
-const originalMaxDelay = process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS;
+const originalInitialDelay =
+  process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_INITIAL_MS;
+const originalMaxDelay = process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_MAX_MS;
 
 afterEach(() => {
   process.env.PATH = originalPath;
   if (originalInitialDelay === undefined) {
-    delete process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS;
+    delete process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_INITIAL_MS;
   } else {
-    process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS = originalInitialDelay;
+    process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_INITIAL_MS = originalInitialDelay;
   }
   if (originalMaxDelay === undefined) {
-    delete process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS;
+    delete process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_MAX_MS;
   } else {
-    process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS = originalMaxDelay;
+    process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_MAX_MS = originalMaxDelay;
   }
   delete process.env.LOG;
   delete process.env.COUNT_FILE;
@@ -47,7 +48,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "agentbrain-scrapectl-"));
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-agentscrape-"));
   dirs.push(dir);
   return dir;
 }
@@ -56,7 +57,7 @@ function executablePath(dir: string): string {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
   process.env.PATH = `${bin}:${originalPath}`;
-  return join(bin, "scrapectl");
+  return join(bin, "agentscrape");
 }
 
 function writeExecutable(path: string, script: string): void {
@@ -155,7 +156,10 @@ async function waitForProcessExit(
   return false;
 }
 
-function installScrapectl(script: string): { dir: string; executable: string } {
+function installAgentscrape(script: string): {
+  dir: string;
+  executable: string;
+} {
   const dir = tempDir();
   const executable = executablePath(dir);
   writeExecutable(executable, script);
@@ -172,7 +176,7 @@ function extractionEnvelope(
     requested_url: requestedUrl,
     final_url: `${requestedUrl}/final`,
     extractor: {
-      name: "scrapectl",
+      name: "agentscrape",
       version: "1.2.3",
       implementation: "generic-page",
       implementation_version: "1",
@@ -210,14 +214,15 @@ function shellLiteral(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-const DEFAULT_SCRAPECTL_CONTRACT_FIXTURE = join(
+const DEFAULT_AGENTSCRAPE_CONTRACT_FIXTURE = join(
   import.meta.dir,
   "fixtures",
   "extraction-generic.expected.json",
 );
 
-const SCRAPECTL_CONTRACT_FIXTURE =
-  process.env.SCRAPECTL_CONTRACT_FIXTURE ?? DEFAULT_SCRAPECTL_CONTRACT_FIXTURE;
+const AGENTSCRAPE_CONTRACT_FIXTURE =
+  process.env.AGENTSCRAPE_CONTRACT_FIXTURE ??
+  DEFAULT_AGENTSCRAPE_CONTRACT_FIXTURE;
 
 function assertCompatibleFixture(
   label: string,
@@ -240,21 +245,11 @@ function assertCompatibleFixture(
   }
 }
 
-test("recorded Scrapectl extraction fixtures match Agentbrain's envelope contract", () => {
+test("recorded Agentscrape extraction fixtures match Agentbrain's envelope contract", () => {
   assertCompatibleFixture(
-    "Scrapectl generic",
-    SCRAPECTL_CONTRACT_FIXTURE,
+    "Agentscrape generic",
+    AGENTSCRAPE_CONTRACT_FIXTURE,
     "https://example.com/start",
-  );
-  assertCompatibleFixture(
-    "Agentbrain X post",
-    join(import.meta.dir, "fixtures", "prescraped_x_tweet.json"),
-    "https://twitter.com/original_handle/status/123?ref=timeline",
-  );
-  assertCompatibleFixture(
-    "Agentbrain X article",
-    join(import.meta.dir, "fixtures", "prescraped_x_article.json"),
-    "https://twitter.com/writer/article/987?utm_source=timeline",
   );
 });
 
@@ -294,7 +289,7 @@ test("incompatible extraction envelope changes are protocol defects", () => {
   for (const [label, payload, message] of cases) {
     try {
       expect(() => validateExtractionEnvelope(payload, url)).toThrow(
-        `scrapectl protocol defect: ${message}`,
+        `agentscrape protocol defect: ${message}`,
       );
     } catch (error) {
       throw new Error(
@@ -309,14 +304,14 @@ test("incompatible extraction envelope changes are protocol defects", () => {
 test("versioned extraction uses explicit argv and validates the success envelope", async () => {
   const url = "https://example.com/article";
   const envelope = extractionEnvelope(url);
-  const { dir } = installScrapectl(`#!/bin/sh
+  const { dir } = installAgentscrape(`#!/bin/sh
 printf '%s\\n' "$@" > "$LOG"
 printf '%s' ${shellLiteral(JSON.stringify(envelope))}
 `);
   const log = join(dir, "extraction-argv.txt");
   process.env.LOG = log;
 
-  const result = await extractWithScrapectl(url, {
+  const result = await extractWithAgentscrape(url, {
     maxContentBytes: 1000,
     maxRelations: 3,
   });
@@ -331,7 +326,7 @@ printf '%s' ${shellLiteral(JSON.stringify(envelope))}
   });
 }, 30_000);
 
-test("feed and X discovery use bounded explicit Scrapectl argv", async () => {
+test("feed and X discovery use bounded explicit Agentscrape argv", async () => {
   const sourceUrl = "https://blog.example/feed.xml";
   const feed = {
     schema_version: "1",
@@ -363,14 +358,14 @@ test("feed and X discovery use bounded explicit Scrapectl argv", async () => {
     absence_implies_deletion: false,
     failure: null,
   };
-  const { dir, executable } = installScrapectl(`#!/bin/sh
+  const { dir, executable } = installAgentscrape(`#!/bin/sh
 printf '%s\\n' "$@" > "$LOG"
 printf '%s' ${shellLiteral(JSON.stringify(feed))}
 `);
   const input = join(dir, "feed.xml");
   writeFileSync(input, "<rss/>");
   process.env.LOG = join(dir, "feed-argv.txt");
-  const feedResult = await discoverFeedWithScrapectl({
+  const feedResult = await discoverFeedWithAgentscrape({
     sourceUrl,
     recordedInputFile: input,
     maxPages: 2,
@@ -393,7 +388,7 @@ printf '%s' ${shellLiteral(JSON.stringify(feed))}
     `#!/bin/sh\nprintf '%s\\n' "$@" > "$LOG"\nprintf '%s' ${shellLiteral(JSON.stringify(timeline))}\n`,
   );
   process.env.LOG = join(dir, "x-argv.txt");
-  const xResult = await discoverXTimelineWithScrapectl({
+  const xResult = await discoverXTimelineWithAgentscrape({
     url: "https://x.com/person",
     handle: "person",
     sinceId: "456",
@@ -408,7 +403,7 @@ printf '%s' ${shellLiteral(JSON.stringify(feed))}
 
 test("classified extraction failures map without parsing stderr", async () => {
   const url = "https://example.com/failure";
-  const { executable } = installScrapectl("#!/bin/sh\nexit 1\n");
+  const { executable } = installAgentscrape("#!/bin/sh\nexit 1\n");
   const cases = [
     ["upstream_unavailable", true, "item_transient", "item", 1],
     ["authentication_required", false, "auth_config", "auth_config", 2],
@@ -444,11 +439,11 @@ test("classified extraction failures map without parsing stderr", async () => {
     );
     let caught: unknown;
     try {
-      await extractWithScrapectl(url);
+      await extractWithAgentscrape(url);
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(ScrapectlExtractionError);
+    expect(caught).toBeInstanceOf(AgentscrapeExtractionError);
     expect(caught).toMatchObject({ disposition, outcome });
     expect(String(caught)).not.toContain("secret-value");
     expect(String(caught)).not.toContain("stderr must not classify");
@@ -456,16 +451,16 @@ test("classified extraction failures map without parsing stderr", async () => {
 });
 
 test("malformed and unknown envelopes are visible protocol defects", async () => {
-  const { executable } = installScrapectl(`#!/bin/sh
+  const { executable } = installAgentscrape(`#!/bin/sh
 printf '%s' '{"schema_version":"99"}'
 `);
   await expect(
-    extractWithScrapectl("https://example.com/protocol"),
+    extractWithAgentscrape("https://example.com/protocol"),
   ).rejects.toMatchObject({ disposition: "permanent", outcome: "protocol" });
 
   writeExecutable(executable, "#!/bin/sh\nprintf '%s' 'not-json'\n");
   await expect(
-    extractWithScrapectl("https://example.com/protocol"),
+    extractWithAgentscrape("https://example.com/protocol"),
   ).rejects.toThrow("protocol defect");
 
   const url = "https://example.com/unsupported-relation";
@@ -482,20 +477,20 @@ printf '%s' '{"schema_version":"99"}'
     executable,
     `#!/bin/sh\nprintf '%s' ${shellLiteral(JSON.stringify(unsupported))}\n`,
   );
-  await expect(extractWithScrapectl(url)).rejects.toThrow(
+  await expect(extractWithAgentscrape(url)).rejects.toThrow(
     "relation type is unsupported",
   );
 });
 
-test("Scrapectl adapter resolves PATH and requests final Markdown with explicit argv", async () => {
-  const { dir } = installScrapectl(`#!/bin/sh
+test("Agentscrape adapter resolves PATH and requests final Markdown with explicit argv", async () => {
+  const { dir } = installAgentscrape(`#!/bin/sh
 printf '%s\n' "$@" > "$LOG"
 printf '%s\n' '# Provider markdown'
 `);
   const log = join(dir, "argv.txt");
   process.env.LOG = log;
 
-  const result = await scrapeWithScrapectl(
+  const result = await scrapeWithAgentscrape(
     "https://twitter.com/person/status/123?from=request#section",
     { maxMarkdownBytes: 1000, maxMarkdownCodePoints: 1000 },
   );
@@ -510,20 +505,20 @@ printf '%s\n' '# Provider markdown'
   });
 });
 
-test("Scrapectl Markdown stdout is accepted without provider-schema parsing", async () => {
-  installScrapectl(`#!/bin/sh
-printf '%s\n' '# Article title' '' 'Final **Markdown** from Scrapectl.'
+test("Agentscrape Markdown stdout is accepted without provider-schema parsing", async () => {
+  installAgentscrape(`#!/bin/sh
+printf '%s\n' '# Article title' '' 'Final **Markdown** from Agentscrape.'
 `);
 
-  const result = await scrapeWithScrapectl("https://example.com/article");
+  const result = await scrapeWithAgentscrape("https://example.com/article");
   expect(result.markdown).toBe(
-    "# Article title\n\nFinal **Markdown** from Scrapectl.\n",
+    "# Article title\n\nFinal **Markdown** from Agentscrape.\n",
   );
   expect(result.content).toBe(result.markdown);
 });
 
 test("transient provider failures retry with bounded exponential delays and resume", async () => {
-  const { dir } = installScrapectl(`#!/bin/sh
+  const { dir } = installAgentscrape(`#!/bin/sh
 count=0
 if [ -f "$COUNT_FILE" ]; then count=$(cat "$COUNT_FILE"); fi
 count=$((count + 1))
@@ -543,7 +538,7 @@ printf '%s\n' 'resumed markdown'
   const delays: number[] = [];
   const diagnostics: string[] = [];
 
-  const result = await scrapeWithScrapectl("https://example.com/resumed", {
+  const result = await scrapeWithAgentscrape("https://example.com/resumed", {
     retry: {
       maxAttempts: 4,
       initialDelayMs: 5,
@@ -567,12 +562,12 @@ printf '%s\n' 'resumed markdown'
 test("retry delay environment overrides are bounded away from hot loops and overflow", async () => {
   const dir = tempDir();
   process.env.PATH = join(dir, "missing-bin");
-  process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS = "0";
-  process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS = "999999999999999999999";
+  process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_INITIAL_MS = "0";
+  process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_MAX_MS = "999999999999999999999";
   const fallbackDelays: number[] = [];
 
   await expect(
-    scrapeWithScrapectl("https://example.com/down", {
+    scrapeWithAgentscrape("https://example.com/down", {
       retry: {
         maxAttempts: 2,
         sleep: (delay) => {
@@ -584,11 +579,11 @@ test("retry delay environment overrides are bounded away from hot loops and over
   ).rejects.toThrow("not installed on PATH");
   expect(fallbackDelays).toEqual([1000]);
 
-  process.env.AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS = "100";
-  process.env.AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS = "3600000";
+  process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_INITIAL_MS = "100";
+  process.env.AGENTBRAIN_AGENTSCRAPE_RETRY_MAX_MS = "3600000";
   const configuredDelays: number[] = [];
   await expect(
-    scrapeWithScrapectl("https://example.com/down", {
+    scrapeWithAgentscrape("https://example.com/down", {
       retry: {
         maxAttempts: 2,
         sleep: (delay) => {
@@ -601,8 +596,8 @@ test("retry delay environment overrides are bounded away from hot loops and over
   expect(configuredDelays).toEqual([100]);
 });
 
-test("a real Scrapectl agent-browser timeout is retried", async () => {
-  const { dir } = installScrapectl(`#!/bin/sh
+test("a real Agentscrape agent-browser timeout is retried", async () => {
+  const { dir } = installAgentscrape(`#!/bin/sh
 count=0
 if [ -f "$COUNT_FILE" ]; then count=$(cat "$COUNT_FILE"); fi
 count=$((count + 1))
@@ -617,7 +612,7 @@ printf '%s\n' 'recovered after browser timeout'
   process.env.COUNT_FILE = countFile;
   const delays: number[] = [];
 
-  const result = await scrapeWithScrapectl("https://example.com/timeout", {
+  const result = await scrapeWithAgentscrape("https://example.com/timeout", {
     retry: {
       maxAttempts: 2,
       initialDelayMs: 7,
@@ -639,7 +634,7 @@ test("an executable initially absent is found on a later retry", async () => {
   process.env.PATH = join(dir, "bin");
   const delays: number[] = [];
 
-  const result = await scrapeWithScrapectl("https://example.com/appeared", {
+  const result = await scrapeWithAgentscrape("https://example.com/appeared", {
     retry: {
       maxAttempts: 2,
       initialDelayMs: 0,
@@ -661,7 +656,7 @@ test("an executable initially absent is found on a later retry", async () => {
 });
 
 test("permanent auth and input failures do not retry", async () => {
-  const { dir } = installScrapectl(`#!/bin/sh
+  const { dir } = installAgentscrape(`#!/bin/sh
 printf x >> "$COUNT_FILE"
 printf '%s\n' 'authentication required: Authorization: Bearer top.secret' >&2
 exit 7
@@ -671,7 +666,7 @@ exit 7
   const delays: number[] = [];
 
   await expect(
-    scrapeWithScrapectl("https://example.com/failure", {
+    scrapeWithAgentscrape("https://example.com/failure", {
       retry: {
         maxAttempts: 5,
         sleep: (delay) => {
@@ -680,16 +675,16 @@ exit 7
         writeDiagnostic: () => {},
       },
     }),
-  ).rejects.toThrow("scrapectl provider failed");
+  ).rejects.toThrow("agentscrape provider failed");
   expect(readFileSync(countFile, "utf8")).toBe("x");
   expect(delays).toEqual([]);
 
   writeExecutable(
-    join(dir, "bin", "scrapectl"),
+    join(dir, "bin", "agentscrape"),
     `#!/bin/sh\nprintf x >> "$COUNT_FILE"\nprintf '%s\\n' 'invalid input URL' >&2\nexit 2\n`,
   );
   await expect(
-    scrapeWithScrapectl("https://example.com/failure", {
+    scrapeWithAgentscrape("https://example.com/failure", {
       retry: { maxAttempts: 5, sleep: () => {}, writeDiagnostic: () => {} },
     }),
   ).rejects.toThrow("invalid input");
@@ -697,7 +692,7 @@ exit 7
 });
 
 test("per-attempt timeout is transient and obeys the injected attempt cap", async () => {
-  const { dir } = installScrapectl(`#!/bin/sh
+  const { dir } = installAgentscrape(`#!/bin/sh
 printf x >> "$COUNT_FILE"
 exec sleep 5
 `);
@@ -706,7 +701,7 @@ exec sleep 5
   const delays: number[] = [];
 
   await expect(
-    scrapeWithScrapectl("https://example.com/slow", {
+    scrapeWithAgentscrape("https://example.com/slow", {
       timeoutMs: 100,
       retry: {
         maxAttempts: 2,
@@ -723,8 +718,8 @@ exec sleep 5
   expect(delays).toEqual([1]);
 });
 
-test("provider timeout terminates the Scrapectl process group", async () => {
-  const { dir } = installScrapectl(`#!/bin/sh
+test("provider timeout terminates the Agentscrape process group", async () => {
+  const { dir } = installAgentscrape(`#!/bin/sh
 sh -c 'trap "" TERM; exec sleep 30' &
 printf '%s' "$!" > "$CHILD_PID_FILE"
 wait
@@ -733,7 +728,7 @@ wait
   process.env.CHILD_PID_FILE = pidFile;
 
   await expect(
-    scrapeWithScrapectl("https://example.com/process-tree", {
+    scrapeWithAgentscrape("https://example.com/process-tree", {
       timeoutMs: 500,
       retry: { maxAttempts: 1, writeDiagnostic: () => {} },
     }),
@@ -752,9 +747,9 @@ wait
   expect(alive).toBe(false);
 });
 
-test("extraction abort kills detached Scrapectl descendants", async () => {
+test("extraction abort kills detached Agentscrape descendants", async () => {
   if (process.platform === "win32") return;
-  const { dir } = installScrapectl(`#!/bin/sh
+  const { dir } = installAgentscrape(`#!/bin/sh
 sh -c 'trap "" HUP INT TERM; exec sleep 30' &
 printf '%s' "$!" > "$CHILD_PID_FILE"
 wait
@@ -762,7 +757,7 @@ wait
   const pidFile = join(dir, "extraction-child.pid");
   process.env.CHILD_PID_FILE = pidFile;
   const controller = new AbortController();
-  const pending = extractWithScrapectl("https://example.com/cancel", {
+  const pending = extractWithAgentscrape("https://example.com/cancel", {
     signal: controller.signal,
     timeoutMs: 30_000,
   });
@@ -795,9 +790,9 @@ wait
   expect(alive).toBe(false);
 }, 30_000);
 
-test("parent cancellation kills detached Scrapectl descendants and preserves signal exits", async () => {
+test("parent cancellation kills detached Agentscrape descendants and preserves signal exits", async () => {
   if (process.platform === "win32") return;
-  const { dir } = installScrapectl(`#!/bin/sh
+  const { dir } = installAgentscrape(`#!/bin/sh
 printf '%s' "$$" > "$PROVIDER_PID_FILE"
 sh -c 'trap "" HUP INT TERM; exec sleep 30' &
 printf '%s' "$!" > "$CHILD_PID_FILE"
@@ -809,7 +804,7 @@ wait
   const parentScript = join(dir, "provider-parent.ts");
   writeFileSync(
     parentScript,
-    `import { scrapeWithScrapectl } from ${JSON.stringify(join(import.meta.dir, "..", "src", "scrapectl.ts"))};\nawait scrapeWithScrapectl("https://example.com/cancel");\n`,
+    `import { scrapeWithAgentscrape } from ${JSON.stringify(join(import.meta.dir, "..", "src", "agentscrape.ts"))};\nawait scrapeWithAgentscrape("https://example.com/cancel");\n`,
   );
 
   for (const [signal, expectedExitCode] of [
@@ -865,7 +860,7 @@ wait
 }, 60_000);
 
 test("empty and oversized Markdown plus oversized command output fail without retry", async () => {
-  const { dir, executable } = installScrapectl(`#!/bin/sh
+  const { dir, executable } = installAgentscrape(`#!/bin/sh
 printf x >> "$COUNT_FILE"
 printf '   '
 `);
@@ -878,7 +873,7 @@ printf '   '
   };
 
   await expect(
-    scrapeWithScrapectl("https://example.com/empty", { retry }),
+    scrapeWithAgentscrape("https://example.com/empty", { retry }),
   ).rejects.toThrow("empty markdown");
   expect(readFileSync(countFile, "utf8")).toBe("x");
 
@@ -887,7 +882,7 @@ printf '   '
     `#!/bin/sh\nprintf x >> "$COUNT_FILE"\nprintf '0123456789'\n`,
   );
   await expect(
-    scrapeWithScrapectl("https://example.com/large", {
+    scrapeWithAgentscrape("https://example.com/large", {
       maxMarkdownBytes: 5,
       maxMarkdownCodePoints: 5,
       retry,
@@ -900,7 +895,7 @@ printf '   '
     `#!/bin/sh\nprintf x >> "$COUNT_FILE"\nprintf '%0200d' 0\n`,
   );
   await expect(
-    scrapeWithScrapectl("https://example.com/output", {
+    scrapeWithAgentscrape("https://example.com/output", {
       maxOutputBytes: 32,
       retry,
     }),

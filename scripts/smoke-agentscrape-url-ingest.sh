@@ -3,7 +3,7 @@ set -euo pipefail
 
 url="${1:-https://example.com/}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/agentbrain-scrapectl-smoke.XXXXXX")"
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/agentbrain-agentscrape-smoke.XXXXXX")"
 db_path="$tmp_dir/brain.db"
 home_dir="$tmp_dir/home"
 data_home="$tmp_dir/data"
@@ -22,8 +22,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! command -v scrapectl >/dev/null 2>&1; then
-  echo "scrapectl is not on PATH; start/install the URL extractor before running this opt-in smoke" >&2
+if ! command -v agentscrape >/dev/null 2>&1; then
+  echo "agentscrape is not on PATH; start/install the URL extractor before running this opt-in smoke" >&2
   exit 127
 fi
 
@@ -104,11 +104,11 @@ search_json="$tmp_dir/search.json"
 
 echo "Using temporary Agentbrain DB: $db_path" >&2
 echo "Submitting queued URL ingestion job: $url" >&2
-agentbrain_json submit "$url" --kind url --ingress smoke-scrapectl >"$submit_json"
+agentbrain_json submit "$url" --kind url --ingress smoke-agentscrape >"$submit_json"
 job_id="$(json_read "$submit_json" "data.job_id")"
 
 echo "Draining temporary queue through the Agentbrain worker (job $job_id)" >&2
-agentbrain_json worker --once --worker-id smoke-scrapectl >"$worker_json"
+agentbrain_json worker --once --worker-id smoke-agentscrape >"$worker_json"
 agentbrain_json jobs show "$job_id" >"$job_json"
 require_completed_job "$job_json"
 

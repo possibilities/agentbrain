@@ -66,7 +66,7 @@ bun src/cli.ts --db "$HOME/.hermes/research-cache/research.db" recovery import \
   --manifest-generation "$HOME/.local/share/agentbrain/recovery/manifests/current" \
   --artifact-root "$HOME/content/links" --authorize-offline --json
 
-PATH="$FORBIDDEN_SCRAPECTL_DIR:$PATH" \
+PATH="$FORBIDDEN_AGENTSCRAPE_DIR:$PATH" \
   /usr/bin/sandbox-exec -p '(version 1)(allow default)(deny network*)' \
   bun src/cli.ts --db "$HOME/.hermes/research-cache/research.db" worker --once \
   --run 1 \
@@ -119,7 +119,7 @@ Admission created 1,088 candidate outcomes, 294 observations, 584 memberships, a
 - URL-kind attempts: 0
 - Unrelated attempts: 0
 - Retries: 0
-- Scrapectl sentinel invocations: 0
+- Agentscrape sentinel invocations: 0
 - Network policy during drain: `deny network*`
 - Final Run state: completed and quiescent; no runnable work or active/stale leases
 

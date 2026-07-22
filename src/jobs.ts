@@ -658,14 +658,14 @@ export function doctor(cache: ResearchCache, now = new Date()): DoctorReport {
     status: stats.stale_leases === 0 ? "ok" : "warning",
     detail: `${stats.active_leases} active, ${stats.stale_leases} expired`,
   });
-  const scrapectl = findExecutable("scrapectl");
+  const agentscrape = findExecutable("agentscrape");
   checks.push({
-    name: "scrapectl",
-    status: scrapectl === null ? "failed" : "ok",
+    name: "agentscrape",
+    status: agentscrape === null ? "failed" : "ok",
     detail:
-      scrapectl === null
-        ? "Scrapectl executable not found"
-        : "Scrapectl executable found",
+      agentscrape === null
+        ? "Agentscrape executable not found"
+        : "Agentscrape executable found",
   });
   return {
     healthy: checks.every((check) => check.status !== "failed"),

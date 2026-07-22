@@ -12,7 +12,7 @@ SQLite and filesystem writes cannot share one atomic transaction. The design the
 ## Decision
 
 - **Artifact bytes live in a content-addressed Agentbrain store.** The default root is `~/.local/share/agentbrain/artifacts`, with SHA-256-addressed paths partitioned by digest prefix. SQLite stores typed metadata, digests, sizes, sensitivity, derivation, and references rather than large content blobs.
-- **Agentbrain owns artifact registration and promotion.** Scrapectl and other materializers write only to a caller-provided staging directory. Agentbrain verifies media type, size, and digest before atomically promoting bytes to their immutable address.
+- **Agentbrain owns artifact registration and promotion.** Agentscrape and other materializers write only to a caller-provided staging directory. Agentbrain verifies media type, size, and digest before atomically promoting bytes to their immutable address.
 - **Artifact promotion precedes database reference commit.** Agentbrain then transactionally records artifact references, resource/document/provenance effects, attempt success, derived child work, and job completion through the fenced completion path.
 - **Filesystem/database gaps are reconciled.** Promoted but unreferenced artifacts and stale staging files are discoverable; repair may attach valid evidence, while garbage collection requires retention and sensitivity policy rather than blind age-based deletion.
 - **Normalized indexed content is durable.** Extracted Markdown and imported originals remain until explicit purge or a declared collection retention policy. They are sufficient to rebuild documents, chunks, and FTS without network access.
@@ -34,4 +34,4 @@ SQLite and filesystem writes cannot share one atomic transaction. The design the
 
 ## Related
 
-This supports the resource/artifact separation in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), fenced completion in [ADR 0004](0004-durable-ingestion-job-lifecycle.md), conservative identity in [ADR 0006](0006-conservative-resource-identity.md), and staged Scrapectl output in [ADR 0007](0007-synchronous-scrapectl-extraction-contract.md). See [`CONTEXT.md`](../../CONTEXT.md) for artifact terminology.
+This supports the resource/artifact separation in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), fenced completion in [ADR 0004](0004-durable-ingestion-job-lifecycle.md), conservative identity in [ADR 0006](0006-conservative-resource-identity.md), and staged Agentscrape output in [ADR 0007](0007-synchronous-agentscrape-extraction-contract.md). See [`CONTEXT.md`](../../CONTEXT.md) for artifact terminology.

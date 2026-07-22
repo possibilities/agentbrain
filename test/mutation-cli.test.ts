@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scrapeWithScrapectl } from "../src/scrapectl";
+import { scrapeWithAgentscrape } from "../src/agentscrape";
 import { ResearchStore } from "../src/store";
 
 const REPO = join(import.meta.dir, "..");
@@ -165,19 +165,19 @@ test("invalid ingest and delete argv never initialize a database", () => {
   });
 }, 40_000);
 
-test("PATH Scrapectl uses explicit X argv and sanitizes nonzero errors", async () => {
+test("PATH Agentscrape uses explicit X argv and sanitizes nonzero errors", async () => {
   const { dir } = temp();
   const bin = join(dir, "bin");
   mkdirSync(bin);
-  const log = join(dir, "scrapectl-args.txt");
-  const executable = join(bin, "scrapectl");
+  const log = join(dir, "agentscrape-args.txt");
+  const executable = join(bin, "agentscrape");
   writeFileSync(
     executable,
     `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\nprintf '%s\\n' '# X child'\n`,
   );
   chmodSync(executable, 0o755);
   process.env.PATH = `${bin}:${originalPath}`;
-  const result = await scrapeWithScrapectl(
+  const result = await scrapeWithAgentscrape(
     "https://twitter.com/child/status/2000",
     { timeoutMs: 1000 },
   );
@@ -192,7 +192,7 @@ test("PATH Scrapectl uses explicit X argv and sanitizes nonzero errors", async (
   );
   let message = "";
   try {
-    await scrapeWithScrapectl("https://x.com/child/status/2000", {
+    await scrapeWithAgentscrape("https://x.com/child/status/2000", {
       timeoutMs: 1000,
       retry: { maxAttempts: 1 },
     });

@@ -4,11 +4,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DurableSubmissionIntent } from "../src/admission";
+import { AgentscrapeExtractionError } from "../src/agentscrape";
 import { ArtifactStore } from "../src/artifacts";
 import { LINKED_FAN_OUT_LIMIT } from "../src/link-ingest";
-import { ScrapectlExtractionError } from "../src/scrapectl";
 import { ResearchStore } from "../src/store";
-import type { ExtractionRelation, ExtractionSuccess, Job } from "../src/types";
+import type {
+  ExtractionRelation,
+  ExtractionSuccess,
+  HistoricalExtractorIdentity,
+  Job,
+} from "../src/types";
 import { canonicalizeSource } from "../src/url";
 import { runWorker } from "../src/worker";
 
@@ -36,12 +41,41 @@ function setup(): {
   };
 }
 
-async function fixture(name: string): Promise<ExtractionSuccess> {
-  return (await Bun.file(
-    join(import.meta.dir, "fixtures", name),
-  ).json()) as ExtractionSuccess;
-}
+type HistoricalExtractionFixture = Omit<ExtractionSuccess, "extractor"> & {
+  extractor: HistoricalExtractorIdentity;
+};
 
+async function installHistoricalFixture(
+  artifacts: ArtifactStore,
+  jobId: number,
+  name: string,
+): Promise<HistoricalExtractionFixture> {
+  const fixture = (await Bun.file(
+    join(import.meta.dir, "fixtures", name),
+  ).json()) as HistoricalExtractionFixture;
+  const descriptor = fixture.artifacts[0];
+  const stored = artifacts.captureBytes(descriptor.content, {
+    expectedDigest: descriptor.sha256,
+  });
+  artifacts.writeUrlExtraction(jobId, {
+    record_version: 1,
+    requested_url: fixture.requested_url,
+    final_url: fixture.final_url,
+    extractor: fixture.extractor,
+    artifact: {
+      artifact_type: descriptor.artifact_type,
+      media_type: descriptor.media_type,
+      encoding: descriptor.encoding,
+      size_bytes: descriptor.size_bytes,
+      sha256: descriptor.sha256,
+      artifact_role: "extracted_markdown",
+      storage_path: stored.storagePath,
+    },
+    metadata: fixture.metadata,
+    relations: fixture.relations,
+  });
+  return fixture;
+}
 function intent(
   url: string,
   ingress = "test-ingress",
@@ -85,7 +119,7 @@ function envelope(
     requested_url: url,
     final_url: url,
     extractor: {
-      name: "scrapectl",
+      name: "agentscrape",
       version: "1.0.0",
       implementation: "test-fixture",
       implementation_version: "1",
@@ -185,10 +219,19 @@ test("generic roots ignore Markdown URLs and extractor relations for automatic f
   store.close();
 });
 
-test("legacy Linkctl fixture provenance remains readable after worker indexing", async () => {
+test("historical extraction fixture provenance remains readable after worker indexing", async () => {
   const { store, artifacts } = setup();
-  const root = await fixture("prescraped_x_tweet.json");
-  enqueue(store, root.requested_url, "fixture-root", "linkctl");
+  const queued = enqueue(
+    store,
+    "https://twitter.com/original_handle/status/123?ref=timeline",
+    "fixture-root",
+    "linkctl",
+  );
+  const root = await installHistoricalFixture(
+    artifacts,
+    queued.id,
+    "prescraped_x_tweet.json",
+  );
   const calls: string[] = [];
   const result = await runWorker(store, {
     once: true,
@@ -197,14 +240,13 @@ test("legacy Linkctl fixture provenance remains readable after worker indexing",
     artifactStore: artifacts,
     extract: async (url) => {
       calls.push(url);
-      return url === root.requested_url ? root : envelope(url);
+      return envelope(url);
     },
     installSignalHandlers: false,
   });
 
   expect(result).toMatchObject({ claimed: 4, completed: 4, failed: 0 });
   expect(calls).toEqual([
-    root.requested_url,
     "https://example.com/story",
     "https://x.com/i/article/987",
     "https://x.com/i/status/456",
@@ -263,23 +305,39 @@ test("legacy Linkctl fixture provenance remains readable after worker indexing",
     )
     .get() as { ingress: string; raw_metadata: string };
   expect(provenance.ingress).toBe("linkctl");
-  expect(JSON.parse(provenance.raw_metadata).extractor).toMatchObject({
-    implementation: "linkctl",
+  expect(JSON.parse(provenance.raw_metadata).extractor).toEqual({
+    name: "historical-extractor",
+    version: "0.9.0",
+    implementation: "archived-provider",
     implementation_version: "historical-fixture",
   });
+  expect(root.extractor.name).toBe("historical-extractor");
   store.close();
 });
 
-test("legacy X article fixture remains readable without child intent", async () => {
+test("historical X article fixture remains readable without child intent", async () => {
   const { store, artifacts } = setup();
-  const root = await fixture("prescraped_x_article.json");
-  enqueue(store, root.requested_url, "zero-relations", "linkctl");
+  const queued = enqueue(
+    store,
+    "https://twitter.com/writer/article/987?utm_source=timeline",
+    "zero-relations",
+    "linkctl",
+  );
+  await installHistoricalFixture(
+    artifacts,
+    queued.id,
+    "prescraped_x_article.json",
+  );
   const result = await runWorker(store, {
     once: true,
     workerId: "zero-worker",
     now: () => T0,
     artifactStore: artifacts,
-    extract: async () => root,
+    extract: async () => {
+      throw new Error(
+        "historical extraction must not invoke the live provider",
+      );
+    },
     installSignalHandlers: false,
   });
 
@@ -300,8 +358,10 @@ test("legacy X article fixture remains readable without child intent", async () 
     )
     .get() as { ingress: string; raw_metadata: string };
   expect(provenance.ingress).toBe("linkctl");
-  expect(JSON.parse(provenance.raw_metadata).extractor).toMatchObject({
-    implementation: "linkctl",
+  expect(JSON.parse(provenance.raw_metadata).extractor).toEqual({
+    name: "historical-extractor",
+    version: "0.9.0",
+    implementation: "archived-provider",
     implementation_version: "historical-fixture",
   });
   store.close();
@@ -439,7 +499,7 @@ test("child failure and retry never re-extract the parent and survive parent doc
   const extract = async (url: string): Promise<ExtractionSuccess> => {
     calls.push(url);
     if (url === childUrl && childFails) {
-      throw new ScrapectlExtractionError(
+      throw new AgentscrapeExtractionError(
         "child temporarily unavailable",
         "item_transient",
         "item",

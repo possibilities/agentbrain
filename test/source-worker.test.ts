@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DurableSubmissionIntent } from "../src/admission";
 import {
+  AgentscrapeDiscoveryError,
   type FeedDiscoveryEnvelope,
-  ScrapectlDiscoveryError,
   type SourceDiscoveryProvider,
   type XTimelineDiscoveryEnvelope,
-} from "../src/scrapectl";
+} from "../src/agentscrape";
 import { SourceRegistry, showSource } from "../src/sources";
 import { ResearchStore } from "../src/store";
 import type { SourceDefinition } from "../src/types";
@@ -778,7 +778,7 @@ test("rate limits retry the active Run while auth failures pause it without Chec
     rate.store,
     provider({
       x: () => {
-        throw new ScrapectlDiscoveryError(
+        throw new AgentscrapeDiscoveryError(
           "provider rate limited",
           "item_transient",
           "rate_limit",
@@ -806,7 +806,7 @@ test("rate limits retry the active Run while auth failures pause it without Chec
     auth.store,
     provider({
       x: () => {
-        throw new ScrapectlDiscoveryError(
+        throw new AgentscrapeDiscoveryError(
           "authentication required",
           "auth_config",
           "auth_config",

@@ -314,11 +314,11 @@ interface CliResult {
   stderr: string;
 }
 
-// A forbidden `scrapectl` shim: any invocation records a sentinel and exits
+// A forbidden `agentscrape` shim: any invocation records a sentinel and exits
 // non-zero, so a rehearsal that touched the network fails loudly.
-function installSuccessfulScrapectl(binDir: string): string {
-  const log = join(binDir, "online-scrapectl-invocations");
-  const executable = join(binDir, "scrapectl");
+function installSuccessfulAgentscrape(binDir: string): string {
+  const log = join(binDir, "online-agentscrape-invocations");
+  const executable = join(binDir, "agentscrape");
   writeFileSync(
     executable,
     `#!/usr/bin/env bun
@@ -333,7 +333,7 @@ process.stdout.write(JSON.stringify({
   requested_url: url,
   final_url: url,
   extractor: {
-    name: "scrapectl",
+    name: "agentscrape",
     version: "test-1",
     implementation: "synthetic-fixture",
     implementation_version: "1",
@@ -364,14 +364,14 @@ process.stdout.write(JSON.stringify({
   return log;
 }
 
-function forbiddenScrapectl(root: string): {
+function forbiddenAgentscrape(root: string): {
   binDir: string;
   sentinel: string;
 } {
   const binDir = join(root, "bin");
-  const sentinel = join(root, "scrapectl-invoked");
+  const sentinel = join(root, "agentscrape-invoked");
   mkdirSync(binDir, { recursive: true });
-  const shim = join(binDir, "scrapectl");
+  const shim = join(binDir, "agentscrape");
   writeFileSync(
     shim,
     `#!/bin/sh\ntouch ${JSON.stringify(sentinel)}\nexit 97\n`,
@@ -425,7 +425,7 @@ interface PreparedOnlineGateFixture extends Fixture {
 
 function prepareOfflineRunForOnlineGate(): PreparedOnlineGateFixture {
   const fixture = makeFixture();
-  const { binDir, sentinel } = forbiddenScrapectl(fixture.root);
+  const { binDir, sentinel } = forbiddenAgentscrape(fixture.root);
   const dataHome = join(fixture.root, "data");
   const dbPath = join(fixture.root, "online-gate.db");
   const env = {
@@ -583,7 +583,7 @@ afterAll(() => {
 
 test("disposable rehearsal drives the frozen generation through the installed CLI", async () => {
   const fixture = makeFixture();
-  const { binDir, sentinel } = forbiddenScrapectl(fixture.root);
+  const { binDir, sentinel } = forbiddenAgentscrape(fixture.root);
   const dataHome = join(fixture.root, "data");
   const dbPath = join(fixture.root, "rehearsal.db");
   const env = {
@@ -782,7 +782,7 @@ test("disposable rehearsal drives the frozen generation through the installed CL
 
   // Phase 4: a separate linked online Run is authorized by all three pinned
   // digests and drains only the immutable two-item allowlist. A bad approval
-  // digest fails before the fake Scrapectl can be invoked.
+  // digest fails before the fake Agentscrape can be invoked.
   const approvalDigest = digest(
     readFileSync(join(fixture.generationRoot, "online-allowlist.json")),
   );
@@ -839,7 +839,7 @@ test("disposable rehearsal drives the frozen generation through the installed CL
   );
   expect(existsSync(sentinel)).toBe(false);
 
-  const onlineLog = installSuccessfulScrapectl(binDir);
+  const onlineLog = installSuccessfulAgentscrape(binDir);
   const online = runCli(onlineArgs, env);
   expect(online.exitCode, online.stdout + online.stderr).toBe(0);
   const onlineData = jsonData(online) as {
@@ -1068,7 +1068,7 @@ test("controlled online preparation requires every Worker to be quiescent", () =
 
 test("a tampered generation file fails closed without writing state or leaking locators", () => {
   const fixture = makeFixture();
-  const { binDir, sentinel } = forbiddenScrapectl(fixture.root);
+  const { binDir, sentinel } = forbiddenAgentscrape(fixture.root);
   const dataHome = join(fixture.root, "data");
   const dbPath = join(fixture.root, "rehearsal.db");
   const env = {
@@ -1108,7 +1108,7 @@ test("a tampered generation file fails closed without writing state or leaking l
 
 test("a malformed legacy artifact fails closed before any admission", () => {
   const fixture = makeFixture({ malformedArtifact: true });
-  const { binDir, sentinel } = forbiddenScrapectl(fixture.root);
+  const { binDir, sentinel } = forbiddenAgentscrape(fixture.root);
   const dataHome = join(fixture.root, "data");
   const dbPath = join(fixture.root, "rehearsal.db");
   const env = {

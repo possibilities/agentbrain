@@ -4,7 +4,7 @@
   "requested_url": "https://example.com/start",
   "final_url": "https://example.com/final",
   "extractor": {
-    "name": "scrapectl",
+    "name": "agentscrape",
     "version": "0.0.0",
     "implementation": "generic-page",
     "implementation_version": "1"

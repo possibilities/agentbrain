@@ -799,7 +799,7 @@ const MIGRATION_V10 = `
 // Provider-neutral evidence for recurring source Observations. The base
 // observations table remains shared with URL fanout; this companion keeps a
 // source's stable entry identity and normalized change fingerprint without
-// persisting a Scrapectl/provider response schema.
+// persisting a Agentscrape/provider response schema.
 const MIGRATION_V11 = `
   DROP INDEX idx_observations_legacy_identity;
   CREATE UNIQUE INDEX idx_observations_legacy_identity

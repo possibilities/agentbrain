@@ -448,9 +448,9 @@ test("jobs stats is content-safe and doctor reports missing provider", () => {
   }>(doctor).data;
   expect(report.healthy).toBe(false);
   expect(report.checks).toContainEqual({
-    name: "scrapectl",
+    name: "agentscrape",
     status: "failed",
-    detail: "Scrapectl executable not found",
+    detail: "Agentscrape executable not found",
   });
   expect(doctor.stdout).not.toContain("stats secret body");
 });

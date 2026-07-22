@@ -734,7 +734,7 @@ test("infrastructure failures retry indefinitely while item retries exhaust to b
     const failed = store.failAttempt({
       fencingToken: claim.fencing_token,
       failureClass: "infra",
-      summary: "scrapectl unavailable",
+      summary: "agentscrape unavailable",
       now,
       policy: { infraBaseMs: 1000, infraCapMs: 8000, ...NO_JITTER },
       random: noRandom,

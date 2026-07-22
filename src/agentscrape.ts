@@ -15,18 +15,18 @@ import type {
 } from "./types";
 import { normalizedWebUrl, validateHttpUrl, xStatusId } from "./url";
 
-export const SCRAPECTL_DEFAULT_TIMEOUT_MS = 120_000;
-export const SCRAPECTL_OUTPUT_MAX_BYTES = 20_000_000;
-export const SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES = 5_000_000;
-export const SCRAPECTL_DEFAULT_MARKDOWN_MAX_CODE_POINTS = 5_000_000;
-export const SCRAPECTL_RETRY_INITIAL_MS = 1_000;
-export const SCRAPECTL_RETRY_MAX_MS = 30_000;
-export const SCRAPECTL_RETRY_ENV_MIN_MS = 100;
-export const SCRAPECTL_RETRY_CONFIG_MAX_MS = 3_600_000;
-export const SCRAPECTL_TIMEOUT_MAX_MS = 600_000;
-export const SCRAPECTL_TERMINATION_GRACE_MS = 250;
-export const SCRAPECTL_EXTRACTION_SCHEMA_VERSION = "1" as const;
-export const SCRAPECTL_DEFAULT_MAX_RELATIONS = 256;
+export const AGENTSCRAPE_DEFAULT_TIMEOUT_MS = 120_000;
+export const AGENTSCRAPE_OUTPUT_MAX_BYTES = 20_000_000;
+export const AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_BYTES = 5_000_000;
+export const AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_CODE_POINTS = 5_000_000;
+export const AGENTSCRAPE_RETRY_INITIAL_MS = 1_000;
+export const AGENTSCRAPE_RETRY_MAX_MS = 30_000;
+export const AGENTSCRAPE_RETRY_ENV_MIN_MS = 100;
+export const AGENTSCRAPE_RETRY_CONFIG_MAX_MS = 3_600_000;
+export const AGENTSCRAPE_TIMEOUT_MAX_MS = 600_000;
+export const AGENTSCRAPE_TERMINATION_GRACE_MS = 250;
+export const AGENTSCRAPE_EXTRACTION_SCHEMA_VERSION = "1" as const;
+export const AGENTSCRAPE_DEFAULT_MAX_RELATIONS = 256;
 
 export interface ScrapedLink {
   success: true;
@@ -37,7 +37,7 @@ export interface ScrapedLink {
   size_chars: number;
 }
 
-export interface ScrapectlRetryOptions {
+export interface AgentscrapeRetryOptions {
   /** Total attempts, including the first. Undefined means no limit. */
   maxAttempts?: number;
   initialDelayMs?: number;
@@ -52,7 +52,7 @@ export interface ScrapeOptions {
   maxMarkdownCodePoints?: number;
   maxOutputBytes?: number;
   /** Retry controls are primarily dependency-injection seams for offline tests. */
-  retry?: ScrapectlRetryOptions;
+  retry?: AgentscrapeRetryOptions;
 }
 
 export type ScrapeProvider = (
@@ -158,9 +158,9 @@ export interface XTimelineDiscoveryEnvelope {
 export interface FeedDiscoveryRequest {
   sourceUrl: string;
   sourceKind?: "auto" | "feed" | "archive";
-  /** Current Scrapectl supports recorded feed responses at this boundary. */
+  /** Current Agentscrape supports recorded feed responses at this boundary. */
   recordedInputFile?: string;
-  /** Prior committed validators for conditional Scrapectl-owned transport. */
+  /** Prior committed validators for conditional Agentscrape-owned transport. */
   validators?: { etag: string | null; lastModified: string | null };
   /** Validators attached to an offline recorded response fixture. */
   recordedValidators?: { etag?: string; lastModified?: string };
@@ -195,7 +195,7 @@ export interface SourceDiscoveryProvider {
 
 export type DiscoveryDisposition = FailureClass | "cancelled";
 
-export class ScrapectlDiscoveryError extends Error {
+export class AgentscrapeDiscoveryError extends Error {
   constructor(
     message: string,
     readonly disposition: DiscoveryDisposition,
@@ -208,13 +208,13 @@ export class ScrapectlDiscoveryError extends Error {
       | "protocol",
   ) {
     super(message);
-    this.name = "ScrapectlDiscoveryError";
+    this.name = "AgentscrapeDiscoveryError";
   }
 }
 
 export type ExtractionDisposition = FailureClass | "cancelled";
 
-export class ScrapectlExtractionError extends Error {
+export class AgentscrapeExtractionError extends Error {
   constructor(
     message: string,
     readonly disposition: ExtractionDisposition,
@@ -228,7 +228,7 @@ export class ScrapectlExtractionError extends Error {
       | "protocol",
   ) {
     super(message);
-    this.name = "ScrapectlExtractionError";
+    this.name = "AgentscrapeExtractionError";
   }
 }
 
@@ -337,12 +337,12 @@ function markdownLimits(options: ScrapeOptions): {
 } {
   return {
     bytes: positiveInteger(
-      options.maxMarkdownBytes ?? SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+      options.maxMarkdownBytes ?? AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_BYTES,
       "max markdown bytes",
     ),
     codePoints: positiveInteger(
       options.maxMarkdownCodePoints ??
-        SCRAPECTL_DEFAULT_MARKDOWN_MAX_CODE_POINTS,
+        AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_CODE_POINTS,
       "max markdown code points",
     ),
   };
@@ -355,13 +355,13 @@ function enforceMarkdownCap(
   const bytes = Buffer.byteLength(markdown, "utf8");
   if (bytes > limits.bytes) {
     throw new Error(
-      `scrapectl markdown exceeds max_bytes (${bytes} > ${limits.bytes})`,
+      `agentscrape markdown exceeds max_bytes (${bytes} > ${limits.bytes})`,
     );
   }
   const points = codePointLength(markdown);
   if (points > limits.codePoints) {
     throw new Error(
-      `scrapectl markdown exceeds max_code_points (${points} > ${limits.codePoints})`,
+      `agentscrape markdown exceeds max_code_points (${points} > ${limits.codePoints})`,
     );
   }
 }
@@ -371,13 +371,13 @@ function envDelay(name: string, fallback: number): number {
   if (raw === undefined || raw.trim() === "") return fallback;
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) &&
-    parsed >= SCRAPECTL_RETRY_ENV_MIN_MS &&
-    parsed <= SCRAPECTL_RETRY_CONFIG_MAX_MS
+    parsed >= AGENTSCRAPE_RETRY_ENV_MIN_MS &&
+    parsed <= AGENTSCRAPE_RETRY_CONFIG_MAX_MS
     ? parsed
     : fallback;
 }
 
-function retrySettings(options: ScrapectlRetryOptions | undefined): {
+function retrySettings(options: AgentscrapeRetryOptions | undefined): {
   maxAttempts: number | undefined;
   initialDelayMs: number;
   maxDelayMs: number;
@@ -391,17 +391,17 @@ function retrySettings(options: ScrapectlRetryOptions | undefined): {
   const initialDelayMs = nonnegativeInteger(
     options?.initialDelayMs ??
       envDelay(
-        "AGENTBRAIN_SCRAPECTL_RETRY_INITIAL_MS",
-        SCRAPECTL_RETRY_INITIAL_MS,
+        "AGENTBRAIN_AGENTSCRAPE_RETRY_INITIAL_MS",
+        AGENTSCRAPE_RETRY_INITIAL_MS,
       ),
     "retry initial delay",
-    SCRAPECTL_RETRY_CONFIG_MAX_MS,
+    AGENTSCRAPE_RETRY_CONFIG_MAX_MS,
   );
   const maxDelayMs = nonnegativeInteger(
     options?.maxDelayMs ??
-      envDelay("AGENTBRAIN_SCRAPECTL_RETRY_MAX_MS", SCRAPECTL_RETRY_MAX_MS),
+      envDelay("AGENTBRAIN_AGENTSCRAPE_RETRY_MAX_MS", AGENTSCRAPE_RETRY_MAX_MS),
     "retry max delay",
-    SCRAPECTL_RETRY_CONFIG_MAX_MS,
+    AGENTSCRAPE_RETRY_CONFIG_MAX_MS,
   );
   return {
     maxAttempts,
@@ -509,7 +509,7 @@ function runCommand(
       signalAttempt("SIGTERM");
       escalationTimer = setTimeout(
         () => signalAttempt("SIGKILL"),
-        SCRAPECTL_TERMINATION_GRACE_MS,
+        AGENTSCRAPE_TERMINATION_GRACE_MS,
       );
     };
     const abortAttempt = (): void => {
@@ -581,7 +581,7 @@ const TRANSIENT_FAILURE_PATTERNS = [
   /\bupstream down\b/i,
   /\bfailed to acquire browser from browserctl\b/i,
   /\b(?:agent-browser|browser(?:ctl)?).{0,60}\btimed out\b/i,
-  /\b(?:scrapectl|browserctl|agent-browser|executable|binary|command).{0,60}\b(?:not found|missing)\b/i,
+  /\b(?:agentscrape|browserctl|agent-browser|executable|binary|command).{0,60}\b(?:not found|missing)\b/i,
   /\bno such file or directory\b/i,
   /\b(?:ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)\b/i,
   /\bconnection\s+(?:was\s+)?(?:refused|reset|unreachable|timed out)\b/i,
@@ -600,13 +600,13 @@ function transientCommandFailure(detail: string): boolean {
 
 function commandErrorDetail(result: CommandResult): string {
   if (result.stderr.trim()) return result.stderr;
-  return `scrapectl exited ${result.status ?? "without status"}`;
+  return `agentscrape exited ${result.status ?? "without status"}`;
 }
 
 function providerFailure(detail: unknown, transient: boolean): AttemptFailure {
   const sanitized = sanitizeExternalError(detail);
   return new AttemptFailure(
-    `scrapectl provider ${transient ? "unavailable" : "failed"}: ${sanitized}`,
+    `agentscrape provider ${transient ? "unavailable" : "failed"}: ${sanitized}`,
     transient,
   );
 }
@@ -617,9 +617,9 @@ async function scrapeAttempt(
   maxOutputBytes: number,
   limits: { bytes: number; codePoints: number },
 ): Promise<ScrapedLink> {
-  const executable = findExecutable("scrapectl");
+  const executable = findExecutable("agentscrape");
   if (!executable) {
-    throw providerFailure("scrapectl is not installed on PATH", true);
+    throw providerFailure("agentscrape is not installed on PATH", true);
   }
   const args = ["fetch-markdown", "--markdown", requestedUrl];
 
@@ -651,7 +651,7 @@ async function scrapeAttempt(
     throw providerFailure(detail, transientCommandFailure(detail));
   }
   if (!result.stdout.trim()) {
-    throw providerFailure("scrapectl returned empty markdown", false);
+    throw providerFailure("agentscrape returned empty markdown", false);
   }
 
   try {
@@ -670,23 +670,23 @@ async function scrapeAttempt(
 }
 
 /** Invoke the sole URL-extraction provider, retrying only availability failures. */
-export async function scrapeWithScrapectl(
+export async function scrapeWithAgentscrape(
   inputUrl: string,
   options: ScrapeOptions = {},
 ): Promise<ScrapedLink> {
   const requestedUrl = normalizedWebUrl(inputUrl);
   const timeoutMs = positiveInteger(
-    options.timeoutMs ?? SCRAPECTL_DEFAULT_TIMEOUT_MS,
-    "scrapectl timeout",
-    SCRAPECTL_TIMEOUT_MAX_MS,
+    options.timeoutMs ?? AGENTSCRAPE_DEFAULT_TIMEOUT_MS,
+    "agentscrape timeout",
+    AGENTSCRAPE_TIMEOUT_MAX_MS,
   );
   const requestedOutputLimit = positiveInteger(
-    options.maxOutputBytes ?? SCRAPECTL_OUTPUT_MAX_BYTES,
-    "scrapectl max output bytes",
+    options.maxOutputBytes ?? AGENTSCRAPE_OUTPUT_MAX_BYTES,
+    "agentscrape max output bytes",
   );
   const maxOutputBytes = Math.min(
     requestedOutputLimit,
-    SCRAPECTL_OUTPUT_MAX_BYTES,
+    AGENTSCRAPE_OUTPUT_MAX_BYTES,
   );
   const limits = markdownLimits(options);
   const retry = retrySettings(options.retry);
@@ -716,7 +716,7 @@ export async function scrapeWithScrapectl(
       );
       if (delayMs !== lastDiagnosticDelay) {
         const diagnostic =
-          `agentbrain: Scrapectl unavailable; retrying provider command ` +
+          `agentbrain: Agentscrape unavailable; retrying provider command ` +
           `(attempt ${attempt + 1}, delay ${delayMs}ms)\n`;
         try {
           retry.writeDiagnostic(diagnostic);
@@ -746,8 +746,8 @@ const EXTRACTION_FAILURE_CLASSES = new Set<ExtractionFailureClass>([
 ]);
 
 function protocolDefect(detail: string): never {
-  throw new ScrapectlExtractionError(
-    `scrapectl protocol defect: ${detail}`,
+  throw new AgentscrapeExtractionError(
+    `agentscrape protocol defect: ${detail}`,
     "permanent",
     "protocol",
   );
@@ -852,11 +852,11 @@ function parseExtractor(value: unknown): ExtractorIdentity {
     ["name", "version", "implementation", "implementation_version"],
     "extractor",
   );
-  if (record.name !== "scrapectl") {
+  if (record.name !== "agentscrape") {
     return protocolDefect("extractor name is unsupported");
   }
   return {
-    name: "scrapectl",
+    name: "agentscrape",
     version: extractionString(record.version, "extractor version", 100),
     implementation: extractionString(
       record.implementation,
@@ -990,14 +990,14 @@ export function validateExtractionEnvelope(
   options: { maxContentBytes?: number; maxRelations?: number } = {},
 ): ExtractionEnvelope {
   const maxContentBytes = positiveInteger(
-    options.maxContentBytes ?? SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+    options.maxContentBytes ?? AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_BYTES,
     "max extraction content bytes",
-    SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+    AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_BYTES,
   );
   const maxRelations = nonnegativeInteger(
-    options.maxRelations ?? SCRAPECTL_DEFAULT_MAX_RELATIONS,
+    options.maxRelations ?? AGENTSCRAPE_DEFAULT_MAX_RELATIONS,
     "max extraction relations",
-    SCRAPECTL_DEFAULT_MAX_RELATIONS,
+    AGENTSCRAPE_DEFAULT_MAX_RELATIONS,
   );
   const record = extractionRecord(
     value,
@@ -1014,7 +1014,7 @@ export function validateExtractionEnvelope(
     ],
     "extraction envelope",
   );
-  if (record.schema_version !== SCRAPECTL_EXTRACTION_SCHEMA_VERSION) {
+  if (record.schema_version !== AGENTSCRAPE_EXTRACTION_SCHEMA_VERSION) {
     return protocolDefect("extraction schema version is unsupported");
   }
   const requestedUrl = extractionUrl(
@@ -1139,15 +1139,15 @@ function envelopeFailure(detail: ExtractionFailureDetail): never {
   const summary = sanitizeExternalError(
     `${detail.message}: ${detail.evidence}`,
   );
-  const message = `scrapectl extraction failed (${detail.failure_class}): ${summary}`;
+  const message = `agentscrape extraction failed (${detail.failure_class}): ${summary}`;
   if (detail.failure_class === "cancelled") {
-    throw new ScrapectlExtractionError(message, "cancelled", "cancellation");
+    throw new AgentscrapeExtractionError(message, "cancelled", "cancellation");
   }
   if (detail.failure_class === "authentication_required") {
-    throw new ScrapectlExtractionError(message, "auth_config", "auth_config");
+    throw new AgentscrapeExtractionError(message, "auth_config", "auth_config");
   }
   if (detail.failure_class === "invalid_request") {
-    throw new ScrapectlExtractionError(message, "permanent", "policy");
+    throw new AgentscrapeExtractionError(message, "permanent", "policy");
   }
   if (
     detail.retryable &&
@@ -1158,49 +1158,49 @@ function envelopeFailure(detail: ExtractionFailureDetail): never {
       "upstream_unavailable",
     ]).has(detail.failure_class)
   ) {
-    throw new ScrapectlExtractionError(message, "item_transient", "item");
+    throw new AgentscrapeExtractionError(message, "item_transient", "item");
   }
-  throw new ScrapectlExtractionError(message, "permanent", "permanent");
+  throw new AgentscrapeExtractionError(message, "permanent", "permanent");
 }
 
-export async function extractWithScrapectl(
+export async function extractWithAgentscrape(
   inputUrl: string,
   options: ExtractionOptions = {},
 ): Promise<ExtractionSuccess> {
   const requestedUrl = normalizedWebUrl(inputUrl);
   const timeoutMs = positiveInteger(
-    options.timeoutMs ?? SCRAPECTL_DEFAULT_TIMEOUT_MS,
-    "scrapectl timeout",
-    SCRAPECTL_TIMEOUT_MAX_MS,
+    options.timeoutMs ?? AGENTSCRAPE_DEFAULT_TIMEOUT_MS,
+    "agentscrape timeout",
+    AGENTSCRAPE_TIMEOUT_MAX_MS,
   );
   const maxContentBytes = positiveInteger(
-    options.maxContentBytes ?? SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
-    "scrapectl max content bytes",
-    SCRAPECTL_DEFAULT_MARKDOWN_MAX_BYTES,
+    options.maxContentBytes ?? AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_BYTES,
+    "agentscrape max content bytes",
+    AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_BYTES,
   );
   const maxRelations = nonnegativeInteger(
-    options.maxRelations ?? SCRAPECTL_DEFAULT_MAX_RELATIONS,
-    "scrapectl max relations",
-    SCRAPECTL_DEFAULT_MAX_RELATIONS,
+    options.maxRelations ?? AGENTSCRAPE_DEFAULT_MAX_RELATIONS,
+    "agentscrape max relations",
+    AGENTSCRAPE_DEFAULT_MAX_RELATIONS,
   );
   const maxOutputBytes = Math.min(
     positiveInteger(
-      options.maxOutputBytes ?? SCRAPECTL_OUTPUT_MAX_BYTES,
-      "scrapectl max output bytes",
+      options.maxOutputBytes ?? AGENTSCRAPE_OUTPUT_MAX_BYTES,
+      "agentscrape max output bytes",
     ),
-    SCRAPECTL_OUTPUT_MAX_BYTES,
+    AGENTSCRAPE_OUTPUT_MAX_BYTES,
   );
   if (options.signal?.aborted) {
-    throw new ScrapectlExtractionError(
-      "scrapectl extraction was cancelled",
+    throw new AgentscrapeExtractionError(
+      "agentscrape extraction was cancelled",
       "cancelled",
       "cancellation",
     );
   }
-  const executable = findExecutable("scrapectl");
+  const executable = findExecutable("agentscrape");
   if (executable === null) {
-    throw new ScrapectlExtractionError(
-      "scrapectl extraction infrastructure is unavailable",
+    throw new AgentscrapeExtractionError(
+      "agentscrape extraction infrastructure is unavailable",
       "infra",
       "infrastructure",
     );
@@ -1225,15 +1225,15 @@ export async function extractWithScrapectl(
       options.signal,
     );
   } catch (error) {
-    throw new ScrapectlExtractionError(
-      `scrapectl extraction infrastructure failed: ${sanitizeExternalError(error)}`,
+    throw new AgentscrapeExtractionError(
+      `agentscrape extraction infrastructure failed: ${sanitizeExternalError(error)}`,
       "infra",
       "infrastructure",
     );
   }
   if (result.aborted) {
-    throw new ScrapectlExtractionError(
-      "scrapectl extraction was cancelled",
+    throw new AgentscrapeExtractionError(
+      "agentscrape extraction was cancelled",
       "cancelled",
       "cancellation",
     );
@@ -1242,15 +1242,15 @@ export async function extractWithScrapectl(
     return protocolDefect("extraction command output exceeded its bound");
   }
   if (result.timedOut) {
-    throw new ScrapectlExtractionError(
-      `scrapectl extraction timed out after ${timeoutMs}ms`,
+    throw new AgentscrapeExtractionError(
+      `agentscrape extraction timed out after ${timeoutMs}ms`,
       "item_transient",
       "item",
     );
   }
   if (result.spawnError !== undefined) {
-    throw new ScrapectlExtractionError(
-      `scrapectl extraction infrastructure failed: ${sanitizeExternalError(result.spawnError)}`,
+    throw new AgentscrapeExtractionError(
+      `agentscrape extraction infrastructure failed: ${sanitizeExternalError(result.spawnError)}`,
       "infra",
       "infrastructure",
     );
@@ -1259,8 +1259,8 @@ export async function extractWithScrapectl(
     const cancelled = new Set(["SIGHUP", "SIGINT", "SIGTERM"]).has(
       result.signal,
     );
-    throw new ScrapectlExtractionError(
-      `scrapectl extraction terminated by ${result.signal}`,
+    throw new AgentscrapeExtractionError(
+      `agentscrape extraction terminated by ${result.signal}`,
       cancelled ? "cancelled" : "infra",
       cancelled ? "cancellation" : "infrastructure",
     );
@@ -1289,8 +1289,8 @@ export async function extractWithScrapectl(
 }
 
 function discoveryProtocol(detail: string): never {
-  throw new ScrapectlDiscoveryError(
-    `scrapectl discovery protocol defect: ${detail}`,
+  throw new AgentscrapeDiscoveryError(
+    `agentscrape discovery protocol defect: ${detail}`,
     "permanent",
     "protocol",
   );
@@ -1771,23 +1771,23 @@ export function validateXTimelineDiscoveryEnvelope(
 function discoveryCommandFailure(
   detail: string,
   prefix: string,
-): ScrapectlDiscoveryError {
+): AgentscrapeDiscoveryError {
   const sanitized = sanitizeExternalError(detail);
   if (/429|rate.?limit|throttl/i.test(detail)) {
-    return new ScrapectlDiscoveryError(
+    return new AgentscrapeDiscoveryError(
       `${prefix} was rate limited: ${sanitized}`,
       "item_transient",
       "rate_limit",
     );
   }
   if (/auth|login|credential|unauthorized|forbidden|cookie/i.test(detail)) {
-    return new ScrapectlDiscoveryError(
+    return new AgentscrapeDiscoveryError(
       `${prefix} authentication/configuration failed: ${sanitized}`,
       "auth_config",
       "auth_config",
     );
   }
-  return new ScrapectlDiscoveryError(
+  return new AgentscrapeDiscoveryError(
     `${prefix} failed: ${sanitized}`,
     "infra",
     "infrastructure",
@@ -1800,16 +1800,16 @@ async function runDiscoveryCommand(
   signal: AbortSignal | undefined,
 ): Promise<CommandResult> {
   if (signal?.aborted) {
-    throw new ScrapectlDiscoveryError(
-      "scrapectl discovery was cancelled",
+    throw new AgentscrapeDiscoveryError(
+      "agentscrape discovery was cancelled",
       "cancelled",
       "cancellation",
     );
   }
-  const executable = findExecutable("scrapectl");
+  const executable = findExecutable("agentscrape");
   if (executable === null) {
-    throw new ScrapectlDiscoveryError(
-      "scrapectl discovery infrastructure is unavailable",
+    throw new AgentscrapeDiscoveryError(
+      "agentscrape discovery infrastructure is unavailable",
       "infra",
       "infrastructure",
     );
@@ -1820,19 +1820,19 @@ async function runDiscoveryCommand(
       executable,
       args,
       timeoutMs,
-      SCRAPECTL_OUTPUT_MAX_BYTES,
+      AGENTSCRAPE_OUTPUT_MAX_BYTES,
       signal,
     );
   } catch (error) {
-    throw new ScrapectlDiscoveryError(
-      `scrapectl discovery infrastructure failed: ${sanitizeExternalError(error)}`,
+    throw new AgentscrapeDiscoveryError(
+      `agentscrape discovery infrastructure failed: ${sanitizeExternalError(error)}`,
       "infra",
       "infrastructure",
     );
   }
   if (result.aborted) {
-    throw new ScrapectlDiscoveryError(
-      "scrapectl discovery was cancelled",
+    throw new AgentscrapeDiscoveryError(
+      "agentscrape discovery was cancelled",
       "cancelled",
       "cancellation",
     );
@@ -1841,15 +1841,15 @@ async function runDiscoveryCommand(
     return discoveryProtocol("discovery command output exceeded its bound");
   }
   if (result.timedOut) {
-    throw new ScrapectlDiscoveryError(
-      `scrapectl discovery timed out after ${timeoutMs}ms`,
+    throw new AgentscrapeDiscoveryError(
+      `agentscrape discovery timed out after ${timeoutMs}ms`,
       "item_transient",
       "infrastructure",
     );
   }
   if (result.spawnError !== undefined) {
-    throw new ScrapectlDiscoveryError(
-      `scrapectl discovery infrastructure failed: ${sanitizeExternalError(result.spawnError)}`,
+    throw new AgentscrapeDiscoveryError(
+      `agentscrape discovery infrastructure failed: ${sanitizeExternalError(result.spawnError)}`,
       "infra",
       "infrastructure",
     );
@@ -1858,8 +1858,8 @@ async function runDiscoveryCommand(
     const cancelled = new Set(["SIGHUP", "SIGINT", "SIGTERM"]).has(
       result.signal,
     );
-    throw new ScrapectlDiscoveryError(
-      `scrapectl discovery terminated by ${result.signal}`,
+    throw new AgentscrapeDiscoveryError(
+      `agentscrape discovery terminated by ${result.signal}`,
       cancelled ? "cancelled" : "infra",
       cancelled ? "cancellation" : "infrastructure",
     );
@@ -1867,21 +1867,21 @@ async function runDiscoveryCommand(
   return result;
 }
 
-export async function discoverFeedWithScrapectl(
+export async function discoverFeedWithAgentscrape(
   request: FeedDiscoveryRequest,
 ): Promise<FeedDiscoveryEnvelope> {
   const sourceUrl = normalizedWebUrl(request.sourceUrl);
   if (request.recordedInputFile === undefined) {
-    throw new ScrapectlDiscoveryError(
-      "scrapectl feed discovery requires a Scrapectl-owned recorded response input; remote feed transport is not exposed by the installed contract",
+    throw new AgentscrapeDiscoveryError(
+      "agentscrape feed discovery requires an Agentscrape-owned recorded response input; remote feed transport is not exposed by the installed contract",
       "auth_config",
       "auth_config",
     );
   }
   const timeoutMs = positiveInteger(
-    request.timeoutMs ?? SCRAPECTL_DEFAULT_TIMEOUT_MS,
-    "scrapectl feed discovery timeout",
-    SCRAPECTL_TIMEOUT_MAX_MS,
+    request.timeoutMs ?? AGENTSCRAPE_DEFAULT_TIMEOUT_MS,
+    "agentscrape feed discovery timeout",
+    AGENTSCRAPE_TIMEOUT_MAX_MS,
   );
   const maxPages = positiveInteger(request.maxPages, "feed page limit", 100);
   const maxItems = positiveInteger(request.maxItems, "feed item limit", 10_000);
@@ -1916,7 +1916,10 @@ export async function discoverFeedWithScrapectl(
     decoded = JSON.parse(result.stdout) as unknown;
   } catch {
     if (result.status !== 0) {
-      throw discoveryCommandFailure(result.stderr, "scrapectl feed discovery");
+      throw discoveryCommandFailure(
+        result.stderr,
+        "agentscrape feed discovery",
+      );
     }
     return discoveryProtocol("feed discovery command returned malformed JSON");
   }
@@ -1932,14 +1935,14 @@ export async function discoverFeedWithScrapectl(
   return envelope;
 }
 
-export async function discoverXTimelineWithScrapectl(
+export async function discoverXTimelineWithAgentscrape(
   request: XTimelineDiscoveryRequest,
 ): Promise<XTimelineDiscoveryEnvelope> {
   const url = normalizedWebUrl(request.url);
   const timeoutMs = positiveInteger(
-    request.timeoutMs ?? SCRAPECTL_DEFAULT_TIMEOUT_MS,
-    "scrapectl X discovery timeout",
-    SCRAPECTL_TIMEOUT_MAX_MS,
+    request.timeoutMs ?? AGENTSCRAPE_DEFAULT_TIMEOUT_MS,
+    "agentscrape X discovery timeout",
+    AGENTSCRAPE_TIMEOUT_MAX_MS,
   );
   const limit = positiveInteger(request.limit, "X timeline item limit", 10_000);
   const maxScrolls = positiveInteger(
@@ -1968,7 +1971,7 @@ export async function discoverXTimelineWithScrapectl(
   if (request.includeReposts === true) args.push("--include-reposts");
   const result = await runDiscoveryCommand(args, timeoutMs, request.signal);
   if (result.status !== 0) {
-    throw discoveryCommandFailure(result.stderr, "scrapectl X discovery");
+    throw discoveryCommandFailure(result.stderr, "agentscrape X discovery");
   }
   let decoded: unknown;
   try {
@@ -1981,7 +1984,7 @@ export async function discoverXTimelineWithScrapectl(
   });
 }
 
-export const sourceDiscoveryWithScrapectl: SourceDiscoveryProvider = {
-  discoverFeed: discoverFeedWithScrapectl,
-  discoverXTimeline: discoverXTimelineWithScrapectl,
+export const sourceDiscoveryWithAgentscrape: SourceDiscoveryProvider = {
+  discoverFeed: discoverFeedWithAgentscrape,
+  discoverXTimeline: discoverXTimelineWithAgentscrape,
 };

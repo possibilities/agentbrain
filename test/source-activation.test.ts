@@ -8,7 +8,7 @@ import type {
   SourceDiscoveryProvider,
   XTimelineDiscoveryEnvelope,
   XTimelineDiscoveryRequest,
-} from "../src/scrapectl";
+} from "../src/agentscrape";
 import {
   DEFAULT_SOURCE_MANIFEST_PATH,
   isExecutableSourceKind,
@@ -268,7 +268,7 @@ test("a confirmed blog run is durable and repeated overlap adds no index effects
     registry.applySourceManifest(activatedManifest(), { now: T0 });
 
     // Confirmed blogs carry only a homepage_url; discovery still routes through
-    // the feed path. The stub returns the discovered items a live Scrapectl run
+    // the feed path. The stub returns the discovered items a live Agentscrape run
     // would, so the durable ledger behaviour is exercised offline.
     const sourceUrl = "https://simonwillison.net/";
     const items = [

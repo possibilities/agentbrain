@@ -167,7 +167,7 @@ test("pdftotext failures redact secrets and collapse the resolved input path", (
   }
 });
 
-test("generic URL ingestion uses the Scrapectl scrape seam and preserves markdown caps", async () => {
+test("generic URL ingestion uses the Agentscrape scrape seam and preserves markdown caps", async () => {
   const dir = tempDir();
   const store = new ResearchStore(join(dir, "research.db"));
   const calls: Array<{ url: string; maxBytes?: number; maxPoints?: number }> =
@@ -189,8 +189,8 @@ test("generic URL ingestion uses the Scrapectl scrape seam and preserves markdow
         success: true,
         url: "https://cdn.example/final.pdf",
         requested_url: url,
-        markdown: "Extracted markdown from Scrapectl",
-        content: "Extracted markdown from Scrapectl",
+        markdown: "Extracted markdown from Agentscrape",
+        content: "Extracted markdown from Agentscrape",
         size_chars: 33,
       };
     },
@@ -207,7 +207,7 @@ test("generic URL ingestion uses the Scrapectl scrape seam and preserves markdow
   expect(
     store.db.query("SELECT content, tags, notes FROM documents").get(),
   ).toEqual({
-    content: "Extracted markdown from Scrapectl",
+    content: "Extracted markdown from Agentscrape",
     tags: JSON.stringify(["web"]),
     notes: "provider-backed",
   });
@@ -245,10 +245,10 @@ test("URL scrape failure does not write a document", async () => {
       source: "https://example.com/down",
       sourceType: "url",
       scrape: async () => {
-        throw new Error("scrapectl provider unavailable");
+        throw new Error("agentscrape provider unavailable");
       },
     }),
-  ).rejects.toThrow("scrapectl provider unavailable");
+  ).rejects.toThrow("agentscrape provider unavailable");
   expect(
     store.db.query("SELECT COUNT(*) AS count FROM documents").get(),
   ).toEqual({ count: 0 });

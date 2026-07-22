@@ -39,7 +39,7 @@ test("production source has no direct DNS/HTTP client boundary", () => {
   expect(violations).toEqual([]);
 });
 
-test("production source outside the Scrapectl adapter has no browser or preset hooks", () => {
+test("production source outside the Agentscrape adapter has no browser or preset hooks", () => {
   const root = join(import.meta.dir, "..", "src");
   const forbidden = [
     /\bbrowserctl\b/,
@@ -52,7 +52,7 @@ test("production source outside the Scrapectl adapter has no browser or preset h
   ];
   const violations: string[] = [];
   for (const path of sourceFiles(root)) {
-    if (path.endsWith(`${join("src", "scrapectl.ts")}`)) continue;
+    if (path.endsWith(`${join("src", "agentscrape.ts")}`)) continue;
     const text = readFileSync(path, "utf8");
     for (const pattern of forbidden) {
       if (pattern.test(text)) violations.push(`${path}: ${pattern}`);
@@ -61,12 +61,12 @@ test("production source outside the Scrapectl adapter has no browser or preset h
   expect(violations).toEqual([]);
 });
 
-test("durable URL worker has no Scrapectl Markdown fallback seam", () => {
+test("durable URL worker has no Agentscrape Markdown fallback seam", () => {
   const root = join(import.meta.dir, "..", "src");
   const text = readFileSync(join(root, "worker.ts"), "utf8");
-  expect(text).toContain("extractWithScrapectl");
+  expect(text).toContain("extractWithAgentscrape");
   const forbidden = [
-    /\bscrapeWithScrapectl\b/,
+    /\bscrapeWithAgentscrape\b/,
     /\bScrapeProvider\b/,
     /\bscrape\??:\s*ScrapeProvider\b/,
     /fetch-markdown/,

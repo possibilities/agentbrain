@@ -3,18 +3,18 @@ import {
   canonicalSubmissionIntent,
   type DurableSubmissionIntent,
 } from "./admission";
-import { sanitizeExternalError } from "./sanitize";
 import {
+  AgentscrapeDiscoveryError,
   type FeedDiscoveryEnvelope,
   type FeedDiscoveryItem,
-  ScrapectlDiscoveryError,
   type SourceDiscoveryProvider,
-  sourceDiscoveryWithScrapectl,
+  sourceDiscoveryWithAgentscrape,
   validateFeedDiscoveryEnvelope,
   validateXTimelineDiscoveryEnvelope,
   type XTimelineDiscoveryEnvelope,
   type XTimelineItem,
-} from "./scrapectl";
+} from "./agentscrape";
+import { sanitizeExternalError } from "./sanitize";
 import {
   type SourceObservationAdmission,
   SourceRegistry,
@@ -73,7 +73,7 @@ export class SourceRunDispatchError extends Error {
   }
 }
 
-export class SourceRunDispatchCancellationError extends ScrapectlDiscoveryError {
+export class SourceRunDispatchCancellationError extends AgentscrapeDiscoveryError {
   constructor(
     message: string,
     readonly commitEvidence: (now?: Date) => Run,
@@ -495,7 +495,7 @@ function providerFailure(error: unknown): {
   retry: boolean;
   pause: boolean;
 } {
-  if (error instanceof ScrapectlDiscoveryError) {
+  if (error instanceof AgentscrapeDiscoveryError) {
     if (error.disposition === "cancelled") throw error;
     return {
       error,
@@ -664,7 +664,7 @@ async function dispatchBlog(
     });
   } catch (error) {
     if (
-      error instanceof ScrapectlDiscoveryError &&
+      error instanceof AgentscrapeDiscoveryError &&
       error.disposition === "cancelled"
     ) {
       const detail = sanitizeExternalError(error);
@@ -808,7 +808,7 @@ function xRequestSince(checkpoint: XCheckpoint | null): string | undefined {
     .slice(0, X_SOURCE_OVERLAP_ITEMS);
   const oldest = overlap.at(-1);
   if (oldest === undefined) return checkpoint.since_id;
-  // Scrapectl emits IDs strictly greater than since_id, so step below the
+  // Agentscrape emits IDs strictly greater than since_id, so step below the
   // oldest retained ID to include the whole overlap window.
   const overlapBoundary = BigInt(oldest);
   return overlapBoundary > 0n
@@ -860,7 +860,7 @@ async function dispatchX(
     });
   } catch (error) {
     if (
-      error instanceof ScrapectlDiscoveryError &&
+      error instanceof AgentscrapeDiscoveryError &&
       error.disposition === "cancelled"
     ) {
       const detail = sanitizeExternalError(error);
@@ -931,7 +931,7 @@ async function dispatchX(
     requested_since_id: requestedSinceId ?? null,
     observed_high_water_id: high,
     boundary_complete: boundaryComplete,
-    // Scrapectl explicitly documents this as non-seekable evidence.
+    // Agentscrape explicitly documents this as non-seekable evidence.
     diagnostic_oldest_item_id: envelope.next_cursor,
   };
   const detail = healthDetail(
@@ -1013,7 +1013,7 @@ export async function dispatchSourceRun(
   assertJobBinding(job, context);
   abortIfRequested(options.signal);
   registry.startSourceRun({ runId: context.run.id, now: options.now?.() });
-  const provider = options.discovery ?? sourceDiscoveryWithScrapectl;
+  const provider = options.discovery ?? sourceDiscoveryWithAgentscrape;
   if (
     context.definition.kind === "blog_feed" ||
     context.definition.kind === "blog_source"

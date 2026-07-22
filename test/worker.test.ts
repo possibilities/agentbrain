@@ -15,8 +15,8 @@ import {
   RECOVERY_JOB_PREFIX,
   RECOVERY_ONLINE_JOB_PREFIX,
 } from "../src/admission";
+import { AgentscrapeExtractionError } from "../src/agentscrape";
 import { ArtifactStore } from "../src/artifacts";
-import { ScrapectlExtractionError } from "../src/scrapectl";
 import { RECOVERY_ONLINE_SCOPE_KIND, ResearchStore } from "../src/store";
 import { type JobMaterializer, runWorker } from "../src/worker";
 
@@ -212,7 +212,7 @@ function extractionEnvelope(url: string, content: string): string {
     requested_url: url,
     final_url: "https://example.test/final",
     extractor: {
-      name: "scrapectl",
+      name: "agentscrape",
       version: "1.2.3",
       implementation: "generic-page",
       implementation_version: "1",
@@ -244,7 +244,7 @@ function extractionEnvelope(url: string, content: string): string {
 function installExtractionCommand(root: string, envelope: string): void {
   const bin = join(root, "bin");
   mkdirSync(bin);
-  const executable = join(bin, "scrapectl");
+  const executable = join(bin, "agentscrape");
   writeFileSync(
     executable,
     `#!/bin/sh
@@ -304,6 +304,10 @@ test("queued URL extraction promotes and commits through fenced completion", asy
     storage_path: string;
   };
   expect(artifacts.readUtf8(artifact.content_hash)).toBe(content);
+  expect(artifacts.readUrlExtraction(queued.job.id)).toMatchObject({
+    record_version: 1,
+    extractor: { name: "agentscrape" },
+  });
   expect(
     store.db
       .query("SELECT evidence_type, raw_metadata FROM provenance ORDER BY id")
@@ -315,7 +319,7 @@ test("queued URL extraction promotes and commits through fenced completion", asy
     },
     {
       evidence_type: "url_extraction",
-      raw_metadata: expect.stringContaining('"name":"scrapectl"'),
+      raw_metadata: expect.stringContaining('"name":"agentscrape"'),
     },
   ]);
   expect(readFileSync(process.env.ARGV_FILE ?? "", "utf8")).toContain(
@@ -366,6 +370,22 @@ test("retry after index failure reuses the promoted URL Artifact", async () => {
     store.db.query("SELECT state FROM jobs WHERE id=?").get(queued.job.id),
   ).toEqual({ state: "retry_wait" });
 
+  const extractionPath = join(
+    artifacts.urlExtractionRoot,
+    `${queued.job.id}.json`,
+  );
+  const historicalRecord = JSON.parse(
+    readFileSync(extractionPath, "utf8"),
+  ) as Record<string, unknown>;
+  historicalRecord.extractor = {
+    name: "historical-extractor",
+    version: "0.9.0",
+    implementation: "archived-provider",
+    implementation_version: "7",
+  };
+  const historicalRecordBytes = JSON.stringify(historicalRecord);
+  writeFileSync(extractionPath, historicalRecordBytes);
+
   indexAvailable = true;
   const retried = await runWorker(store, {
     once: true,
@@ -385,6 +405,21 @@ test("retry after index failure reuses the promoted URL Artifact", async () => {
   expect(store.db.query("SELECT content FROM documents").get()).toEqual({
     content,
   });
+  expect(readFileSync(extractionPath, "utf8")).toBe(historicalRecordBytes);
+  expect(artifacts.readUrlExtraction(queued.job.id)).toMatchObject({
+    record_version: 1,
+    extractor: {
+      name: "historical-extractor",
+      implementation: "archived-provider",
+    },
+  });
+  expect(
+    store.db
+      .query(
+        "SELECT raw_metadata FROM provenance WHERE evidence_type='url_extraction'",
+      )
+      .get(),
+  ).toEqual({ raw_metadata: expect.stringContaining("historical-extractor") });
   store.close();
 });
 
@@ -580,7 +615,7 @@ test("extraction dispositions reach accepted durable job states", async () => {
       now: () => T0,
       artifactStore: artifacts,
       extract: async () => {
-        throw new ScrapectlExtractionError(
+        throw new AgentscrapeExtractionError(
           `safe ${outcome} failure`,
           disposition,
           outcome,
@@ -1087,7 +1122,7 @@ test("recovery online shared failure pauses before the sibling claim", async () 
     now: () => T0,
     artifactStore: artifacts,
     materialize: () => {
-      throw new ScrapectlExtractionError(
+      throw new AgentscrapeExtractionError(
         "shared provider configuration unavailable",
         "auth_config",
         "auth_config",
@@ -1163,7 +1198,7 @@ test("recovery online keeps a final shared failure paused for operator retry", a
     artifactStore: artifacts,
     materialize: (job) => {
       if (job.id === recovery.jobs[1]) {
-        throw new ScrapectlExtractionError(
+        throw new AgentscrapeExtractionError(
           "shared provider authentication unavailable",
           "auth_config",
           "auth_config",

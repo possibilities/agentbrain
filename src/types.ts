@@ -541,7 +541,14 @@ export interface ExtractionRelation {
 }
 
 export interface ExtractorIdentity {
-  name: "scrapectl";
+  name: "agentscrape";
+  version: string;
+  implementation: string;
+  implementation_version: string;
+}
+
+export interface HistoricalExtractorIdentity {
+  name: string;
   version: string;
   implementation: string;
   implementation_version: string;
@@ -583,17 +590,20 @@ export interface ExtractionFailure extends ExtractionEnvelopeBase {
 
 export type ExtractionEnvelope = ExtractionSuccess | ExtractionFailure;
 
-export interface PromotedUrlExtraction {
-  record_version: 1;
+interface PromotedUrlExtractionBase {
   requested_url: string;
   final_url: string;
-  extractor: ExtractorIdentity;
   artifact: Omit<ExtractionArtifact, "content"> & {
     artifact_role: "extracted_markdown";
     storage_path: string;
   };
   metadata: ExtractionMetadata;
   relations: ExtractionRelation[];
+}
+
+export interface PromotedUrlExtraction extends PromotedUrlExtractionBase {
+  record_version: 1;
+  extractor: HistoricalExtractorIdentity;
 }
 
 export interface Job {

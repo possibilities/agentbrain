@@ -13,7 +13,7 @@ Sensitivity also propagates: a private source can produce artifacts, searchable 
 
 - **The logged-in Unix account is the initial authorization boundary.** Agentbrain does not add a separate local authentication or role system.
 - **Private state uses restrictive permissions.** Agentbrain state directories default to `0700`; databases, job payloads, artifacts, manifests, and private logs default to `0600`.
-- **Credentials never become durable ingestion payload.** Jobs and source definitions store credential references only. Scrapectl or another provider resolves secrets through Keychain or its owned configuration at execution time.
+- **Credentials never become durable ingestion payload.** Jobs and source definitions store credential references only. Agentscrape or another provider resolves secrets through Keychain or its owned configuration at execution time.
 - **Exact provenance is stored but not casually displayed.** Required exact URLs and historical evidence remain durable, while default logs, notifications, statistics, and job listings redact sensitive query values, headers, cookies, tokens, signed URLs, and content bodies.
 - **Artifact inspection is explicit.** `jobs show` and related operator commands default to bounded safe metadata and sanitized diagnostics; reading raw or normalized artifact content requires an explicit content-revealing option.
 - **Operator transitions are audited.** Retry, cancellation, exclusion, reopening, source pause, and sensitive inspection append actor, timestamp, reason, and affected identity evidence.
