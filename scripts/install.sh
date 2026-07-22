@@ -244,8 +244,19 @@ unload_owned_service() {
   local target
   target="gui/$(id -u)/$SERVICE_LABEL"
   if "$LAUNCHCTL" bootout "$target" >/dev/null 2>&1; then
-    LOADED_SERVICE_STATE=absent
-    return 0
+    for _ in {1..30}; do
+      inspect_loaded_service
+      if [[ "$LOADED_SERVICE_STATE" == absent ]]; then
+        return 0
+      fi
+      if [[ "$LOADED_SERVICE_STATE" == foreign ]]; then
+        echo "service identity changed while waiting for unload: $SERVICE_LABEL" >&2
+        return 1
+      fi
+      sleep 0.1
+    done
+    echo "service remained loaded after unload: $SERVICE_LABEL" >&2
+    return 1
   fi
 
   inspect_loaded_service

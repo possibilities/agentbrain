@@ -311,19 +311,21 @@ exec "$AGENTBRAIN_TEST_REAL_BUN" "$@"
   expect(readlinkSync(destination)).toBe(join(REPO, "src/cli.ts"));
 }, 15_000);
 
-test("installer unloads stale service before load and uninstall is idempotent", () => {
+test("installer waits for stale service removal before load and uninstall is idempotent", () => {
   const fixture = setup();
   const launchctl = join(fixture.dir, "launchctl");
   const calls = join(fixture.dir, "launchctl.calls");
+  const removalPending = join(fixture.dir, "launchctl.removal-pending");
   writeFileSync(
     launchctl,
-    '#!/usr/bin/env bash\nif [[ "$1" == print ]]; then\n  printf "program = %s\\n" "$AGENTBRAIN_TEST_PROGRAM"\n  exit 0\nfi\nprintf "%s\\n" "$*" >> "$AGENTBRAIN_TEST_LAUNCHCTL_LOG"\n',
+    '#!/usr/bin/env bash\nif [[ "$1" == print ]]; then\n  if [[ -e "$AGENTBRAIN_TEST_REMOVAL_PENDING" ]]; then\n    rm -f "$AGENTBRAIN_TEST_REMOVAL_PENDING"\n    exit 1\n  fi\n  printf "program = %s\\n" "$AGENTBRAIN_TEST_PROGRAM"\n  exit 0\nfi\nif [[ "$1" == bootout ]]; then\n  touch "$AGENTBRAIN_TEST_REMOVAL_PENDING"\nelif [[ "$1" == bootstrap && -e "$AGENTBRAIN_TEST_REMOVAL_PENDING" ]]; then\n  exit 37\nfi\nprintf "%s\\n" "$*" >> "$AGENTBRAIN_TEST_LAUNCHCTL_LOG"\n',
   );
   chmodSync(launchctl, 0o700);
   const env = {
     AGENTBRAIN_INSTALL_LAUNCHCTL: launchctl,
     AGENTBRAIN_TEST_LAUNCHCTL_LOG: calls,
     AGENTBRAIN_TEST_PROGRAM: join(fixture.bin, "agentbrain"),
+    AGENTBRAIN_TEST_REMOVAL_PENDING: removalPending,
   };
 
   expect(runInstaller(fixture, "--install", env).exitCode).toBe(0);
