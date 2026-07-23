@@ -16,6 +16,10 @@ EVIDENCE="$HOME/.local/state/agentbrain/database-migrations/$STAMP"
 ONLINE_BACKUP="$EVIDENCE/online-backup"
 FINAL_BACKUP="$EVIDENCE/final-backup"
 ARCHIVE="$EVIDENCE/legacy-database-set"
+DEPLOY_SHA=$(git rev-parse HEAD)
+DEPLOY="$HOME/.local/share/agentbuilds/checkouts/agentbrain/$DEPLOY_SHA"
+test "$(git -C "$DEPLOY" rev-parse HEAD)" = "$DEPLOY_SHA"
+test -z "$(git -C "$DEPLOY" status --porcelain --untracked-files=all)"
 mkdir -p "$EVIDENCE"
 chmod 700 "$EVIDENCE"
 
@@ -91,9 +95,10 @@ agentbrain --db "$NEW" doctor --json >"$EVIDENCE/new-doctor.json"
 agentbrain --db "$NEW" stats --json >"$EVIDENCE/new-stats.json"
 agentbrain --db "$NEW" jobs stats --json >"$EVIDENCE/new-jobs.json"
 jq -e '.data.healthy == true' "$EVIDENCE/new-doctor.json"
+# VACUUM INTO compacts bytes and the path intentionally changes; compare logical stats.
 diff -u \
-  <(jq -S '.data' "$EVIDENCE/old-stats.json") \
-  <(jq -S '.data' "$EVIDENCE/new-stats.json")
+  <(jq -S '.data | del(.db_path,.db_size_bytes)' "$EVIDENCE/old-stats.json") \
+  <(jq -S '.data | del(.db_path,.db_size_bytes)' "$EVIDENCE/new-stats.json")
 diff -u \
   <(jq -S '.data' "$EVIDENCE/old-jobs.json") \
   <(jq -S '.data' "$EVIDENCE/new-jobs.json")
@@ -104,7 +109,10 @@ done
 chmod -R go-rwx "$ARCHIVE"
 test ! -e "$OLD"
 
-./scripts/install.sh --install
+(
+  cd "$DEPLOY"
+  ./scripts/install.sh --install
+)
 agentbrain doctor --json >"$EVIDENCE/default-doctor.json"
 agentbrain jobs stats --json >"$EVIDENCE/default-jobs.json"
 jq -e --arg path "$NEW" \
