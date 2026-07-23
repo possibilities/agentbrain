@@ -3,7 +3,7 @@ export function buildGuide(): unknown {
     name: "agentbrain",
     purpose:
       "Sole durable ingestion authority and reader/writer for Mike's local research index, exposed as an agent-friendly CLI.",
-    default_db: "~/.hermes/research-cache/research.db",
+    default_db: "~/.local/share/agentbrain/research.db",
     architecture: {
       agentbot: "Human-facing saved-link ingress.",
       agentbrain:
@@ -13,7 +13,7 @@ export function buildGuide(): unknown {
       boundary:
         "Every public ingestion intent is durable before materialization. Admission performs no network work, and URL workers delegate extraction to Agentscrape without direct HTTP fallback.",
       decision_record:
-        "docs/adr/0003-agentbrain-owns-durable-ingestion.md and docs/adr/0005-public-ingestion-admission-contract.md",
+        "docs/adr/0003-agentbrain-owns-durable-ingestion.md, docs/adr/0005-public-ingestion-admission-contract.md, and docs/adr/0014-agentbrain-database-namespace.md",
       glossary: "CONTEXT.md",
     },
     source_types: {
@@ -25,7 +25,7 @@ export function buildGuide(): unknown {
       {
         flag: "--db <path>",
         meaning:
-          "Override database path; takes precedence over AGENTBRAIN_DB and the legacy default path.",
+          "Override database path; takes precedence over AGENTBRAIN_DB and the Agentbrain-namespaced default path.",
       },
       {
         flag: "--json",
@@ -185,6 +185,6 @@ Document:
 5. The ownership boundary: Agentbrain owns durable admission, ingestion jobs, Artifact snapshots, and index writes; Agentscrape owns URL extraction/network/backend behavior.
 6. Queued and duplicate submission acknowledgements, explicit idempotency conflicts, and --wait observation.
 7. The opt-in real Agentscrape smoke: temporary database, queued URL Admission, worker --once, search verification, and preserved failed evidence.
-8. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.hermes/research-cache/research.db.
+8. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.local/share/agentbrain/research.db.
 
 Keep it short enough for an AGENTS.md / CLAUDE.md / harness instruction file.`;

@@ -9,7 +9,8 @@ Usage: scripts/install.sh [--install|--uninstall|--help]
 Install creates the agentbrain command plus one owned user LaunchAgent for
 `agentbrain worker`. Agentbrain owns the durable SQLite queue and index; the
 worker leases admitted ingestion jobs from that queue.
-The installer does not create or enable recurring remote sources.
+The installer does not create or enable recurring remote sources. It uses
+~/.local/share/agentbrain/research.db and refuses unmigrated legacy DB state.
 
 Uninstall gracefully unloads and removes only the owned LaunchAgent and known
 command links. It preserves the database, Artifacts, and private worker log.
@@ -38,6 +39,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BIN_DIR="${AGENTBRAIN_INSTALL_BIN_DIR:-$HOME/.local/bin}"
 LAUNCH_AGENTS_DIR="${AGENTBRAIN_INSTALL_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 STATE_DIR="${AGENTBRAIN_INSTALL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agentbrain}"
+DATA_DIR="$HOME/.local/share/agentbrain"
+DEFAULT_DB_PATH="$DATA_DIR/research.db"
+LEGACY_DB_PATH="$HOME/.hermes/research-cache/research.db"
 AGENTBRAIN_SOURCE="$ROOT/src/cli.ts"
 KNOWN_LEGACY_AGENTBRAIN_SOURCE="${AGENTBRAIN_INSTALL_LEGACY_SOURCE:-/Users/mike/code/agentbrain/src/cli.ts}"
 RETIRED_ADAPTER_SOURCE="$ROOT/src/research-ingest-link.ts"
@@ -271,6 +275,32 @@ unload_owned_service() {
   return 1
 }
 
+check_database_location() {
+  local target_exists=false
+  local legacy_exists=false
+  [[ -e "$DEFAULT_DB_PATH" || -L "$DEFAULT_DB_PATH" ]] && target_exists=true
+  [[ -e "$LEGACY_DB_PATH" || -L "$LEGACY_DB_PATH" ]] && legacy_exists=true
+
+  if [[ -e "$DATA_DIR" || -L "$DATA_DIR" ]]; then
+    if [[ -L "$DATA_DIR" || ! -d "$DATA_DIR" ]]; then
+      echo "refusing non-directory or symlinked Agentbrain data root: $DATA_DIR" >&2
+      return 1
+    fi
+  fi
+  if [[ "$target_exists" == true && ( -L "$DEFAULT_DB_PATH" || ! -f "$DEFAULT_DB_PATH" ) ]]; then
+    echo "refusing non-regular or symlinked Agentbrain database: $DEFAULT_DB_PATH" >&2
+    return 1
+  fi
+  if [[ "$legacy_exists" == true && "$target_exists" == true ]]; then
+    echo "refusing conflicting legacy and Agentbrain databases: $LEGACY_DB_PATH and $DEFAULT_DB_PATH" >&2
+    return 1
+  fi
+  if [[ "$legacy_exists" == true ]]; then
+    echo "legacy Agentbrain database requires migration: $LEGACY_DB_PATH -> $DEFAULT_DB_PATH" >&2
+    return 1
+  fi
+}
+
 preflight_owned_removal() {
   local destination="$1"
   local expected="$2"
@@ -308,6 +338,8 @@ if [[ "$ACTION" == uninstall ]]; then
   exit 0
 fi
 
+check_database_location
+
 DEPLOYED_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 if [[ ! "$DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "source HEAD is not a full lowercase 40-hex SHA" >&2
@@ -329,8 +361,11 @@ check_loaded_service
   bun install --frozen-lockfile
 )
 
-mkdir -p "$BIN_DIR" "$LAUNCH_AGENTS_DIR" "$STATE_DIR"
-chmod 700 "$STATE_DIR"
+mkdir -p "$BIN_DIR" "$LAUNCH_AGENTS_DIR" "$STATE_DIR" "$DATA_DIR"
+chmod 700 "$STATE_DIR" "$DATA_DIR"
+if [[ -e "$DEFAULT_DB_PATH" ]]; then
+  chmod 600 "$DEFAULT_DB_PATH"
+fi
 touch "$LOG_PATH"
 chmod 600 "$LOG_PATH"
 chmod +x "$AGENTBRAIN_SOURCE"

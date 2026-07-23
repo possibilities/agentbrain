@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
   ArtifactReconciliationReport,
@@ -10,6 +10,10 @@ import type {
 } from "./artifacts";
 import { isSafeArtifactStoragePath, SHA256_DIGEST_PATTERN } from "./artifacts";
 import { CliError } from "./errors";
+import {
+  assertDefaultDatabaseTargetSafe,
+  isDefaultDatabasePath,
+} from "./paths";
 import { parseTags } from "./query";
 import { sanitizeExternalError } from "./sanitize";
 import { deriveStructuralTags } from "./tagging";
@@ -1055,8 +1059,16 @@ export class ResearchStore {
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
-    mkdirSync(dirname(dbPath), { recursive: true });
+    const directory = dirname(dbPath);
+    const isDefault = isDefaultDatabasePath(dbPath);
+    if (isDefault) assertDefaultDatabaseTargetSafe(dbPath);
+    mkdirSync(directory, {
+      recursive: true,
+      ...(isDefault ? { mode: 0o700 } : {}),
+    });
+    if (isDefault) chmodSync(directory, 0o700);
     this.db = new Database(dbPath, { create: true, strict: true });
+    if (isDefault) chmodSync(dbPath, 0o600);
     this.db.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     try {
       this.rejectUnsupportedExistingSchema();

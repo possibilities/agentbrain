@@ -34,6 +34,7 @@ import {
   showJob,
   showRun,
 } from "./jobs";
+import { assertDefaultDatabaseLocationReady } from "./paths";
 import { parseTags } from "./query";
 import { readRecoveryGeneration } from "./recovery";
 import {
@@ -75,6 +76,7 @@ const READ_COMMANDS = new Set([
   "context",
   "doctor",
 ]);
+const DATABASE_FREE_COMMANDS = new Set(["guide", "prompt", "help"]);
 const MUTATION_COMMANDS = new Set([
   "submit",
   "ingest",
@@ -82,6 +84,11 @@ const MUTATION_COMMANDS = new Set([
   "retag",
   "worker",
 ]);
+
+function requiresDefaultDatabase(command: string, argv: string[]): boolean {
+  if (DATABASE_FREE_COMMANDS.has(command)) return false;
+  return !(command === "backup" && argv[0] === "verify");
+}
 
 interface IngestRequest {
   version: number;
@@ -202,6 +209,12 @@ async function runParsed(
       hint: "Run `agentbrain --help` for the command list.",
     });
   }
+
+  if (
+    parsed.usesDefaultDb &&
+    requiresDefaultDatabase(command, parsed.commandArgv)
+  )
+    assertDefaultDatabaseLocationReady();
 
   if (command === "jobs") {
     await runJobs(parsed.globals.dbPath, parsed.commandArgv, parsed.globals);

@@ -22,7 +22,7 @@ A durable queue tied only to scraping would also make URL work first-class while
 - **Linkctl is retired after cutover and reconciliation.** No runtime compatibility shim is required. The ordered legacy catalog, exact submitted URLs, artifacts, hashes, historical identifiers, and `source=linkctl` provenance remain preserved as recovery data.
 - **Agentscrape's existing YAML queue is no longer authoritative for Agentbrain ingestion after migration.** Existing pending and failed work is drained, imported, or explicitly dispositioned before its Agentbrain handoff is retired. Standalone Agentscrape behavior does not authorize a second Agentbrain ingestion queue.
 - **Operator disposition is part of ingestion.** Jobs and attempts remain queryable across pending, active, retry-delayed, blocked, failed, completed, excluded, and cancelled outcomes; retry and disposition actions append durable audit evidence.
-- **The existing database location remains unchanged.** Relocating `~/.hermes/research-cache/research.db` is a separate decision.
+- **The existing database location remains unchanged.** Relocating `~/.hermes/research-cache/research.db` is a separate decision. That deferred location decision is superseded by [ADR 0014](0014-agentbrain-database-namespace.md).
 - **Future agentic-search, software-docset, and chat connectors are out of scope.** Their future inputs must use the same typed job, resource, artifact, and provenance concepts rather than introduce parallel ingestion paths.
 
 ## Consequences

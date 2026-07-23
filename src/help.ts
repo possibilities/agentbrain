@@ -80,7 +80,7 @@ Usage:
   agentbrain [global options] <command> [command options]
 
 Global options:
-  --db <path>         SQLite DB path (default: ~/.hermes/research-cache/research.db; env: AGENTBRAIN_DB)
+  --db <path>         SQLite DB path (default: ~/.local/share/agentbrain/research.db; env: AGENTBRAIN_DB)
   --json             Emit a stable JSON envelope
   --jsonl            Emit newline-delimited records where supported (search)
   --format <fmt>     human | json | jsonl

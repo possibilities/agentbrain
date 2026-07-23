@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { admitSubmission } from "../src/admission";
@@ -352,14 +352,13 @@ function runCli(
   dbPath?: string,
   env: Record<string, string> = {},
 ) {
+  const childEnv = { ...process.env, ...env };
+  if (dbPath !== undefined) childEnv.AGENTBRAIN_DB = dbPath;
+  else if (!Object.hasOwn(env, "AGENTBRAIN_DB")) delete childEnv.AGENTBRAIN_DB;
   return Bun.spawnSync({
     cmd: ["bun", "run", "src/cli.ts", ...args],
     cwd: REPO,
-    env: {
-      ...process.env,
-      ...env,
-      ...(dbPath !== undefined ? { AGENTBRAIN_DB: dbPath } : {}),
-    },
+    env: childEnv,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -383,6 +382,54 @@ test("json error envelope works with spaced --format json", () => {
   expect(payload.schema_version).toBe(1);
   expect(payload.error.code).toBe("db_not_found");
   expect(decode(proc.stderr)).toBe("");
+});
+
+test("default writes use the private Agentbrain database namespace", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-default-db-"));
+  tempDirs.push(dir);
+  const home = join(dir, "home");
+  mkdirSync(home);
+  const env = {
+    HOME: home,
+    XDG_DATA_HOME: join(home, ".local", "share"),
+  };
+  const submitted = runCli(
+    ["submit", "namespaced database", "--kind", "text", "--json"],
+    undefined,
+    env,
+  );
+  expect(submitted.exitCode, decode(submitted.stderr)).toBe(0);
+
+  const data = join(home, ".local", "share", "agentbrain");
+  const db = join(data, "research.db");
+  expect(existsSync(db)).toBeTrue();
+  expect(statSync(data).mode & 0o777).toBe(0o700);
+  expect(statSync(db).mode & 0o777).toBe(0o600);
+  expect(JSON.parse(decode(submitted.stdout)).meta.db_path).toBe(db);
+});
+
+test("default use refuses unmigrated legacy state but explicit recovery remains available", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-legacy-db-"));
+  tempDirs.push(dir);
+  const home = join(dir, "home");
+  const legacy = join(home, ".hermes", "research-cache", "research.db");
+  const store = new ResearchStore(legacy);
+  store.close();
+
+  const refused = runCli(["stats", "--json"], undefined, { HOME: home });
+  expect(refused.exitCode).toBe(1);
+  expect(JSON.parse(decode(refused.stdout))).toMatchObject({
+    ok: false,
+    command: "stats",
+    error: { code: "db_migration_required" },
+  });
+
+  const explicit = runCli(["--db", legacy, "stats", "--json"], undefined, {
+    HOME: home,
+  });
+  expect(explicit.exitCode, decode(explicit.stderr)).toBe(0);
+  expect(JSON.parse(decode(explicit.stdout)).meta.db_path).toBe(legacy);
+  expect(runCli(["--help"], undefined, { HOME: home }).exitCode).toBe(0);
 });
 
 test("json parse errors stay machine-readable", () => {
@@ -819,6 +866,8 @@ test("completed-link compatibility commands are absent from every public surface
   for (const output of [topHelp, guide, prompt]) {
     expect(output).not.toContain("ingest-link");
     expect(output).not.toContain("completed-link");
+    expect(output).toContain("~/.local/share/agentbrain/research.db");
+    expect(output).not.toContain("~/.hermes/research-cache/research.db");
   }
 
   const pkg = await Bun.file(join(REPO, "package.json")).json();

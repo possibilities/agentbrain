@@ -1,4 +1,5 @@
 import { CliError } from "./errors";
+import { defaultDatabasePath } from "./paths";
 import type { GlobalOptions, OutputFormat } from "./types";
 
 export interface ParsedArgv {
@@ -7,6 +8,7 @@ export interface ParsedArgv {
   globals: GlobalOptions;
   showHelp: boolean;
   showVersion: boolean;
+  usesDefaultDb: boolean;
 }
 
 export interface OptionSpec {
@@ -17,11 +19,9 @@ export interface OptionSpec {
 
 export type ParsedOptions = Record<string, unknown> & { _: string[] };
 
-const DEFAULT_DB = "~/.hermes/research-cache/research.db";
-
-function expandHome(path: string): string {
-  if (path === "~") return process.env.HOME ?? path;
-  if (path.startsWith("~/")) return `${process.env.HOME ?? ""}${path.slice(1)}`;
+function expandHome(path: string, home: string | undefined): string {
+  if (path === "~") return home ?? path;
+  if (path.startsWith("~/")) return `${home ?? ""}${path.slice(1)}`;
   return path;
 }
 
@@ -34,8 +34,12 @@ function normalizeFormat(value: string | undefined): OutputFormat {
   });
 }
 
-export function parseTopLevel(argv: string[]): ParsedArgv {
-  let dbPath = process.env.AGENTBRAIN_DB ?? DEFAULT_DB;
+export function parseTopLevel(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): ParsedArgv {
+  let dbPath = env.AGENTBRAIN_DB ?? defaultDatabasePath(env.HOME);
+  let usesDefaultDb = env.AGENTBRAIN_DB === undefined;
   let format: OutputFormat = "human";
   let quiet = false;
   let showHelp = false;
@@ -55,10 +59,12 @@ export function parseTopLevel(argv: string[]): ParsedArgv {
           exitCode: 2,
         });
       dbPath = value;
+      usesDefaultDb = false;
       continue;
     }
     if (arg.startsWith("--db=")) {
       dbPath = arg.slice("--db=".length);
+      usesDefaultDb = false;
       continue;
     }
     if (arg === "--json") {
@@ -95,9 +101,10 @@ export function parseTopLevel(argv: string[]): ParsedArgv {
   return {
     command: rest[0] ?? null,
     commandArgv: rest.slice(1),
-    globals: { dbPath: expandHome(dbPath), format, quiet },
+    globals: { dbPath: expandHome(dbPath, env.HOME), format, quiet },
     showHelp,
     showVersion,
+    usesDefaultDb,
   };
 }
 

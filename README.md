@@ -1,6 +1,6 @@
 # agentbrain
 
-Agentbrain owns Mike's local research index and is its sole durable ingestion authority. It owns Admission, the SQLite ingestion queue, Attempts, Artifacts, schema, Resources, Documents, chunks, FTS, and provenance. Read commands use structurally read-only SQLite connections; mutation commands use the separate writable store. The database remains at `~/.hermes/research-cache/research.db`; `--db PATH` wins over `AGENTBRAIN_DB`, which wins over that default.
+Agentbrain owns Mike's local research index and is its sole durable ingestion authority. It owns Admission, the SQLite ingestion queue, Attempts, Artifacts, schema, Resources, Documents, chunks, FTS, and provenance. Read commands use structurally read-only SQLite connections; mutation commands use the separate writable store. The database lives at `~/.local/share/agentbrain/research.db`; `--db PATH` wins over `AGENTBRAIN_DB`, which wins over that default.
 
 An Ingress such as the CLI submits intent at Admission. Admission validates it and durably creates or identifies an immutable ingestion job before returning; it does not materialize content. The Worker is Agentbrain's executor: it leases jobs, delegates extraction, and commits fenced outcomes, while Agentbrain remains the index owner. A retry creates another Attempt instead of replacing the job. Agentscrape remains the URL extraction and network-policy boundary, but it does not own Agentbrain's queue or index.
 
@@ -10,6 +10,7 @@ Architecture references:
 - [Durable ingestion job lifecycle](docs/adr/0004-durable-ingestion-job-lifecycle.md)
 - [Public Admission contract](docs/adr/0005-public-ingestion-admission-contract.md)
 - [Single Worker operation](docs/adr/0011-single-worker-source-scheduling.md)
+- [Agentbrain database namespace](docs/adr/0014-agentbrain-database-namespace.md)
 
 ## Quick start
 
@@ -80,9 +81,12 @@ The idempotent installer creates only these owned entries:
 
 - `~/.local/bin/agentbrain`, linked to this checkout;
 - `~/Library/LaunchAgents/agentbrain.worker.plist`, invoking only the installed `agentbrain worker` command;
-- `${XDG_STATE_HOME:-~/.local/state}/agentbrain/worker.log` in a private state directory.
+- `${XDG_STATE_HOME:-~/.local/state}/agentbrain/worker.log` in a private state directory;
+- `~/.local/share/agentbrain/research.db` as the default durable database.
 
-The state directory is mode `0700`; the rendered plist and log are mode `0600`; the service uses umask `077`. Its arguments contain no submitted content, URLs, Artifact paths, or credentials. Installation runs `bun install --frozen-lockfile` before changing the command or service, so immutable managed checkouts do not expose a runtime missing its dependencies. Reinstall unloads the known label, atomically replaces only a marker-owned plist, and loads it again. The installer may replace the exact legacy command link `/Users/mike/code/agentbrain/src/cli.ts`; managed deployments with a different known predecessor can set `AGENTBRAIN_INSTALL_LEGACY_SOURCE` to that one exact source. It refuses unrelated command links, regular files, and foreign service files rather than taking them over.
+The data and state directories are mode `0700`; the database, rendered plist, and log are mode `0600`; the service uses umask `077`. Its arguments contain no submitted content, URLs, Artifact paths, or credentials. Installation runs `bun install --frozen-lockfile` before changing the command or service, so immutable managed checkouts do not expose a runtime missing its dependencies. Reinstall unloads the known label, atomically replaces only a marker-owned plist, and loads it again. The installer may replace the exact legacy command link `/Users/mike/code/agentbrain/src/cli.ts`; managed deployments with a different known predecessor can set `AGENTBRAIN_INSTALL_LEGACY_SOURCE` to that one exact source. It refuses unrelated command links, regular files, and foreign service files rather than taking them over.
+
+Installation never guesses between database copies. If the retired `~/.hermes/research-cache/research.db` exists, or both retired and namespaced databases exist, default-path commands and installation fail closed until an operator completes the [verified database namespace migration](docs/runbooks/database-namespace-migration.md). `--db` and `AGENTBRAIN_DB` remain available for explicit recovery and rollback; no compatibility symlink is created.
 
 Check operation with:
 
@@ -107,7 +111,7 @@ Uninstall is also idempotent:
 ./scripts/install.sh --uninstall
 ```
 
-It gracefully unloads the Worker and removes only owned command links and the marker-owned service file. It intentionally preserves the database, Artifacts, and private log. For rollback, uninstall the service before restoring a pre-migration database snapshot, restore the matching Agentbrain code, run the temporary-database smoke with that version, and only then install its service. Never start the newer Worker against a snapshot being restored.
+It gracefully unloads the Worker and removes only owned command links and the marker-owned service file. It intentionally preserves the namespaced database, Artifacts, and private log. For rollback, uninstall the service before restoring a pre-migration database snapshot, restore the matching Agentbrain code, run the temporary-database smoke with that version, and only then install its service. Never start the newer Worker against a snapshot being restored.
 
 The LaunchAgent drains already admitted ingestion jobs only. Installation does **not** create, discover, schedule, or enable recurring remote Sources. Remote Source activation remains deferred to a later, explicit operator rollout.
 

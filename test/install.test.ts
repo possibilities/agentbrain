@@ -162,6 +162,7 @@ test("installer renders one private owned worker service idempotently", () => {
 
   const service = join(fixture.launchAgents, "agentbrain.worker.plist");
   const log = join(fixture.state, "worker.log");
+  const data = join(fixture.home, ".local", "share", "agentbrain");
   const plist = readFileSync(service, "utf8");
   expect(plist).toContain("agentbrain-installer-owned: agentbrain.worker.v1");
   expect(plist).toContain("<string>agentbrain.worker</string>");
@@ -174,6 +175,7 @@ test("installer renders one private owned worker service idempotently", () => {
   ]);
   expect(plist).not.toContain("__AGENTBRAIN_");
   expect(mode(fixture.state)).toBe(0o700);
+  expect(mode(data)).toBe(0o700);
   expect(mode(log)).toBe(0o600);
   expect(mode(service)).toBe(0o600);
   expect(existsSync(join(fixture.state, "deployed-sha"))).toBe(false);
@@ -191,7 +193,76 @@ test("installer renders one private owned worker service idempotently", () => {
     "agentbrain.worker.plist",
   ]);
   expect(mode(fixture.state)).toBe(0o700);
+  expect(mode(data)).toBe(0o700);
   expect(mode(log)).toBe(0o600);
+}, 15_000);
+
+test("installer refuses unmigrated and conflicting legacy database state", () => {
+  const unmigrated = setup();
+  const unmigratedPath = join(
+    unmigrated.home,
+    ".hermes",
+    "research-cache",
+    "research.db",
+  );
+  mkdirSync(dirname(unmigratedPath), { recursive: true });
+  writeFileSync(unmigratedPath, "legacy");
+  const refusedUnmigrated = runInstaller(unmigrated);
+  expect(refusedUnmigrated.exitCode).not.toBe(0);
+  expect(decode(refusedUnmigrated.stderr)).toContain(
+    "legacy Agentbrain database requires migration",
+  );
+  expect(existsSync(join(unmigrated.bin, "agentbrain"))).toBeFalse();
+
+  const conflicting = setup();
+  const legacyPath = join(
+    conflicting.home,
+    ".hermes",
+    "research-cache",
+    "research.db",
+  );
+  const targetPath = join(
+    conflicting.home,
+    ".local",
+    "share",
+    "agentbrain",
+    "research.db",
+  );
+  mkdirSync(dirname(legacyPath), { recursive: true });
+  mkdirSync(dirname(targetPath), { recursive: true });
+  writeFileSync(legacyPath, "legacy");
+  writeFileSync(targetPath, "target");
+  const refusedConflict = runInstaller(conflicting);
+  expect(refusedConflict.exitCode).not.toBe(0);
+  expect(decode(refusedConflict.stderr)).toContain(
+    "refusing conflicting legacy and Agentbrain databases",
+  );
+
+  const symlinked = setup();
+  const share = join(symlinked.home, ".local", "share");
+  const realData = join(symlinked.home, "real-agentbrain-data");
+  mkdirSync(share, { recursive: true });
+  mkdirSync(realData);
+  symlinkSync(realData, join(share, "agentbrain"));
+  const refusedSymlink = runInstaller(symlinked);
+  expect(refusedSymlink.exitCode).not.toBe(0);
+  expect(decode(refusedSymlink.stderr)).toContain(
+    "refusing non-directory or symlinked Agentbrain data root",
+  );
+}, 15_000);
+
+test("installer repairs namespaced database permissions", () => {
+  const fixture = setup();
+  const data = join(fixture.home, ".local", "share", "agentbrain");
+  const db = join(data, "research.db");
+  mkdirSync(data, { recursive: true, mode: 0o755 });
+  writeFileSync(db, "existing");
+  chmodSync(data, 0o755);
+  chmodSync(db, 0o644);
+
+  expect(runInstaller(fixture).exitCode).toBe(0);
+  expect(mode(data)).toBe(0o700);
+  expect(mode(db)).toBe(0o600);
 }, 15_000);
 
 test("installer replaces only the explicitly known legacy Agentbrain link", () => {
@@ -564,4 +635,6 @@ test("installer help states queue ownership and defers recurring sources", () =>
   expect(output).toContain(
     "does not create or enable recurring remote sources",
   );
+  expect(output).toContain("~/.local/share/agentbrain/research.db");
+  expect(output).toContain("refuses unmigrated legacy DB state");
 });
