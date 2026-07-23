@@ -67,12 +67,16 @@ function retrievalFixture(): {
     sourceUri: "/vault/first.md",
     title: "First resource",
     content: `${"rankingterm ".repeat(500)} first-only-content`,
+    contentKind: "thread",
+    contentItemCount: 3,
   });
   const second = store.upsertDocument({
     sourceType: "scraped_url",
     sourceUri: "https://example.test/second",
     title: "Second resource",
     content: "rankingterm second-only-content",
+    contentKind: "article",
+    contentItemCount: 1,
   });
   const now = "2025-04-03T00:00:00.000Z";
   store.db
@@ -206,6 +210,19 @@ test("typed retrieval filters, deduplicates resources, and keeps relations separ
       .search({ query: "rankingterm", mode: "any", resourceKind: "article" })
       .results.map((result) => result.document_id),
   ).toEqual([fixture.secondDocumentId]);
+  const threads = cache.search({
+    query: "rankingterm",
+    mode: "any",
+    contentKind: "thread",
+  });
+  expect(threads.filters).toEqual({ content_kind: "thread" });
+  expect(threads.results).toMatchObject([
+    {
+      document_id: fixture.firstDocumentId,
+      content_kind: "thread",
+      content_item_count: 3,
+    },
+  ]);
   expect(
     cache
       .search({ query: "rankingterm", mode: "any", sensitivity: "sensitive" })

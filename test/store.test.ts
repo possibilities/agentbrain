@@ -52,6 +52,47 @@ function createV1(path: string): void {
   db.close();
 }
 
+function createV11Article(path: string): void {
+  const db = new Database(path);
+  db.exec(`
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO meta VALUES ('schema_version', '11');
+    CREATE TABLE documents (
+      id INTEGER PRIMARY KEY, source_type TEXT NOT NULL, source_uri TEXT NOT NULL,
+      title TEXT, tags TEXT NOT NULL DEFAULT '[]', notes TEXT, content TEXT NOT NULL,
+      content_hash TEXT NOT NULL, size_chars INTEGER NOT NULL, created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL, revision_digest TEXT NOT NULL DEFAULT '',
+      UNIQUE(source_type, source_uri)
+    );
+    CREATE TABLE resources (
+      id INTEGER PRIMARY KEY, key_type TEXT NOT NULL, key_value TEXT NOT NULL,
+      kind TEXT NOT NULL, sensitivity TEXT NOT NULL DEFAULT 'normal',
+      document_id INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE provenance (
+      id INTEGER PRIMARY KEY, resource_id INTEGER NOT NULL, evidence_type TEXT NOT NULL,
+      source_id INTEGER, run_id INTEGER, artifact_id INTEGER, relation_id INTEGER,
+      ingress TEXT, raw_metadata TEXT, observed_at TEXT NOT NULL
+    );
+    INSERT INTO documents VALUES
+      (7, 'tweet', 'https://x.com/i/status/7', 'Article', '[]', '', 'article body',
+       'hash', 12, '2026-01-01', '2026-01-01', 'revision'),
+      (8, 'tweet', 'https://x.com/i/status/8', 'Post', '[]', '', 'post body',
+       'hash-2', 9, '2026-01-01', '2026-01-01', 'revision-2');
+    INSERT INTO resources VALUES
+      (9, 'x:status', '7', 'url', 'normal', 7, '2026-01-01', '2026-01-01'),
+      (10, 'x:status', '8', 'url', 'normal', 8, '2026-01-01', '2026-01-01');
+    INSERT INTO provenance VALUES
+      (11, 9, 'url_extraction', NULL, NULL, NULL, NULL, 'test',
+       '{"extractor":{"implementation":"x-article"},"metadata":{"content_type":"article"}}',
+       '2026-01-01'),
+      (12, 10, 'url_extraction', NULL, NULL, NULL, NULL, 'test',
+       '{"extractor":{"implementation":"x-tweet"},"metadata":{"content_type":"social_post"}}',
+       '2026-01-01');
+  `);
+  db.close();
+}
+
 function createV2(path: string): void {
   const db = new Database(path);
   db.exec(`
@@ -105,7 +146,7 @@ test("writable store migrates v1 additively and preserves IDs and FTS", () => {
   expect(
     db.query("SELECT value FROM meta WHERE key='schema_version'").get(),
   ).toEqual({
-    value: "11",
+    value: "12",
   });
   expect(db.query("SELECT id FROM documents").get()).toEqual({ id: 7 });
   expect(
@@ -134,21 +175,63 @@ test("writable store migrates v1 additively and preserves IDs and FTS", () => {
   cache.close();
 });
 
-test("upsert is transactional, unchanged-aware, and manually maintains FTS", () => {
+test("v12 migration backfills exact Article classification from extraction provenance", () => {
+  const path = tempDb();
+  createV11Article(path);
+  const store = new ResearchStore(path);
+  store.close();
+
+  const db = new Database(path);
+  expect(
+    db.query("SELECT value FROM meta WHERE key='schema_version'").get(),
+  ).toEqual({
+    value: "12",
+  });
+  expect(
+    db
+      .query(
+        "SELECT content_kind, content_item_count FROM documents WHERE id=7",
+      )
+      .get(),
+  ).toEqual({ content_kind: "article", content_item_count: 1 });
+  expect(
+    db
+      .query(
+        "SELECT content_kind, content_item_count FROM documents WHERE id=8",
+      )
+      .get(),
+  ).toEqual({ content_kind: null, content_item_count: null });
+  expect(() =>
+    db
+      .query(
+        "UPDATE documents SET content_kind='thread', content_item_count=1 WHERE id=8",
+      )
+      .run(),
+  ).toThrow("invalid document content classification");
+  db.close();
+});
+
+test("upsert persists parser classification and preserves it when unspecified", () => {
   const path = tempDb();
   const store = new ResearchStore(path);
   const created = store.upsertDocument({
-    sourceType: "text",
-    sourceUri: "text:one",
+    sourceType: "tweet",
+    sourceUri: "https://x.com/i/status/1",
     title: "One",
     content: "alpha searchable content",
+    contentKind: "thread",
+    contentItemCount: 2,
     tags: ["Alpha", "alpha", "two words"],
   });
-  expect(created.status).toBe("created");
+  expect(created).toMatchObject({
+    status: "created",
+    content_kind: "thread",
+    content_item_count: 2,
+  });
   expect(created.tags).toEqual(["alpha", "two-words"]);
   const unchanged = store.upsertDocument({
-    sourceType: "text",
-    sourceUri: "text:one",
+    sourceType: "tweet",
+    sourceUri: "https://x.com/i/status/1",
     title: "One",
     content: "alpha searchable content",
     tags: ["Alpha", "alpha", "two words"],
@@ -156,10 +239,12 @@ test("upsert is transactional, unchanged-aware, and manually maintains FTS", () 
   expect(unchanged).toMatchObject({
     status: "unchanged",
     document_id: created.document_id,
+    content_kind: "thread",
+    content_item_count: 2,
   });
   const updated = store.upsertDocument({
-    sourceType: "text",
-    sourceUri: "text:one",
+    sourceType: "tweet",
+    sourceUri: "https://x.com/i/status/1",
     title: "One",
     content: "replacement beta content",
     tags: ["alpha", "two words"],
@@ -167,11 +252,27 @@ test("upsert is transactional, unchanged-aware, and manually maintains FTS", () 
   expect(updated).toMatchObject({
     status: "updated",
     document_id: created.document_id,
+    content_kind: "thread",
+    content_item_count: 2,
   });
+  expect(() =>
+    store.upsertDocument({
+      sourceType: "tweet",
+      sourceUri: "https://x.com/i/status/2",
+      content: "invalid thread",
+      contentKind: "thread",
+      contentItemCount: 1,
+    }),
+  ).toThrow("at least 2");
   store.close();
 
   const cache = new ResearchCache(path);
-  expect(cache.search({ query: "beta", mode: "any" }).results).toHaveLength(1);
+  expect(cache.search({ query: "beta", mode: "any" }).results[0]).toMatchObject(
+    {
+      content_kind: "thread",
+      content_item_count: 2,
+    },
+  );
   expect(
     cache.search({ query: "searchable", mode: "any" }).results,
   ).toHaveLength(0);
@@ -319,7 +420,7 @@ test("newer schema versions are rejected", () => {
   const path = tempDb();
   const db = new Database(path);
   db.exec(
-    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version','12')",
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version','13')",
   );
   db.close();
   expect(() => new ResearchStore(path)).toThrow("newer than supported");

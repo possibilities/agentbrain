@@ -872,6 +872,10 @@ function parseExtractor(value: unknown): ExtractorIdentity {
 }
 
 function parseMetadata(value: unknown): ExtractionMetadata {
+  const optional =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? ["content_kind", "content_item_count"].filter((key) => key in value)
+      : [];
   const record = extractionRecord(
     value,
     [
@@ -882,6 +886,7 @@ function parseMetadata(value: unknown): ExtractionMetadata {
       "published_at",
       "source_id",
       "warnings",
+      ...optional,
     ],
     "extraction metadata",
   );
@@ -892,6 +897,41 @@ function parseMetadata(value: unknown): ExtractionMetadata {
   ) {
     return protocolDefect("metadata content type is unsupported");
   }
+  const hasContentKind = Object.hasOwn(record, "content_kind");
+  const hasItemCount = Object.hasOwn(record, "content_item_count");
+  if (hasContentKind !== hasItemCount) {
+    return protocolDefect(
+      "metadata content kind and item count must be provided together",
+    );
+  }
+  if (
+    hasContentKind &&
+    !new Set(["post", "thread", "article"]).has(String(record.content_kind))
+  ) {
+    return protocolDefect("metadata content kind is unsupported");
+  }
+  if (
+    hasItemCount &&
+    (!Number.isSafeInteger(record.content_item_count) ||
+      (record.content_item_count as number) < 1 ||
+      (record.content_item_count as number) > 10_000)
+  ) {
+    return protocolDefect("metadata content item count is invalid");
+  }
+  if (
+    record.content_kind === "thread" &&
+    (record.content_item_count as number) < 2
+  ) {
+    return protocolDefect("thread metadata must contain at least two items");
+  }
+  if (
+    (record.content_kind === "post" || record.content_kind === "article") &&
+    record.content_item_count !== 1
+  ) {
+    return protocolDefect(
+      `${record.content_kind} metadata must contain one item`,
+    );
+  }
   if (!Array.isArray(record.warnings) || record.warnings.length > 8) {
     return protocolDefect("metadata warnings are invalid");
   }
@@ -900,6 +940,14 @@ function parseMetadata(value: unknown): ExtractionMetadata {
   }
   return {
     content_type: record.content_type as ExtractionMetadata["content_type"],
+    ...(hasContentKind
+      ? {
+          content_kind: record.content_kind as NonNullable<
+            ExtractionMetadata["content_kind"]
+          >,
+          content_item_count: record.content_item_count as number,
+        }
+      : {}),
     title: extractionString(record.title, "metadata title", 500),
     author_name: extractionString(record.author_name, "metadata author", 200),
     author_handle: extractionString(
@@ -915,6 +963,26 @@ function parseMetadata(value: unknown): ExtractionMetadata {
     source_id: extractionString(record.source_id, "metadata source id", 200),
     warnings: record.warnings as Array<"partial_content">,
   };
+}
+
+function validateContentClassification(
+  metadata: ExtractionMetadata,
+  extractor: ExtractorIdentity,
+): void {
+  if (metadata.content_kind === undefined) return;
+  const validTweet =
+    (metadata.content_kind === "post" || metadata.content_kind === "thread") &&
+    metadata.content_type === "social_post" &&
+    extractor.implementation === "x-tweet";
+  const validArticle =
+    metadata.content_kind === "article" &&
+    metadata.content_type === "article" &&
+    extractor.implementation === "x-article";
+  if (!validTweet && !validArticle) {
+    protocolDefect(
+      "metadata content classification does not match its extractor",
+    );
+  }
 }
 
 const EXTRACTION_RELATION_TYPES = new Set<ExtractionRelation["relation_type"]>([
@@ -1083,6 +1151,7 @@ export function validateExtractionEnvelope(
       return protocolDefect("successful extraction contains failure details");
     }
     const metadata = parseMetadata(record.metadata);
+    validateContentClassification(metadata, extractor);
     const relations = parseRelations(record.relations, maxRelations);
     return {
       schema_version: "1",

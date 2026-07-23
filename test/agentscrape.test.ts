@@ -253,6 +253,48 @@ test("recorded Agentscrape extraction fixtures match Agentbrain's envelope contr
   );
 });
 
+test("accepts optional parser-derived X content classification", () => {
+  const url = "https://x.com/example/status/123";
+  const payload = extractionEnvelope(url);
+  payload.final_url = url;
+  payload.extractor = {
+    ...(payload.extractor as Record<string, unknown>),
+    implementation: "x-tweet",
+  };
+  payload.metadata = {
+    ...(payload.metadata as Record<string, unknown>),
+    content_type: "social_post",
+    content_kind: "thread",
+    content_item_count: 2,
+    source_id: "123",
+  };
+  const envelope = validateExtractionEnvelope(payload, url);
+  expect(envelope.status).toBe("success");
+  expect(envelope.metadata).toMatchObject({
+    content_kind: "thread",
+    content_item_count: 2,
+  });
+
+  const invalid = structuredClone(payload);
+  (invalid.metadata as Record<string, unknown>).content_item_count = 1;
+  expect(() => validateExtractionEnvelope(invalid, url)).toThrow(
+    "thread metadata must contain at least two items",
+  );
+
+  const missingCount = structuredClone(payload);
+  delete (missingCount.metadata as Record<string, unknown>).content_item_count;
+  expect(() => validateExtractionEnvelope(missingCount, url)).toThrow(
+    "content kind and item count must be provided together",
+  );
+
+  const mismatchedExtractor = structuredClone(payload);
+  (mismatchedExtractor.extractor as Record<string, unknown>).implementation =
+    "generic-page";
+  expect(() => validateExtractionEnvelope(mismatchedExtractor, url)).toThrow(
+    "content classification does not match its extractor",
+  );
+});
+
 test("incompatible extraction envelope changes are protocol defects", () => {
   const url = "https://example.com/contract";
   const base = extractionEnvelope(url);

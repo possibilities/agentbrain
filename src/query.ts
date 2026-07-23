@@ -1,9 +1,10 @@
 import { CliError } from "./errors";
-import type { SearchMode, Sensitivity } from "./types";
+import type { ContentKind, SearchMode, Sensitivity } from "./types";
 
 export interface QueryFilters {
   tag?: string;
   sourceType?: string;
+  contentKind?: ContentKind;
   collection?: string;
   source?: string;
   resourceKind?: string;
@@ -20,6 +21,7 @@ const SENSITIVITIES = new Set<Sensitivity>([
   "sensitive",
   "private",
 ]);
+const CONTENT_KINDS = new Set<ContentKind>(["post", "thread", "article"]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function validateQueryFilters(filters: QueryFilters): QueryFilters {
@@ -29,6 +31,16 @@ export function validateQueryFilters(filters: QueryFilters): QueryFilters {
         exitCode: 2,
       });
     }
+  }
+  if (
+    filters.contentKind !== undefined &&
+    !CONTENT_KINDS.has(filters.contentKind)
+  ) {
+    throw new CliError(
+      "bad_content_kind",
+      "content-kind must be post, thread, or article",
+      { exitCode: 2 },
+    );
   }
   if (
     filters.sensitivity !== undefined &&

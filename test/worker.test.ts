@@ -331,6 +331,55 @@ test("queued URL extraction promotes and commits through fenced completion", asy
   store.close();
 });
 
+test("URL worker persists parser-derived X thread classification", async () => {
+  const { root, store, artifacts } = fixture();
+  const url = "https://x.com/i/status/123";
+  const xIntent = intent("url");
+  xIntent.payload = { url: { url } };
+  const queued = store.enqueueJob({
+    idempotencyKey: "classified-x-thread",
+    kind: "url",
+    intent: xIntent,
+    now: T0,
+  });
+  const payload = JSON.parse(
+    extractionEnvelope(url, "first post\n\n---\n\nsecond post"),
+  ) as Record<string, unknown>;
+  payload.final_url = "https://x.com/Example/status/123";
+  payload.extractor = {
+    ...(payload.extractor as Record<string, unknown>),
+    implementation: "x-tweet",
+  };
+  payload.metadata = {
+    ...(payload.metadata as Record<string, unknown>),
+    content_type: "social_post",
+    content_kind: "thread",
+    content_item_count: 2,
+    source_id: "123",
+  };
+  installExtractionCommand(root, JSON.stringify(payload));
+
+  const result = await runWorker(store, {
+    once: true,
+    workerId: "classified-worker",
+    now: () => T0,
+    artifactStore: artifacts,
+    installSignalHandlers: false,
+  });
+
+  expect(result).toMatchObject({ claimed: 1, completed: 1, failed: 0 });
+  expect(
+    store.db
+      .query(
+        `SELECT d.content_kind, d.content_item_count
+         FROM jobs j JOIN resources r ON r.id=j.resource_id
+         JOIN documents d ON d.id=r.document_id WHERE j.id=?`,
+      )
+      .get(queued.job.id),
+  ).toEqual({ content_kind: "thread", content_item_count: 2 });
+  store.close();
+});
+
 test("retry after index failure reuses the promoted URL Artifact", async () => {
   const { root, store, artifacts } = fixture();
   const queued = store.enqueueJob({

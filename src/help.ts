@@ -135,6 +135,7 @@ Options:
   --offset <n>        Page offset (default: 0)
   --tag <tag>         Require a document tag, exact match
   --source-type <t>   Require a legacy document source_type
+  --content-kind <k>  Require parser-derived post | thread | article
   --collection <slug> Require exact collection membership
   --source <id>       Require an exact source identifier (or source_type:identifier)
   --resource-kind <k> Require an exact resource kind
@@ -154,6 +155,7 @@ Query modes:
 Examples:
   agentbrain search "agent memory systems" --json
   agentbrain search "karpathy llm" --tag source-item --limit 5
+  agentbrain search "model routing" --content-kind thread --json
   agentbrain search --mode all "cli mcp agents" --json
 `,
   get: `agentbrain get — retrieve evidence
@@ -189,6 +191,7 @@ Options:
   --max-chars <n>     Total chunk-content budget (default: 12000; 500..50000)
   --tag <tag>         Require an exact document tag
   --source-type <t>   Require a legacy document source_type
+  --content-kind <k>  Require parser-derived post | thread | article
   --collection <slug> Require exact collection membership
   --source <id>       Require an exact source identifier (or source_type:identifier)
   --resource-kind <k> Require an exact resource kind

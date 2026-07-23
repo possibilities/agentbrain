@@ -35,6 +35,7 @@ import type {
   CancelResult,
   ClaimResult,
   CompleteResult,
+  ContentKind,
   FailResult,
   FailureClass,
   FanoutDiscovery,
@@ -52,7 +53,7 @@ import type {
   Sensitivity,
 } from "./types";
 
-export const RESEARCH_SCHEMA_VERSION = 11;
+export const RESEARCH_SCHEMA_VERSION = 12;
 
 /**
  * Default lease and retry policy. Durations are policy, not identity: callers
@@ -102,6 +103,8 @@ export interface UpsertDocumentInput {
   sourceType: string;
   sourceUri: string;
   title?: string | null;
+  contentKind?: ContentKind | null;
+  contentItemCount?: number | null;
   content: string;
   tags?: unknown;
   notes?: string | null;
@@ -117,6 +120,8 @@ export interface UpsertDocumentResult {
   title: string;
   source_uri: string;
   source_type?: string;
+  content_kind: ContentKind | null;
+  content_item_count: number | null;
   size_chars: number;
   chunk_count?: number;
   tags: string[];
@@ -830,6 +835,91 @@ const MIGRATION_V11 = `
   UPDATE meta SET value='11' WHERE key='schema_version';
 `;
 
+// Parser-derived content form is separate from URL/source identity. Existing
+// provenance can identify Articles exactly; post/thread classification remains
+// null until a parser reports its item count.
+const MIGRATION_V12 = `
+  ALTER TABLE documents ADD COLUMN content_kind TEXT
+    CHECK (content_kind IS NULL OR content_kind IN ('post', 'thread', 'article'));
+  ALTER TABLE documents ADD COLUMN content_item_count INTEGER
+    CHECK (content_item_count IS NULL OR content_item_count >= 1);
+  CREATE INDEX idx_documents_content_kind
+    ON documents(content_kind, updated_at DESC);
+  CREATE TRIGGER documents_content_classification_insert
+    BEFORE INSERT ON documents
+    WHEN CASE
+      WHEN NEW.content_kind IS NULL AND NEW.content_item_count IS NULL THEN 0
+      WHEN NEW.content_kind IN ('post', 'article') AND NEW.content_item_count=1 THEN 0
+      WHEN NEW.content_kind='thread' AND NEW.content_item_count BETWEEN 2 AND 10000 THEN 0
+      ELSE 1
+    END=1
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid document content classification');
+    END;
+  CREATE TRIGGER documents_content_classification_update
+    BEFORE UPDATE OF content_kind, content_item_count ON documents
+    WHEN CASE
+      WHEN NEW.content_kind IS NULL AND NEW.content_item_count IS NULL THEN 0
+      WHEN NEW.content_kind IN ('post', 'article') AND NEW.content_item_count=1 THEN 0
+      WHEN NEW.content_kind='thread' AND NEW.content_item_count BETWEEN 2 AND 10000 THEN 0
+      ELSE 1
+    END=1
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid document content classification');
+    END;
+  UPDATE documents
+  SET content_kind='article', content_item_count=1
+  WHERE EXISTS (
+    SELECT 1
+    FROM resources r
+    JOIN provenance p ON p.resource_id=r.id
+    WHERE r.document_id=documents.id
+      AND p.evidence_type='url_extraction'
+      AND json_valid(p.raw_metadata)
+      AND (
+        json_extract(p.raw_metadata, '$.extractor.implementation')='x-article'
+        OR json_extract(p.raw_metadata, '$.metadata.content_type')='article'
+      )
+  );
+  UPDATE meta SET value='12' WHERE key='schema_version';
+`;
+
+const CONTENT_KINDS = new Set<ContentKind>(["post", "thread", "article"]);
+
+function normalizeContentClassification(
+  kind: ContentKind | null | undefined,
+  itemCount: number | null | undefined,
+): { kind: ContentKind | null; itemCount: number | null } | undefined {
+  if (kind === undefined && itemCount === undefined) return undefined;
+  if (kind === undefined || itemCount === undefined) {
+    throw new Error(
+      "content_kind and content_item_count must be provided together",
+    );
+  }
+  if (kind === null || itemCount === null) {
+    if (kind !== null || itemCount !== null) {
+      throw new Error("content_kind and content_item_count must both be null");
+    }
+    return { kind: null, itemCount: null };
+  }
+  const normalized = String(kind).trim().toLowerCase() as ContentKind;
+  if (!CONTENT_KINDS.has(normalized)) {
+    throw new Error("content_kind must be post, thread, or article");
+  }
+  if (!Number.isSafeInteger(itemCount) || itemCount < 1 || itemCount > 10_000) {
+    throw new Error(
+      "content_item_count must be an integer between 1 and 10000",
+    );
+  }
+  if ((normalized === "post" || normalized === "article") && itemCount !== 1) {
+    throw new Error(`${normalized} content_item_count must be 1`);
+  }
+  if (normalized === "thread" && itemCount < 2) {
+    throw new Error("thread content_item_count must be at least 2");
+  }
+  return { kind: normalized, itemCount };
+}
+
 const MEDIA_TYPE_PATTERN =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;\s*[ -~]+)?$/;
 const JOB_KIND_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -1134,11 +1224,16 @@ export class ResearchStore {
       500,
     );
     const notes = input.notes ?? "";
+    const providedClassification = normalizeContentClassification(
+      input.contentKind,
+      input.contentItemCount,
+    );
 
     const transaction = this.db.transaction((): UpsertDocumentResult => {
       const existing = this.db
         .query(
           `SELECT id, title, tags, notes, content_hash, revision_digest,
+                  content_kind, content_item_count,
                   (SELECT COUNT(*) FROM chunks c WHERE c.document_id=documents.id) AS chunk_count,
                   (SELECT COUNT(*) FROM chunks c
                    WHERE c.document_id=documents.id AND c.chunker_version=?) AS generation_count
@@ -1151,9 +1246,19 @@ export class ResearchStore {
         notes: string | null;
         content_hash: string;
         revision_digest: string;
+        content_kind: ContentKind | null;
+        content_item_count: number | null;
         chunk_count: number;
         generation_count: number;
       } | null;
+      const inheritedClassification = normalizeContentClassification(
+        existing?.content_kind ?? null,
+        existing?.content_item_count ?? null,
+      );
+      if (inheritedClassification === undefined) {
+        throw new Error("stored content classification is incomplete");
+      }
+      const classification = providedClassification ?? inheritedClassification;
 
       if (
         existing !== null &&
@@ -1164,6 +1269,8 @@ export class ResearchStore {
         existing.title === title &&
         existing.tags === tagsJson &&
         (existing.notes ?? "") === notes &&
+        existing.content_kind === classification.kind &&
+        existing.content_item_count === classification.itemCount &&
         !input.force
       ) {
         return {
@@ -1172,6 +1279,8 @@ export class ResearchStore {
           document_id: existing.id,
           title,
           source_uri: sourceUri,
+          content_kind: classification.kind,
+          content_item_count: classification.itemCount,
           size_chars: sizeChars,
           tags,
         };
@@ -1193,7 +1302,7 @@ export class ResearchStore {
           .query(
             `UPDATE documents
              SET title=?, tags=?, notes=?, content=?, content_hash=?, revision_digest=?,
-                 size_chars=?, updated_at=?
+                 content_kind=?, content_item_count=?, size_chars=?, updated_at=?
              WHERE id=?`,
           )
           .run(
@@ -1203,6 +1312,8 @@ export class ResearchStore {
             content,
             hash,
             revisionDigest,
+            classification.kind,
+            classification.itemCount,
             sizeChars,
             timestamp,
             documentId,
@@ -1213,8 +1324,9 @@ export class ResearchStore {
           .query(
             `INSERT INTO documents(
                source_type, source_uri, title, tags, notes, content, content_hash,
-               revision_digest, size_chars, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               revision_digest, content_kind, content_item_count, size_chars,
+               created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             sourceType,
@@ -1225,6 +1337,8 @@ export class ResearchStore {
             content,
             hash,
             revisionDigest,
+            classification.kind,
+            classification.itemCount,
             sizeChars,
             timestamp,
             timestamp,
@@ -1287,6 +1401,8 @@ export class ResearchStore {
         title,
         source_uri: sourceUri,
         source_type: sourceType,
+        content_kind: classification.kind,
+        content_item_count: classification.itemCount,
         size_chars: sizeChars,
         chunk_count: chunks.length,
         tags,
@@ -3566,6 +3682,7 @@ export class ResearchStore {
         if (version < 9) this.db.exec(MIGRATION_V9);
         if (version < 10) this.db.exec(MIGRATION_V10);
         if (version < 11) this.db.exec(MIGRATION_V11);
+        if (version < 12) this.db.exec(MIGRATION_V12);
       })
       .immediate();
   }

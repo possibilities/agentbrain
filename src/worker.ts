@@ -33,6 +33,7 @@ import {
 import { DEFAULT_LIFECYCLE_POLICY, type ResearchStore } from "./store";
 import { cleanText } from "./text";
 import type {
+  ContentKind,
   ExtractionFanoutPlan,
   ExtractionSuccess,
   FailureClass,
@@ -54,6 +55,8 @@ export interface MaterializedDocument {
   sourceUri: string;
   title: string;
   content: string;
+  contentKind?: ContentKind | null;
+  contentItemCount?: number | null;
   tags?: string[];
   notes?: string;
   mediaType?: string;
@@ -423,6 +426,12 @@ function urlDocument(
     : articleId
       ? { type: "x:article", value: articleId }
       : { type: "url", value: normalizedWebUrl(url) };
+  const contentKind =
+    extraction.metadata.content_kind ??
+    (extraction.metadata.content_type === "article" ? "article" : undefined);
+  const contentItemCount =
+    extraction.metadata.content_item_count ??
+    (contentKind === "article" ? 1 : undefined);
   const aliases = [
     {
       type: "submitted_url",
@@ -448,6 +457,8 @@ function urlDocument(
       (extraction.metadata.title ||
         titleFromMarkdown(sourceUri, extraction.artifacts[0].content)),
     content: extraction.artifacts[0].content,
+    contentKind,
+    contentItemCount,
     mediaType: record.artifact.media_type,
     tags: intent.options.tags,
     notes: intent.options.notes,
@@ -642,6 +653,8 @@ function applyDocuments(
       sourceUri: recoveryResource?.locator ?? document.sourceUri,
       title: document.title,
       content: document.content,
+      contentKind: document.contentKind,
+      contentItemCount: document.contentItemCount,
       tags: document.tags,
       notes: document.notes,
       mediaType: document.mediaType ?? document.artifact?.mediaType,

@@ -13,13 +13,21 @@ export function buildGuide(): unknown {
       boundary:
         "Every public ingestion intent is durable before materialization. Admission performs no network work, and URL workers delegate extraction to Agentscrape without direct HTTP fallback.",
       decision_record:
-        "docs/adr/0003-agentbrain-owns-durable-ingestion.md, docs/adr/0005-public-ingestion-admission-contract.md, and docs/adr/0014-agentbrain-database-namespace.md",
+        "docs/adr/0003-agentbrain-owns-durable-ingestion.md, docs/adr/0005-public-ingestion-admission-contract.md, docs/adr/0014-agentbrain-database-namespace.md, and docs/adr/0015-parser-derived-content-classification.md",
       glossary: "CONTEXT.md",
     },
     source_types: {
       x: ["tweet", "tweet_article"],
       generic: ["scraped_url", "text", "file", "url", "url_text", "url_pdf"],
       note: "X identities canonicalize to x.com/i/status/ID and x.com/i/article/ID.",
+    },
+    content_classification: {
+      field: "content_kind",
+      values: ["post", "thread", "article"],
+      item_count_field: "content_item_count",
+      filter: "--content-kind",
+      authority:
+        "Parser-derived metadata persisted independently from URL/source identity; null means legacy or not yet classified.",
     },
     global_flags: [
       {
@@ -109,7 +117,7 @@ export function buildGuide(): unknown {
       stats:
         "Inventory counts, source types, tags, recent docs, and relation totals.",
       search:
-        "FTS5 chunks; data.results include ids, title, source_uri, snippet, tags, score, and offsets.",
+        "FTS5 chunks with exact content-kind and provenance filters; data.results include parser-derived content_kind/content_item_count alongside ids, source, snippet, tags, score, and offsets.",
       get: "Evidence retrieval by document id, chunk id, or source URI.",
       context: "Bounded compact citation-ready hits for shell-enabled agents.",
       submit:

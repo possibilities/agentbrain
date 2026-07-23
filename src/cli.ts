@@ -59,6 +59,7 @@ import {
 import { deriveStructuralTags } from "./tagging";
 import { normalizeTags } from "./text";
 import type {
+  ContentKind,
   GlobalOptions,
   OperatorRunScope,
   SearchMode,
@@ -387,6 +388,7 @@ function runSearch(
     offset: { type: "number", default: 0 },
     tag: { type: "string" },
     "source-type": { type: "string" },
+    "content-kind": { type: "string" },
     collection: { type: "string" },
     source: { type: "string" },
     "resource-kind": { type: "string" },
@@ -405,6 +407,7 @@ function runSearch(
     offset: optNumber(opts, "offset"),
     tag: optString(opts, "tag"),
     sourceType: optString(opts, "source-type"),
+    contentKind: optString(opts, "content-kind") as ContentKind | undefined,
     collection: optString(opts, "collection"),
     source: optString(opts, "source"),
     resourceKind: optString(opts, "resource-kind"),
@@ -499,6 +502,7 @@ function runContext(
     "max-chars": { type: "number", default: 12000 },
     tag: { type: "string" },
     "source-type": { type: "string" },
+    "content-kind": { type: "string" },
     collection: { type: "string" },
     source: { type: "string" },
     "resource-kind": { type: "string" },
@@ -515,6 +519,7 @@ function runContext(
     maxChars: optNumber(opts, "max-chars"),
     tag: optString(opts, "tag"),
     sourceType: optString(opts, "source-type"),
+    contentKind: optString(opts, "content-kind") as ContentKind | undefined,
     collection: optString(opts, "collection"),
     source: optString(opts, "source"),
     resourceKind: optString(opts, "resource-kind"),

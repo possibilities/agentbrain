@@ -59,7 +59,7 @@ export function humanSearch(data: SearchData): string {
       `   resource: ${result.resource_id ?? "legacy"} / ${result.resource_kind} / ${result.sensitivity}`,
     );
     lines.push(
-      `   type/tags: ${result.source_type} / ${result.tags.join(", ")}`,
+      `   type/kind/items/tags: ${result.source_type} / ${result.content_kind ?? "unclassified"} / ${result.content_item_count ?? "?"} / ${result.tags.join(", ")}`,
     );
     if (result.collections.length > 0) {
       lines.push(`   collections: ${result.collections.join(", ")}`);
@@ -123,6 +123,8 @@ export function humanDocument(data: DocumentData): string {
     `title: ${data.title ?? "(untitled)"}`,
     `source_uri: ${data.source_uri}`,
     `source_type: ${data.source_type}`,
+    `content_kind: ${data.content_kind ?? "unclassified"}`,
+    `content_item_count: ${data.content_item_count ?? "unknown"}`,
     `tags: ${data.tags.join(", ")}`,
     `updated_at: ${data.updated_at}`,
     `chars: ${data.truncation.returned_chars}/${data.size_chars}${data.truncation.omitted_chars > 0 ? ` (${data.truncation.omitted_chars} omitted)` : ""}`,
@@ -145,6 +147,8 @@ export function humanChunk(data: ChunkData): string {
     `title: ${data.title ?? "(untitled)"}`,
     `source_uri: ${data.source_uri}`,
     `source_type: ${data.source_type}`,
+    `content_kind: ${data.content_kind ?? "unclassified"}`,
+    `content_item_count: ${data.content_item_count ?? "unknown"}`,
     `tags: ${data.tags.join(", ")}`,
     `span: ${data.start_char}-${data.end_char}`,
     "",
@@ -164,6 +168,9 @@ export function humanContext(data: ContextData): string {
     lines.push(`${index + 1}. ${hit.citation}`);
     lines.push(
       `   Resource: ${hit.resource_id ?? "legacy"} / ${hit.resource_kind} / ${hit.sensitivity}`,
+    );
+    lines.push(
+      `   Content: ${hit.content_kind ?? "unclassified"} / ${hit.content_item_count ?? "?"} item(s)`,
     );
     if (hit.collections.length > 0) {
       lines.push(`   Collections: ${hit.collections.join(", ")}`);

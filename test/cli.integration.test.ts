@@ -29,6 +29,8 @@ function makeTempDb(name: string, withLinks: boolean): string {
       title TEXT,
       source_uri TEXT NOT NULL,
       source_type TEXT NOT NULL,
+      content_kind TEXT,
+      content_item_count INTEGER,
       tags TEXT NOT NULL,
       notes TEXT,
       size_chars INTEGER NOT NULL,
@@ -76,6 +78,8 @@ function makeTempDb(name: string, withLinks: boolean): string {
       title: "Agent Memory Notes",
       source_uri: "https://x.com/a/status/1",
       source_type: "tweet_article",
+      content_kind: "article",
+      content_item_count: 1,
       tags: JSON.stringify(["x", "memory"]),
       notes: "primary",
       size_chars: 62,
@@ -90,6 +94,8 @@ function makeTempDb(name: string, withLinks: boolean): string {
       title: "Tweet Source",
       source_uri: "https://x.com/b/status/2",
       source_type: "tweet",
+      content_kind: "post",
+      content_item_count: 1,
       tags: JSON.stringify(["x"]),
       notes: null,
       size_chars: 30,
@@ -103,6 +109,8 @@ function makeTempDb(name: string, withLinks: boolean): string {
       title: "Scraped URL",
       source_uri: "https://example.com/article",
       source_type: "scraped_url",
+      content_kind: "article",
+      content_item_count: 1,
       tags: JSON.stringify(["web"]),
       notes: null,
       size_chars: 46,
@@ -116,14 +124,17 @@ function makeTempDb(name: string, withLinks: boolean): string {
   for (const doc of docs) {
     db.query(
       `INSERT INTO documents
-        (id, title, source_uri, source_type, tags, notes, size_chars, content_hash, created_at, updated_at, content)
+        (id, title, source_uri, source_type, content_kind, content_item_count,
+         tags, notes, size_chars, content_hash, created_at, updated_at, content)
        VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       doc.id,
       doc.title,
       doc.source_uri,
       doc.source_type,
+      doc.content_kind,
+      doc.content_item_count,
       doc.tags,
       doc.notes,
       doc.size_chars,
@@ -508,11 +519,17 @@ test("fts search and get work against the fixture DB", () => {
     document_id: 1,
     chunk_id: 11,
     source_type: "tweet_article",
+    content_kind: "article",
+    content_item_count: 1,
   });
 
   const get = runCli(["get", "--document-id", "1", "--json"], dbPath);
   expect(get.exitCode).toBe(0);
   const getPayload = JSON.parse(decode(get.stdout).trim());
+  expect(getPayload.data).toMatchObject({
+    content_kind: "article",
+    content_item_count: 1,
+  });
   expect(getPayload.data.content).toContain("Agent memory systems");
 });
 
@@ -543,12 +560,40 @@ test("search and context expose durable filters without relation content expansi
   ).toEqual([101, 102]);
   expect(payload.data.results[0]).toHaveProperty("relations");
 
+  const posts = runCli(
+    ["search", "agent", "--content-kind", "post", "--json"],
+    dbPath,
+  );
+  expect(posts.exitCode).toBe(0);
+  const postPayload = JSON.parse(decode(posts.stdout).trim());
+  expect(postPayload.data.filters).toEqual({ content_kind: "post" });
+  expect(postPayload.data.results).toMatchObject([
+    {
+      document_id: 2,
+      resource_id: 102,
+      content_kind: "post",
+      content_item_count: 1,
+    },
+  ]);
+
+  const invalidKind = runCli(
+    ["search", "agent", "--content-kind", "video", "--json"],
+    dbPath,
+  );
+  expect(invalidKind.exitCode).toBe(2);
+  expect(JSON.parse(decode(invalidKind.stdout))).toMatchObject({
+    ok: false,
+    error: { code: "bad_content_kind" },
+  });
+
   const privateContext = runCli(
     [
       "context",
       "agent",
       "--sensitivity",
       "private",
+      "--content-kind",
+      "article",
       "--local-path",
       "/vault/agent.md",
       "--json",
@@ -557,6 +602,10 @@ test("search and context expose durable filters without relation content expansi
   );
   expect(privateContext.exitCode).toBe(0);
   const contextPayload = JSON.parse(decode(privateContext.stdout).trim());
+  expect(contextPayload.data.filters).toMatchObject({
+    sensitivity: "private",
+    content_kind: "article",
+  });
   expect(contextPayload.data.hits).toHaveLength(1);
   expect(contextPayload.data.hits[0]).toMatchObject({
     resource_id: 101,

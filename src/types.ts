@@ -162,6 +162,8 @@ export interface RelationSummary {
   linked_sensitivity: Sensitivity;
 }
 
+export type ContentKind = "post" | "thread" | "article";
+
 export interface SearchResult {
   document_id: number;
   resource_id: number | null;
@@ -175,6 +177,8 @@ export interface SearchResult {
   title: string | null;
   source_uri: string;
   source_type: string;
+  content_kind: ContentKind | null;
+  content_item_count: number | null;
   tags: string[];
   updated_at: string;
   start_char: number;
@@ -192,6 +196,7 @@ export interface SearchData {
   filters: {
     tag?: string;
     source_type?: string;
+    content_kind?: ContentKind;
     collection?: string;
     source?: string;
     resource_kind?: string;
@@ -218,6 +223,8 @@ export interface ContextHit {
   title: string | null;
   source_uri: string;
   source_type: string;
+  content_kind: ContentKind | null;
+  content_item_count: number | null;
   tags: string[];
   start_char: number;
   end_char: number;
@@ -255,6 +262,8 @@ export interface DocumentData {
   title: string | null;
   source_uri: string;
   source_type: string;
+  content_kind: ContentKind | null;
+  content_item_count: number | null;
   tags: string[];
   notes: string | null;
   size_chars: number;
@@ -280,6 +289,8 @@ export interface ChunkData {
   title: string | null;
   source_uri: string;
   source_type: string;
+  content_kind: ContentKind | null;
+  content_item_count: number | null;
   tags: string[];
   content: string;
 }
@@ -527,6 +538,8 @@ export interface ExtractionArtifact {
 
 export interface ExtractionMetadata {
   content_type: "web_page" | "social_post" | "article";
+  content_kind?: ContentKind;
+  content_item_count?: number;
   title: string;
   author_name: string;
   author_handle: string;

@@ -17,6 +17,7 @@ import { RESEARCH_SCHEMA_VERSION } from "./store";
 import type {
   Attempt,
   ChunkData,
+  ContentKind,
   ContextData,
   DocumentData,
   Job,
@@ -139,6 +140,7 @@ export class ResearchCache {
     const queryFilters = validateQueryFilters({
       tag: input.tag,
       sourceType: input.sourceType,
+      contentKind: input.contentKind,
       collection: input.collection,
       source: input.source,
       resourceKind: input.resourceKind,
@@ -167,6 +169,10 @@ export class ResearchCache {
     if (queryFilters.sourceType !== undefined) {
       filters.push("d.source_type = ?");
       params.push(queryFilters.sourceType);
+    }
+    if (queryFilters.contentKind !== undefined) {
+      filters.push("d.content_kind = ?");
+      params.push(queryFilters.contentKind);
     }
     if (queryFilters.collection !== undefined) {
       filters.push(
@@ -237,6 +243,8 @@ export class ResearchCache {
       title: string | null;
       source_uri: string;
       source_type: string;
+      content_kind: ContentKind | null;
+      content_item_count: number | null;
       tags: string;
       updated_at: string;
       start_char: number;
@@ -253,6 +261,8 @@ export class ResearchCache {
          d.title AS title,
          d.source_uri AS source_uri,
          d.source_type AS source_type,
+         d.content_kind AS content_kind,
+         d.content_item_count AS content_item_count,
          d.tags AS tags,
          d.updated_at AS updated_at,
          c.start_char AS start_char,
@@ -355,6 +365,8 @@ export class ResearchCache {
         title: result.title,
         source_uri: result.source_uri,
         source_type: result.source_type,
+        content_kind: result.content_kind,
+        content_item_count: result.content_item_count,
         tags: result.tags,
         start_char: result.start_char,
         end_char: result.end_char,
@@ -395,6 +407,8 @@ export class ResearchCache {
             title: string | null;
             source_uri: string;
             source_type: string;
+            content_kind: ContentKind | null;
+            content_item_count: number | null;
             tags: string;
             notes: string | null;
             size_chars: number;
@@ -408,6 +422,8 @@ export class ResearchCache {
             title: string | null;
             source_uri: string;
             source_type: string;
+            content_kind: ContentKind | null;
+            content_item_count: number | null;
             tags: string;
             notes: string | null;
             size_chars: number;
@@ -427,6 +443,8 @@ export class ResearchCache {
       title: row.title,
       source_uri: row.source_uri,
       source_type: row.source_type,
+      content_kind: row.content_kind,
+      content_item_count: row.content_item_count,
       tags: parseTags(row.tags),
       notes: row.notes,
       size_chars: row.size_chars,
@@ -455,10 +473,13 @@ export class ResearchCache {
       title: string | null;
       source_uri: string;
       source_type: string;
+      content_kind: ContentKind | null;
+      content_item_count: number | null;
       tags: string;
     }>(
       `SELECT c.id AS chunk_id, c.document_id, c.chunk_index, c.start_char, c.end_char, c.content,
-              d.title, d.source_uri, d.source_type, d.tags
+              d.title, d.source_uri, d.source_type, d.content_kind,
+              d.content_item_count, d.tags
        FROM chunks c JOIN documents d ON d.id = c.document_id
        WHERE c.id = ?`,
       [chunkId],
@@ -588,6 +609,9 @@ export class ResearchCache {
       ...(filters.tag !== undefined ? { tag: filters.tag } : {}),
       ...(filters.sourceType !== undefined
         ? { source_type: filters.sourceType }
+        : {}),
+      ...(filters.contentKind !== undefined
+        ? { content_kind: filters.contentKind }
         : {}),
       ...(filters.collection !== undefined
         ? { collection: filters.collection }

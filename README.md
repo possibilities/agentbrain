@@ -11,6 +11,7 @@ Architecture references:
 - [Public Admission contract](docs/adr/0005-public-ingestion-admission-contract.md)
 - [Single Worker operation](docs/adr/0011-single-worker-source-scheduling.md)
 - [Agentbrain database namespace](docs/adr/0014-agentbrain-database-namespace.md)
+- [Parser-derived content classification](docs/adr/0015-parser-derived-content-classification.md)
 
 ## Quick start
 
@@ -23,7 +24,14 @@ bun run src/cli.ts search "agent memory" --limit 5 --json
 bun run src/cli.ts get --document-id 123 --json
 ```
 
-Recommended evidence flow: `context`, or `search -> get -> cite`. Cite `document_id`, `chunk_id` when present, `title`, `source_uri`, and relevant relation provenance.
+Recommended evidence flow: `context`, or `search -> get -> cite`. Cite `document_id`, `chunk_id` when present, `title`, `source_uri`, and relevant relation provenance. Parser-derived content form is durable and independently filterable from URL identity:
+
+```bash
+agentbrain search "model routing" --content-kind thread --json
+agentbrain context "reasoning systems" --content-kind article --json
+```
+
+`content_kind` is `post`, `thread`, `article`, or `null` for legacy/unclassified documents; `content_item_count` records the parser-observed number of posts/items. These fields appear in search, context, get-document, and get-chunk output.
 
 ## Durable Admission and ingestion
 
@@ -40,7 +48,7 @@ Text and local file bytes are captured as immutable Artifacts before acknowledge
 
 For URL jobs, the Worker invokes PATH-resolved `agentscrape fetch-markdown URL --envelope --max-content-bytes N --max-relations N` without a shell. Agentscrape owns fetching, browser/session behavior, redirects, credentials, backend retries, and extraction hardening. The live schema-v1 envelope must identify `agentscrape`; malformed and unknown versions are protocol defects. Agentbrain bounds and sanitizes extractor output and remains the only component allowed to mutate the index.
 
-Successful extraction bytes are promoted before index commit so a retry does not refetch. New promotion records retain `record_version: 1` and carry extractor identity `agentscrape`. Existing version-1 records remain readable with their bounded opaque historical extractor identity preserved in provenance; replay validates the same URL, digest, path, size, and content constraints and does not rewrite the record, Artifact bytes, or SQLite merely to rename provenance.
+Successful extraction bytes are promoted before index commit so a retry does not refetch. New promotion records retain `record_version: 1` and carry extractor identity `agentscrape`. Existing version-1 records remain readable with their bounded opaque historical extractor identity preserved in provenance; replay validates the same URL, digest, path, size, and content constraints and does not rewrite the record, Artifact bytes, or SQLite merely to rename provenance. Agentscrape may additionally report the optional, validated `content_kind` and `content_item_count`; Agentbrain persists them on the Document while keeping `source_type` as locator identity.
 
 Operate the queue explicitly with:
 
@@ -87,6 +95,8 @@ The idempotent installer creates only these owned entries:
 The data and state directories are mode `0700`; the database, rendered plist, and log are mode `0600`; the service uses umask `077`. Its arguments contain no submitted content, URLs, Artifact paths, or credentials. Installation runs `bun install --frozen-lockfile` before changing the command or service, so immutable managed checkouts do not expose a runtime missing its dependencies. Reinstall unloads the known label, atomically replaces only a marker-owned plist, and loads it again. The installer may replace the exact legacy command link `/Users/mike/code/agentbrain/src/cli.ts`; managed deployments with a different known predecessor can set `AGENTBRAIN_INSTALL_LEGACY_SOURCE` to that one exact source. It refuses unrelated command links, regular files, and foreign service files rather than taking them over.
 
 Installation never guesses between database copies. If the retired `~/.hermes/research-cache/research.db` exists, or both retired and namespaced databases exist, default-path commands and installation fail closed until an operator completes the [verified database namespace migration](docs/runbooks/database-namespace-migration.md). `--db` and `AGENTBRAIN_DB` remain available for explicit recovery and rollback; no compatibility symlink is created.
+
+Writable schema upgrades are applied transactionally when the installed Worker opens the database; read-only commands deliberately never migrate. After an upgrade, wait for the Worker to start and require `doctor` to report the current schema before treating the deployment as available. Older binaries cannot read a database after a schema upgrade, so rollback requires restoring the matching pre-upgrade backup rather than merely switching the command link.
 
 Check operation with:
 

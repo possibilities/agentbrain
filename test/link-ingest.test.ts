@@ -346,8 +346,17 @@ test("historical X article fixture remains readable without child intent", async
     count: 1,
   });
   expect(
-    store.db.query("SELECT title, source_type FROM documents").get(),
-  ).toEqual({ title: "A Structured X Article", source_type: "tweet_article" });
+    store.db
+      .query(
+        "SELECT title, source_type, content_kind, content_item_count FROM documents",
+      )
+      .get(),
+  ).toEqual({
+    title: "A Structured X Article",
+    source_type: "tweet_article",
+    content_kind: "article",
+    content_item_count: 1,
+  });
   expect(
     store.db.query("SELECT COUNT(*) AS count FROM observations").get(),
   ).toEqual({ count: 0 });
