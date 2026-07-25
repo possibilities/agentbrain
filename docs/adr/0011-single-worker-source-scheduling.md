@@ -1,6 +1,6 @@
 # ADR 0011: Single worker with source scheduling
 
-- Status: Accepted
+- Status: Accepted; source-trigger portions superseded by [ADR 0016](0016-external-source-trigger-contract.md)
 - Date: 2026-07-18
 
 ## Context
@@ -14,9 +14,9 @@ The worker must survive login-session restarts and machine sleep while remaining
 - **One long-running Agentbrain worker process is the initial deployment topology.** A macOS LaunchAgent keeps it alive for the user session.
 - **Concurrency is bounded inside the process.** Materialization may use separate configured limits for URL extraction and local parsing, while fenced SQLite completion is serialized through the sole writer path.
 - **The persisted lease model remains process-agnostic.** Schema and claims are safe for multiple workers, but additional worker processes are disabled until measurement demonstrates useful throughput without unacceptable contention.
-- **Source scheduling uses the same process and ledger.** The worker periodically evaluates enabled source definitions and durably admits idempotent source-run jobs when their schedules are due; scheduling does not execute discovery inline or create a second queue.
+- **Source timing was originally assigned to this process and ledger.** This source-timer decision is superseded by ADR 0016: an external scheduling service invokes an idempotent Agentbrain due-sync command, while Agentbrain still owns durable Run admission and the existing Worker executes admitted jobs.
 - **Confirmed default schedules are policy.** Confirmed blog sources begin with daily cadence and confirmed X sources with hourly cadence, each with per-source pause, limits, health, and checkpoint state.
-- **`agentbrain worker --once` is the deterministic execution seam.** It performs bounded due-schedule admission, stale-lease recovery, reconciliation, and job draining for tests, manual operation, and repair without requiring launchd.
+- **`agentbrain worker --once` is the deterministic execution seam.** It performs stale-lease recovery, reconciliation, and job draining for tests, manual operation, and repair without requiring launchd. Due-source admission is now the explicit `sources sync ... --due` trigger from ADR 0016.
 - **Operator-controlled drains may narrow claims.** A run-scoped invocation can require a pinned run and allowed job kinds while the ordinary LaunchAgent worker is quiesced. Scoped execution reuses the same leases, attempts, fencing, and sole-writer path; it does not create a second queue or worker topology.
 - **Startup performs recovery before ordinary claims.** It identifies expired leases, fences stale attempts, reconciles artifact staging, and surfaces integrity defects before resuming normal work.
 - **Shutdown is graceful and bounded.** The worker stops claiming new jobs, propagates cancellation or permits configured bounded completion for active materialization, and leaves any unfinished work recoverable by lease expiry.

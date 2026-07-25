@@ -14,6 +14,7 @@ import {
   type XTimelineDiscoveryEnvelope,
   type XTimelineItem,
 } from "./agentscrape";
+import { CliError } from "./errors";
 import { sanitizeExternalError } from "./sanitize";
 import {
   type SourceObservationAdmission,
@@ -32,6 +33,10 @@ interface BlogCheckpoint {
   version: 1;
   kind: "blog_feed";
   validators: { etag: string | null; last_modified: string | null };
+  /** Conditional validators are valid only for this configured/effective retrieval pair. */
+  retrieval_source_url?: string;
+  validator_source_url?: string | null;
+  source_definition_version?: number;
   newest_seen_at: string | null;
   recent_entries: Array<{ stable_id: string; observed_version: string }>;
 }
@@ -39,6 +44,9 @@ interface BlogCheckpoint {
 interface XCheckpoint {
   version: 1;
   kind: "x_account";
+  account_handle?: string;
+  profile_url?: string;
+  source_definition_version?: number;
   since_id: string | null;
   recent_ids: string[];
   newest_seen_at: string | null;
@@ -66,7 +74,7 @@ export class SourceRunDispatchError extends Error {
   constructor(
     message: string,
     readonly failureClass: FailureClass,
-    readonly commitEvidence: (now?: Date) => Run,
+    readonly commitEvidence: (now?: Date, terminal?: boolean) => Run,
   ) {
     super(message);
     this.name = "SourceRunDispatchError";
@@ -275,6 +283,16 @@ function validCheckpointDate(value: unknown): value is string | null {
   );
 }
 
+function validCheckpointUrl(value: unknown): value is string | null {
+  if (value === null) return true;
+  if (typeof value !== "string") return false;
+  try {
+    return normalizedWebUrl(value) === value;
+  } catch {
+    return false;
+  }
+}
+
 function blogCheckpoint(value: unknown): BlogCheckpoint | null {
   if (value === null) return null;
   if (typeof value !== "object" || Array.isArray(value)) {
@@ -293,6 +311,17 @@ function blogCheckpoint(value: unknown): BlogCheckpoint | null {
     (validators.etag !== null && typeof validators.etag !== "string") ||
     (validators.last_modified !== null &&
       typeof validators.last_modified !== "string") ||
+    new Set([
+      checkpoint.retrieval_source_url === undefined,
+      checkpoint.validator_source_url === undefined,
+      checkpoint.source_definition_version === undefined,
+    ]).size !== 1 ||
+    (checkpoint.retrieval_source_url !== undefined &&
+      (typeof checkpoint.retrieval_source_url !== "string" ||
+        !validCheckpointUrl(checkpoint.retrieval_source_url) ||
+        !validCheckpointUrl(checkpoint.validator_source_url) ||
+        !Number.isSafeInteger(checkpoint.source_definition_version) ||
+        (checkpoint.source_definition_version as number) < 1)) ||
     !validCheckpointDate(checkpoint.newest_seen_at) ||
     !Array.isArray(checkpoint.recent_entries) ||
     checkpoint.recent_entries.length > 32 ||
@@ -321,6 +350,18 @@ function xCheckpoint(value: unknown): XCheckpoint | null {
   if (
     checkpoint.version !== 1 ||
     checkpoint.kind !== "x_account" ||
+    new Set([
+      checkpoint.account_handle === undefined,
+      checkpoint.profile_url === undefined,
+      checkpoint.source_definition_version === undefined,
+    ]).size !== 1 ||
+    (checkpoint.account_handle !== undefined &&
+      (typeof checkpoint.account_handle !== "string" ||
+        !/^[a-z0-9_]{1,20}$/.test(checkpoint.account_handle) ||
+        typeof checkpoint.profile_url !== "string" ||
+        !validCheckpointUrl(checkpoint.profile_url) ||
+        !Number.isSafeInteger(checkpoint.source_definition_version) ||
+        (checkpoint.source_definition_version as number) < 1)) ||
     (checkpoint.since_id !== null &&
       (typeof checkpoint.since_id !== "string" ||
         !/^\d+$/.test(checkpoint.since_id))) ||
@@ -547,13 +588,13 @@ function failureError(
   return new SourceRunDispatchError(
     failure.error.message,
     failure.failureClass,
-    (now = new Date()) =>
+    (now = new Date(), terminal = false) =>
       registry.commitSourceRunWindow({
         runId,
         observations,
         attemptedCursor,
         warnings,
-        disposition: failure.retry ? "retry" : "failed",
+        disposition: terminal || !failure.retry ? "failed" : "retry",
         healthDetail: detail,
         ...(failure.pause ? { pauseReason: "auth_config" } : {}),
         now,
@@ -613,17 +654,26 @@ async function dispatchBlog(
   options: SourceRunDispatchOptions,
 ): Promise<PreparedSourceRunDispatch> {
   const payload = context.definition.payload;
-  const sourceUrl =
-    optionalText(payload.feed_url) ?? optionalText(payload.homepage_url);
+  const configuredFeedUrl = optionalText(payload.feed_url);
+  const sourceUrl = configuredFeedUrl ?? optionalText(payload.homepage_url);
   if (sourceUrl === undefined) {
     throw new Error("blog source has no discovery URL");
   }
+  const retrievalSourceUrl = normalizedWebUrl(sourceUrl);
   let previous: BlogCheckpoint | null;
   try {
     previous = blogCheckpoint(context.checkpoint);
   } catch (error) {
     throw invalidCheckpointError(registry, context.run.id, "blog_feed", error);
   }
+  const validatorsCompatible =
+    configuredFeedUrl !== undefined &&
+    previous?.retrieval_source_url === retrievalSourceUrl &&
+    typeof previous.validator_source_url === "string" &&
+    previous.source_definition_version === context.definition.version;
+  const validatorSourceUrl = validatorsCompatible
+    ? (previous?.validator_source_url ?? null)
+    : null;
   const now = options.now?.() ?? new Date();
   let envelope: FeedDiscoveryEnvelope;
   try {
@@ -632,14 +682,17 @@ async function dispatchBlog(
       sourceKind:
         payload.source_kind === "archive"
           ? "archive"
-          : payload.source_kind === "feed"
+          : payload.source_kind === "feed" || configuredFeedUrl !== undefined
             ? "feed"
             : "auto",
       recordedInputFile: optionalText(payload.recorded_input_file),
       validators: {
-        etag: previous?.validators.etag ?? null,
-        lastModified: previous?.validators.last_modified ?? null,
+        etag: validatorsCompatible ? (previous?.validators.etag ?? null) : null,
+        lastModified: validatorsCompatible
+          ? (previous?.validators.last_modified ?? null)
+          : null,
       },
+      validatorUrl: validatorSourceUrl ?? undefined,
       recordedValidators: {
         ...(optionalText(payload.etag) === undefined
           ? {}
@@ -655,7 +708,7 @@ async function dispatchBlog(
       ),
       maxPages: context.definition.limits.max_pages_per_run,
       maxItems: context.definition.limits.max_items_per_run,
-      timeoutMs: positiveBounded(payload.timeout_ms, 120_000, 600_000),
+      timeoutMs: positiveBounded(payload.timeout_ms, 120_000, 300_000),
       signal: options.signal,
     });
     envelope = validateFeedDiscoveryEnvelope(discovered, sourceUrl, {
@@ -768,17 +821,27 @@ async function dispatchBlog(
     recentEntries.push(entry);
     if (recentEntries.length === 32) break;
   }
+  const checkpointValidatorUrl =
+    configuredFeedUrl === undefined
+      ? null
+      : envelope.pagination.stop_reason === "not_modified"
+        ? (previous?.validator_source_url ?? retrievalSourceUrl)
+        : (envelope.pagination.pages[0]?.url ?? retrievalSourceUrl);
   const checkpoint: BlogCheckpoint = {
     version: 1,
     kind: "blog_feed",
     validators: envelope.cursor.validators,
+    retrieval_source_url: retrievalSourceUrl,
+    validator_source_url: checkpointValidatorUrl,
+    source_definition_version: context.definition.version,
     newest_seen_at: newestSeenAt,
     recent_entries: recentEntries,
   };
   const complete =
     envelope.status === "success" &&
     envelope.pagination.complete &&
-    envelope.pagination.stop_reason === "exhausted" &&
+    (envelope.pagination.stop_reason === "exhausted" ||
+      envelope.pagination.stop_reason === "not_modified") &&
     envelope.pagination.next_url === null &&
     envelope.cursor.next_url === null &&
     envelope.failure === null;
@@ -825,15 +888,23 @@ async function dispatchX(
   const payload = context.definition.payload;
   const handle = optionalText(payload.handle);
   if (handle === undefined) throw new Error("X source has no handle");
-  const profileUrl =
+  const profileUrl = normalizedWebUrl(
     optionalText(payload.profile_url) ??
-    `https://x.com/${handle.replace(/^@/, "")}`;
-  let previous: XCheckpoint | null;
+      `https://x.com/${handle.replace(/^@/, "")}`,
+  );
+  const accountHandle = handle.replace(/^@/, "").toLowerCase();
+  let storedCheckpoint: XCheckpoint | null;
   try {
-    previous = xCheckpoint(context.checkpoint);
+    storedCheckpoint = xCheckpoint(context.checkpoint);
   } catch (error) {
     throw invalidCheckpointError(registry, context.run.id, "x_account", error);
   }
+  const previous =
+    storedCheckpoint?.account_handle === accountHandle &&
+    storedCheckpoint.profile_url === profileUrl &&
+    storedCheckpoint.source_definition_version === context.definition.version
+      ? storedCheckpoint
+      : null;
   const requestedSinceId = xRequestSince(previous);
   const includeReplies = optionalBoolean(payload.include_replies);
   const includeReposts = optionalBoolean(payload.include_reposts);
@@ -974,6 +1045,9 @@ async function dispatchX(
   const checkpoint: XCheckpoint = {
     version: 1,
     kind: "x_account",
+    account_handle: accountHandle,
+    profile_url: profileUrl,
+    source_definition_version: context.definition.version,
     since_id: high,
     recent_ids: recentIds,
     newest_seen_at: newestSeenAt,
@@ -1009,7 +1083,30 @@ export async function dispatchSourceRun(
   }
   const registry = new SourceRegistry(store);
   const intent = sourceIntent(job);
-  const context = registry.sourceRunExecution(intent.run_id);
+  let context: SourceRunExecutionContext;
+  try {
+    context = registry.sourceRunExecution(intent.run_id);
+  } catch (error) {
+    if (!(error instanceof CliError)) throw error;
+    const detail = sanitizeExternalError(error);
+    throw new SourceRunDispatchError(
+      detail,
+      "auth_config",
+      (now = new Date()) =>
+        registry.finishSourceRun({
+          runId: intent.run_id,
+          outcome: "failed",
+          attemptedCursor: {
+            kind: "source_sync",
+            status: "invalid_definition",
+          },
+          warnings: [detail],
+          healthDetail: detail,
+          pauseReason: "auth_config",
+          now,
+        }),
+    );
+  }
   assertJobBinding(job, context);
   abortIfRequested(options.signal);
   registry.startSourceRun({ runId: context.run.id, now: options.now?.() });

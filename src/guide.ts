@@ -103,6 +103,8 @@ export function buildGuide(): unknown {
         "0": "success",
         "1": "runtime, extraction, indexing, not-found, or database failure",
         "2": "argument or pre-admission validation error",
+        "124":
+          "source-sync wait observation timeout; the durable Run continues unless separately cancelled",
       },
     },
     recommended_workflow: [
@@ -133,7 +135,8 @@ export function buildGuide(): unknown {
       retag:
         "Deterministically derive and apply structural tags (source_type, URL domain, collection) across every document, keeping documents.tags and chunks_fts.tags in sync; idempotent; --dry-run previews without writing.",
       tags: "Tag discovery.",
-      sources: "Source-type and domain discovery.",
+      sources:
+        "Apply and inspect versioned recurring Source definitions, durably admit due X/feed discovery Runs, pause/resume them, and optionally wait for a scheduler-facing discovery/checkpoint receipt without waiting for child URL extraction.",
       prompt: "Prompt another harness to generate docs from this help surface.",
     },
     safety: {

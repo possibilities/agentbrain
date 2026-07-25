@@ -1,4 +1,4 @@
-import type { RunState, Sensitivity } from "./types";
+import type { JobState, RunState, Sensitivity } from "./types";
 
 export const SOURCE_MANIFEST_VERSION = 1 as const;
 export const SOURCE_RUN_INTENT_VERSION = 1 as const;
@@ -140,6 +140,33 @@ export interface SourceSyncAdmission {
   job_id: number | null;
   scheduled_for: string | null;
   dry_run: boolean;
+}
+
+/** Stable scheduler-facing view of one admitted source-sync Run. */
+export interface SourceRunStatus {
+  source_id: string;
+  run_id: number;
+  run_state: RunState;
+  outcome: SourceRunOutcome | null;
+  terminal: boolean;
+  warnings: number;
+  counts: SourceRunCounts;
+  checkpoint_committed: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  job: {
+    id: number;
+    state: JobState;
+    failure_class: string | null;
+    failure_summary: string | null;
+  } | null;
+}
+
+export interface SourceSyncWaitResult {
+  admission: SourceSyncAdmission;
+  execution: SourceRunStatus | null;
+  timed_out: boolean;
 }
 
 export interface SourceListItem {

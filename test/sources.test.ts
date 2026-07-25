@@ -67,6 +67,25 @@ test("source manifests validate versions, stable IDs, payloads, overlays, and cr
       ),
     ),
   ).toThrow("credential-shaped URL query");
+  expect(() =>
+    validateSourceManifest(
+      manifest(
+        blog({
+          payload: {
+            homepage_url: "https://blog.example/",
+            timeout_ms: 300_001,
+          },
+        }),
+      ),
+    ),
+  ).toThrow("payload.timeout_ms");
+  expect(() =>
+    validateSourceManifest(
+      manifest(
+        blog({ limits: { max_items_per_run: 25, max_pages_per_run: 11 } }),
+      ),
+    ),
+  ).toThrow("at most 10 pages");
 
   const merged = mergeSourceOverlay(manifest(blog()), {
     schema_version: 1,
@@ -153,6 +172,31 @@ test("schedule evaluation admits one catch-up Run and never executes discovery i
   expect(
     store.db.query("SELECT kind, source_id, run_id, state FROM jobs").get(),
   ).toEqual({ kind: "source_sync", source_id: 1, run_id: 1, state: "queued" });
+  registry.pauseSource({
+    sourceId: "blog-one",
+    now: new Date("2026-07-22T12:00:02.000Z"),
+  });
+  expect(
+    registry.syncSource({
+      sourceId: "blog-one",
+      dueOnly: true,
+      now: new Date("2026-07-22T12:00:03.000Z"),
+    }),
+  ).toMatchObject({ status: "duplicate", run_id: 1, job_id: 1 });
+  registry.resumeSource({
+    sourceId: "blog-one",
+    now: new Date("2026-07-22T12:00:04.000Z"),
+  });
+  registry.applySourceDefinitions([blog({ version: 2, enabled: false })], {
+    now: new Date("2026-07-22T12:00:05.000Z"),
+  });
+  expect(
+    registry.syncSource({
+      sourceId: "blog-one",
+      dueOnly: true,
+      now: new Date("2026-07-22T12:00:06.000Z"),
+    }),
+  ).toMatchObject({ status: "duplicate", run_id: 1, job_id: 1 });
   store.close();
 });
 
@@ -335,5 +379,50 @@ test("disabled and unknown source kinds remain inspectable but cannot admit work
       }),
     ]),
   ).toThrow(CliError);
+  store.close();
+});
+
+test("operator cancellation and exclusion close their source Runs", () => {
+  const store = new ResearchStore(tempDb());
+  const registry = new SourceRegistry(store);
+  registry.applySourceDefinitions(
+    [blog(), blog({ id: "blog-two", display_name: "Blog Two" })],
+    { now: T0 },
+  );
+
+  const cancelled = registry.syncSource({ sourceId: "blog-one", now: T0 });
+  expect(
+    store.cancelJob({
+      jobId: cancelled.job_id as number,
+      actor: "test",
+      reason: "operator cancellation",
+      now: new Date("2026-07-20T00:01:00.000Z"),
+    }).ok,
+  ).toBeTrue();
+  expect(
+    store.db
+      .query("SELECT state, terminal_outcome FROM runs WHERE id=?")
+      .get(cancelled.run_id as number),
+  ).toEqual({ state: "cancelled", terminal_outcome: "cancelled" });
+
+  const excluded = registry.syncSource({ sourceId: "blog-two", now: T0 });
+  store.excludeJob({
+    jobId: excluded.job_id as number,
+    actor: "test",
+    reason: "operator exclusion",
+    now: new Date("2026-07-20T00:02:00.000Z"),
+  });
+  expect(
+    store.db
+      .query("SELECT state, terminal_outcome FROM runs WHERE id=?")
+      .get(excluded.run_id as number),
+  ).toEqual({ state: "cancelled", terminal_outcome: "cancelled" });
+  expect(() => store.retryJob({ jobId: excluded.job_id as number })).toThrow(
+    "admit a new Source Run",
+  );
+  expect(showSource(store.db, "blog-two").health).toMatchObject({
+    state: "unhealthy",
+    detail: "operator exclusion",
+  });
   store.close();
 });

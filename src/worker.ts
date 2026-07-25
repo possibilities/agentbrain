@@ -38,6 +38,7 @@ import type {
   ExtractionSuccess,
   FailureClass,
   Job,
+  JobState,
   LifecyclePolicy,
   OperatorRunScope,
   PromotedUrlExtraction,
@@ -1156,7 +1157,13 @@ export async function runWorker(
           failureClass,
           summary: sanitizeExternalError(error),
           ...(error instanceof SourceRunDispatchError
-            ? { apply: () => error.commitEvidence(failureTime) }
+            ? {
+                apply: (_db: unknown, disposition: JobState) =>
+                  error.commitEvidence(
+                    failureTime,
+                    disposition === "blocked" || disposition === "failed",
+                  ),
+              }
             : {}),
           now: failureTime,
           policy: options.policy,

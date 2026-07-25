@@ -2,16 +2,21 @@ import { optBoolean, optNumber, optString, parseOptions } from "./args";
 import { ResearchCache } from "./db";
 import { CliError } from "./errors";
 import { formatList, writeByFormat } from "./format";
+import type { SourceSyncAdmission, SourceSyncWaitResult } from "./source-types";
 import {
   DEFAULT_SOURCE_MANIFEST_PATH,
+  latestSourceRunStatus,
   listSources,
   readSourceManifest,
   SourceRegistry,
   showSource,
+  sourceRunStatus,
   sourceStatuses,
 } from "./sources";
 import { ResearchStore } from "./store";
 import type { GlobalOptions } from "./types";
+
+const ACTIVE_JOB_STATES = new Set(["queued", "running", "retry_wait"]);
 
 function positiveInteger(value: number, name: string): number {
   if (!Number.isInteger(value) || value < 1) {
@@ -22,11 +27,11 @@ function positiveInteger(value: number, name: string): number {
   return value;
 }
 
-export function runSourceCommands(
+export async function runSourceCommands(
   dbPath: string,
   argv: string[],
   globals: GlobalOptions,
-): void {
+): Promise<void> {
   const subcommand = argv[0]?.startsWith("--") ? "list" : (argv[0] ?? "list");
   const args =
     argv[0]?.startsWith("--") || argv.length === 0 ? argv : argv.slice(1);
@@ -118,34 +123,158 @@ export function runSourceCommands(
       due: { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       limit: { type: "number", default: 1000 },
+      wait: { type: "boolean", default: false },
+      "wait-timeout-seconds": { type: "number", default: 300 },
+      "wait-timeout-ok": { type: "boolean", default: false },
+      "wait-poll-ms": { type: "number", default: 250 },
     });
     const due = optBoolean(opts, "due");
-    if ((due && opts._.length !== 0) || (!due && opts._.length !== 1)) {
+    if (opts._.length > 1 || (!due && opts._.length !== 1)) {
       throw new CliError(
         "bad_source_sync",
-        "sources sync requires one stable source ID or --due",
+        "sources sync requires one stable source ID, optionally with --due, or --due by itself",
         { exitCode: 2 },
       );
     }
     const dryRun = optBoolean(opts, "dry-run");
+    const wait = optBoolean(opts, "wait");
+    const waitTimeoutOk = optBoolean(opts, "wait-timeout-ok");
+    if (waitTimeoutOk && !wait) {
+      throw new CliError(
+        "bad_source_sync",
+        "sources sync --wait-timeout-ok requires --wait",
+        { exitCode: 2 },
+      );
+    }
+    if (dryRun && wait) {
+      throw new CliError(
+        "bad_source_sync",
+        "sources sync --wait cannot be combined with --dry-run",
+        { exitCode: 2 },
+      );
+    }
+    const waitTimeoutSeconds = optNumber(opts, "wait-timeout-seconds") ?? 300;
+    const waitPollMs = optNumber(opts, "wait-poll-ms") ?? 250;
+    if (
+      !Number.isFinite(waitTimeoutSeconds) ||
+      waitTimeoutSeconds <= 0 ||
+      waitTimeoutSeconds > 3_600
+    ) {
+      throw new CliError(
+        "bad_source_sync",
+        "--wait-timeout-seconds must be greater than zero and at most 3600",
+        { exitCode: 2 },
+      );
+    }
+    if (
+      !Number.isInteger(waitPollMs) ||
+      waitPollMs < 25 ||
+      waitPollMs > 5_000
+    ) {
+      throw new CliError(
+        "bad_source_sync",
+        "--wait-poll-ms must be an integer from 25 through 5000",
+        { exitCode: 2 },
+      );
+    }
     const store = new ResearchStore(dbPath);
+    let admissions: SourceSyncAdmission[];
     try {
       const registry = new SourceRegistry(store);
-      const data = due
-        ? registry.syncDueSources({
-            dryRun,
-            limit: positiveInteger(optNumber(opts, "limit") ?? 1_000, "limit"),
-          })
-        : [registry.syncSource({ sourceId: opts._[0], dryRun })];
+      admissions =
+        due && opts._.length === 0
+          ? registry.syncDueSources({
+              dryRun,
+              limit: positiveInteger(
+                optNumber(opts, "limit") ?? 1_000,
+                "limit",
+              ),
+            })
+          : [
+              registry.syncSource({
+                sourceId: opts._[0],
+                dueOnly: due,
+                dryRun,
+              }),
+            ];
+    } finally {
+      store.close();
+    }
+    if (!wait) {
       writeByFormat(
         "sources sync",
-        data,
+        admissions,
         globals,
         (value) => `${JSON.stringify(value, null, 2)}\n`,
         { readOnly: dryRun },
       );
+      return;
+    }
+
+    const deadline = Date.now() + waitTimeoutSeconds * 1_000;
+    const cache = new ResearchCache(dbPath);
+    let results: SourceSyncWaitResult[] = [];
+    try {
+      for (;;) {
+        results = admissions.map((admission) => ({
+          admission,
+          execution:
+            admission.run_id !== null
+              ? sourceRunStatus(cache.db, admission.run_id)
+              : admission.status === "not_due"
+                ? latestSourceRunStatus(cache.db, admission.source_id)
+                : null,
+          timed_out: false,
+        }));
+        if (
+          results.every(
+            (result) =>
+              result.execution === null ||
+              (result.execution.job === null
+                ? result.execution.terminal
+                : !ACTIVE_JOB_STATES.has(result.execution.job.state)),
+          )
+        ) {
+          break;
+        }
+        if (Date.now() >= deadline) {
+          results = results.map((result) => ({
+            ...result,
+            timed_out:
+              result.execution !== null &&
+              (result.execution.job === null
+                ? !result.execution.terminal
+                : ACTIVE_JOB_STATES.has(result.execution.job.state)),
+          }));
+          break;
+        }
+        await Bun.sleep(
+          Math.min(waitPollMs, Math.max(1, deadline - Date.now())),
+        );
+      }
     } finally {
-      store.close();
+      cache.close();
+    }
+    writeByFormat(
+      "sources sync",
+      results,
+      globals,
+      (value) => `${JSON.stringify(value, null, 2)}\n`,
+      { readOnly: false },
+    );
+    if (results.some((result) => result.timed_out) && !waitTimeoutOk) {
+      process.exitCode = 124;
+    } else if (
+      results.some(
+        (result) =>
+          !result.timed_out &&
+          ((result.execution === null &&
+            result.admission.status !== "not_due") ||
+            (result.execution !== null &&
+              result.execution.outcome !== "success")),
+      )
+    ) {
+      process.exitCode = 1;
     }
     return;
   }

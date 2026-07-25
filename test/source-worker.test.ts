@@ -11,7 +11,7 @@ import {
 } from "../src/agentscrape";
 import { SourceRegistry, showSource } from "../src/sources";
 import { ResearchStore } from "../src/store";
-import type { SourceDefinition } from "../src/types";
+import type { LifecyclePolicy, SourceDefinition } from "../src/types";
 import { normalizedWebUrl, xStatusId } from "../src/url";
 import { type JobMaterializer, runWorker } from "../src/worker";
 
@@ -198,6 +198,7 @@ async function drain(
   options: {
     now?: Date;
     beforeCheckpointCommit?: () => void;
+    policy?: Partial<LifecyclePolicy>;
   } = {},
 ): Promise<void> {
   const now = options.now ?? T0;
@@ -209,7 +210,12 @@ async function drain(
     materialize,
     beforeSourceCheckpointCommit: options.beforeCheckpointCommit,
     installSignalHandlers: false,
-    policy: { infraBaseMs: 1, infraCapMs: 1, jitterRatio: 0 },
+    policy: {
+      infraBaseMs: 1,
+      infraCapMs: 1,
+      jitterRatio: 0,
+      ...options.policy,
+    },
   });
 }
 
@@ -329,6 +335,294 @@ test("blog windows preserve benign warnings, dedupe, edits, and no-new health", 
     state: "healthy",
     last_success_at: "2026-07-20T02:00:01.000Z",
   });
+  store.close();
+});
+
+test("not-modified blog polls stay healthy and preserve checkpoint history", async () => {
+  const { store, registry } = fixture();
+  const definition = blog();
+  definition.payload.timeout_ms = 300_000;
+  registry.applySourceDefinitions([definition], { now: T0 });
+  const sourceUrl = "https://blog-one.example/feed.xml";
+  let poll = 0;
+  const requests: Array<{
+    sourceUrl: string;
+    sourceKind: string | undefined;
+    validators:
+      | { etag: string | null; lastModified: string | null }
+      | undefined;
+    validatorUrl: string | undefined;
+    timeoutMs: number | undefined;
+  }> = [];
+  const discovery = provider({
+    feed: (request) => {
+      requests.push({
+        sourceUrl: request.sourceUrl,
+        sourceKind: request.sourceKind,
+        validators: request.validators,
+        validatorUrl: request.validatorUrl,
+        timeoutMs: request.timeoutMs,
+      });
+      poll += 1;
+      if (poll === 1) {
+        return feedEnvelope(sourceUrl, [
+          feedItem("entry-1", "https://shared.example/one"),
+        ]);
+      }
+      if (poll === 2) {
+        return feedEnvelope(sourceUrl, [], {
+          source_format: "unknown",
+          validators: { etag: '"v1"', last_modified: null },
+          cursor: {
+            validators: { etag: '"v1"', last_modified: null },
+            newest_seen_at: null,
+            next_url: null,
+          },
+          pagination: {
+            pages: [],
+            complete: true,
+            stop_reason: "not_modified",
+            next_url: null,
+          },
+        });
+      }
+      return feedEnvelope(request.sourceUrl, [], {
+        validators: { etag: '"v2"', last_modified: null },
+        cursor: {
+          validators: { etag: '"v2"', last_modified: null },
+          newest_seen_at: null,
+          next_url: null,
+        },
+      });
+    },
+  });
+
+  sync(registry, "blog-one");
+  await drain(store, discovery);
+  const jobsAfterFirstPoll = count(store, "jobs", "kind='url'");
+  const notModifiedRun = sync(
+    registry,
+    "blog-one",
+    new Date("2026-07-20T01:00:00.000Z"),
+  );
+  await drain(store, discovery, { now: new Date("2026-07-20T01:00:01.000Z") });
+
+  expect(requests).toEqual([
+    {
+      sourceUrl,
+      sourceKind: "feed",
+      validators: { etag: null, lastModified: null },
+      validatorUrl: undefined,
+      timeoutMs: 300_000,
+    },
+    {
+      sourceUrl,
+      sourceKind: "feed",
+      validators: { etag: '"v1"', lastModified: null },
+      validatorUrl: sourceUrl,
+      timeoutMs: 300_000,
+    },
+  ]);
+  expect(count(store, "jobs", "kind='url'")).toBe(jobsAfterFirstPoll);
+  const checkpoints = registry.sourceCheckpoints("blog-one");
+  expect(checkpoints).toHaveLength(2);
+  expect(
+    store.db
+      .query("SELECT terminal_outcome FROM runs WHERE id=?")
+      .get(notModifiedRun),
+  ).toEqual({ terminal_outcome: "success" });
+  const checkpoint = JSON.parse(checkpoints.at(-1)?.value ?? "null");
+  expect(checkpoint).toMatchObject({
+    validators: { etag: '"v1"', last_modified: null },
+    retrieval_source_url: sourceUrl,
+    validator_source_url: sourceUrl,
+    source_definition_version: 1,
+    newest_seen_at: "2026-07-19T00:00:00.000Z",
+    recent_entries: [{ stable_id: "entry-1" }],
+  });
+
+  const changedUrl = "https://blog-one.example/new-feed.xml";
+  registry.applySourceDefinitions(
+    [
+      {
+        ...definition,
+        version: 2,
+        payload: { ...definition.payload, feed_url: changedUrl },
+      },
+    ],
+    { now: new Date("2026-07-20T02:00:00.000Z") },
+  );
+  sync(registry, "blog-one", new Date("2026-07-20T02:00:00.000Z"));
+  await drain(store, discovery, { now: new Date("2026-07-20T02:00:01.000Z") });
+  expect(requests[2]).toEqual({
+    sourceUrl: changedUrl,
+    sourceKind: "feed",
+    validators: { etag: null, lastModified: null },
+    validatorUrl: undefined,
+    timeoutMs: 300_000,
+  });
+  const changedCheckpoint = JSON.parse(
+    registry.sourceCheckpoints("blog-one").at(-1)?.value ?? "null",
+  );
+  expect(changedCheckpoint).toMatchObject({
+    validators: { etag: '"v2"', last_modified: null },
+    retrieval_source_url: changedUrl,
+    validator_source_url: changedUrl,
+    source_definition_version: 2,
+  });
+  expect(showSource(store.db, "blog-one").health).toMatchObject({
+    state: "healthy",
+    last_success_at: "2026-07-20T02:00:01.000Z",
+  });
+  store.close();
+});
+
+test("homepage autodiscovery never reuses feed validators across targets", async () => {
+  const { store, registry } = fixture();
+  const sourceUrl = "https://blog.example/";
+  const homepageDefinition = blog();
+  homepageDefinition.kind = "blog_source";
+  homepageDefinition.payload = { homepage_url: sourceUrl };
+  registry.applySourceDefinitions([homepageDefinition], { now: T0 });
+  const validators: Array<unknown> = [];
+  const validatorUrls: Array<string | undefined> = [];
+  const discovery = provider({
+    feed: (request) => {
+      validators.push(request.validators);
+      validatorUrls.push(request.validatorUrl);
+      return feedEnvelope(request.sourceUrl, [], {
+        validators: { etag: '"homepage-feed"', last_modified: null },
+        cursor: {
+          validators: { etag: '"homepage-feed"', last_modified: null },
+          newest_seen_at: null,
+          next_url: null,
+        },
+      });
+    },
+  });
+
+  sync(registry, "blog-one");
+  await drain(store, discovery);
+  sync(registry, "blog-one", new Date("2026-07-20T01:00:00.000Z"));
+  await drain(store, discovery, { now: new Date("2026-07-20T01:00:01.000Z") });
+
+  expect(validators).toEqual([
+    { etag: null, lastModified: null },
+    { etag: null, lastModified: null },
+  ]);
+  expect(validatorUrls).toEqual([undefined, undefined]);
+  const checkpoint = JSON.parse(
+    registry.sourceCheckpoints("blog-one").at(-1)?.value ?? "null",
+  );
+  expect(checkpoint).toMatchObject({
+    retrieval_source_url: sourceUrl,
+    validator_source_url: null,
+    source_definition_version: 1,
+  });
+  expect(showSource(store.db, "blog-one")).toMatchObject({
+    payload: { homepage_url: sourceUrl },
+    health: { state: "healthy" },
+  });
+  store.close();
+});
+
+test("a definition change during discovery fences the stale checkpoint", async () => {
+  const { store, registry } = fixture();
+  const original = blog();
+  original.sensitivity = "public";
+  registry.applySourceDefinitions([original], { now: T0 });
+  const sourceUrl = "https://blog-one.example/feed.xml";
+  const runId = sync(registry, "blog-one");
+  const discovery = provider({
+    feed: () => {
+      registry.applySourceDefinitions(
+        [
+          {
+            ...original,
+            version: 2,
+            payload: {
+              ...original.payload,
+              feed_url: "https://blog-one.example/new-feed.xml",
+            },
+            sensitivity: "private",
+          },
+        ],
+        { now: new Date("2026-07-20T00:00:01.000Z") },
+      );
+      return feedEnvelope(sourceUrl, [
+        feedItem("entry-1", "https://shared.example/one"),
+      ]);
+    },
+  });
+
+  await drain(store, discovery);
+
+  expect(registry.sourceCheckpoints("blog-one")).toEqual([]);
+  expect(count(store, "jobs", "kind='url'")).toBe(1);
+  expect(
+    store.db
+      .query("SELECT terminal_outcome, warnings FROM runs WHERE id=?")
+      .get(runId),
+  ).toEqual({
+    terminal_outcome: "partial",
+    warnings: JSON.stringify(["source_definition_changed_during_run"]),
+  });
+  expect(showSource(store.db, "blog-one")).toMatchObject({
+    version: 2,
+    sensitivity: "private",
+    checkpoint: { present: false },
+    health: { state: "never" },
+  });
+  expect(
+    store.db
+      .query(
+        `SELECT r.sensitivity AS resource_sensitivity,
+                j.sensitivity AS job_sensitivity
+         FROM jobs j JOIN resources r ON r.id=j.resource_id
+         WHERE j.kind='url'`,
+      )
+      .get(),
+  ).toEqual({ resource_sensitivity: "private", job_sensitivity: "private" });
+  store.close();
+});
+
+test("a stale authentication failure cannot re-pause a corrected Source", async () => {
+  const { store, registry } = fixture();
+  const original = blog();
+  registry.applySourceDefinitions([original], { now: T0 });
+  const runId = sync(registry, "blog-one");
+  await drain(
+    store,
+    provider({
+      feed: () => {
+        registry.applySourceDefinitions(
+          [{ ...original, version: 2, display_name: "Corrected Blog" }],
+          { now: new Date("2026-07-20T00:00:01.000Z") },
+        );
+        throw new AgentscrapeDiscoveryError(
+          "old credentials rejected",
+          "auth_config",
+          "auth_config",
+        );
+      },
+    }),
+  );
+
+  expect(
+    store.db
+      .query("SELECT state, terminal_outcome FROM runs WHERE id=?")
+      .get(runId),
+  ).toEqual({ state: "failed", terminal_outcome: "failed" });
+  expect(showSource(store.db, "blog-one")).toMatchObject({
+    version: 2,
+    display_name: "Corrected Blog",
+    paused: false,
+    pause_reason: null,
+    health: { state: "never" },
+  });
+  expect(
+    registry.sourceAuditEvents("blog-one").map((event) => event.action),
+  ).toEqual(["config_applied", "config_applied"]);
   store.close();
 });
 
@@ -462,7 +756,12 @@ test("X uses bounded since_id overlap without treating diagnostic oldest IDs as 
   const firstCheckpoint = JSON.parse(
     registry.sourceCheckpoints("x-one")[0]?.value ?? "null",
   ) as Record<string, unknown>;
-  expect(firstCheckpoint).toMatchObject({ since_id: "105" });
+  expect(firstCheckpoint).toMatchObject({
+    account_handle: "person",
+    profile_url: "https://x.com/person",
+    source_definition_version: 1,
+    since_id: "105",
+  });
   expect(firstCheckpoint).not.toHaveProperty("next_cursor");
   expect(firstCheckpoint).not.toHaveProperty("diagnostic_oldest_item_id");
 
@@ -495,6 +794,61 @@ test("X uses bounded since_id overlap without treating diagnostic oldest IDs as 
   expect(JSON.parse(partial.attempted_cursor)).toMatchObject({
     diagnostic_oldest_item_id: "106",
     boundary_complete: false,
+  });
+  store.close();
+});
+
+test("X checkpoints do not cross account or definition identity", async () => {
+  const { store, registry } = fixture();
+  const original = xSource();
+  registry.applySourceDefinitions([original], { now: T0 });
+  const requests: Array<{
+    handle: string;
+    url: string;
+    sinceId: string | undefined;
+  }> = [];
+  const discovery = provider({
+    x: (request) => {
+      requests.push({
+        handle: request.handle,
+        url: request.url,
+        sinceId: request.sinceId,
+      });
+      const id = requests.length === 1 ? "301" : "401";
+      return xEnvelope(
+        [{ ...tweet(id), url: `https://x.com/${request.handle}/status/${id}` }],
+        { handle: request.handle },
+      );
+    },
+  });
+
+  sync(registry, "x-one");
+  await drain(store, discovery);
+  registry.applySourceDefinitions(
+    [
+      {
+        ...original,
+        version: 2,
+        payload: { handle: "other", profile_url: "https://x.com/other" },
+      },
+    ],
+    { now: new Date("2026-07-20T01:00:00.000Z") },
+  );
+  sync(registry, "x-one", new Date("2026-07-20T01:00:00.000Z"));
+  await drain(store, discovery, { now: new Date("2026-07-20T01:00:01.000Z") });
+
+  expect(requests).toEqual([
+    { handle: "person", url: "https://x.com/person", sinceId: undefined },
+    { handle: "other", url: "https://x.com/other", sinceId: undefined },
+  ]);
+  const checkpoint = JSON.parse(
+    registry.sourceCheckpoints("x-one").at(-1)?.value ?? "null",
+  );
+  expect(checkpoint).toMatchObject({
+    account_handle: "other",
+    profile_url: "https://x.com/other",
+    source_definition_version: 2,
+    since_id: "401",
   });
   store.close();
 });
@@ -770,6 +1124,51 @@ test("invalid durable checkpoints fail closed before provider execution", async 
   store.close();
 });
 
+test("legacy out-of-range feed timeout fails as terminal configuration", async () => {
+  const { store, registry } = fixture();
+  const definition = blog();
+  registry.applySourceDefinitions([definition], { now: T0 });
+  const runId = sync(registry, "blog-one");
+  const invalid = JSON.stringify({
+    ...definition,
+    payload: { ...definition.payload, timeout_ms: 300_001 },
+  });
+  store.db
+    .query(
+      `UPDATE source_definition_versions SET definition=?
+       WHERE source_id=1 AND definition_version=1`,
+    )
+    .run(invalid);
+  let calls = 0;
+  await drain(
+    store,
+    provider({
+      feed: () => {
+        calls += 1;
+        return feedEnvelope("https://blog-one.example/feed.xml", []);
+      },
+    }),
+  );
+
+  expect(calls).toBe(0);
+  expect(
+    store.db
+      .query("SELECT state, terminal_outcome FROM runs WHERE id=?")
+      .get(runId),
+  ).toEqual({ state: "failed", terminal_outcome: "failed" });
+  expect(
+    store.db
+      .query("SELECT state, failure_class FROM jobs WHERE kind='source_sync'")
+      .get(),
+  ).toEqual({ state: "blocked", failure_class: "auth_config" });
+  expect(showSource(store.db, "blog-one")).toMatchObject({
+    paused: true,
+    pause_reason: "auth_config",
+    health: { state: "unhealthy" },
+  });
+  store.close();
+});
+
 test("rate limits retry the active Run while auth failures pause it without Checkpoint advancement", async () => {
   const rate = fixture();
   rate.registry.applySourceDefinitions([xSource()], { now: T0 });
@@ -798,6 +1197,34 @@ test("rate limits retry the active Run while auth failures pause it without Chec
   ).toEqual({ state: "retry_wait", failure_class: "item_transient" });
   expect(rate.registry.sourceCheckpoints("x-one")).toEqual([]);
   rate.store.close();
+
+  const exhausted = fixture();
+  exhausted.registry.applySourceDefinitions([xSource()], { now: T0 });
+  const exhaustedRun = sync(exhausted.registry, "x-one");
+  await drain(
+    exhausted.store,
+    provider({
+      x: () => {
+        throw new AgentscrapeDiscoveryError(
+          "provider rate limited",
+          "item_transient",
+          "rate_limit",
+        );
+      },
+    }),
+    { policy: { maxItemRetries: 1 } },
+  );
+  expect(
+    exhausted.store.db
+      .query("SELECT state, terminal_outcome FROM runs WHERE id=?")
+      .get(exhaustedRun),
+  ).toEqual({ state: "failed", terminal_outcome: "failed" });
+  expect(
+    exhausted.store.db
+      .query("SELECT state, failure_class FROM jobs WHERE kind='source_sync'")
+      .get(),
+  ).toEqual({ state: "blocked", failure_class: "item_transient" });
+  exhausted.store.close();
 
   const auth = fixture();
   auth.registry.applySourceDefinitions([xSource()], { now: T0 });

@@ -2942,8 +2942,8 @@ export class ResearchStore {
       fencingToken: number;
       failureClass: FailureClass;
       summary?: unknown;
-      /** Fenced domain evidence committed with the failed attempt. */
-      apply?: (db: Database) => void;
+      /** Fenced domain evidence committed with the failed attempt and disposition. */
+      apply?: (db: Database, disposition: JobState) => void;
     } & LifecycleOptions,
   ): FailResult {
     const now = input.now ?? new Date();
@@ -2957,7 +2957,6 @@ export class ResearchStore {
       const guard = this.guardActiveToken(input.fencingToken, now);
       if (guard.ok === false) return guard;
       const job = guard.job;
-      if (input.apply !== undefined) input.apply(this.db);
       this.db
         .query(
           `UPDATE attempts SET state='failed', failure_class=?, failure_summary=?,
@@ -3012,6 +3011,7 @@ export class ResearchStore {
         reason = "permanent";
       }
 
+      if (input.apply !== undefined) input.apply(this.db, toState);
       this.assertTransition(job.state, toState);
       this.db
         .query(
@@ -3233,9 +3233,13 @@ export class ResearchStore {
       if (job.state === "completed") {
         return { ok: false, reason: "already_completed", job };
       }
-      if (job.state === "cancelled") return { ok: true, job };
+      if (job.state === "cancelled") {
+        this.cancelSourceRunForJob(job, reason, timestamp);
+        return { ok: true, job };
+      }
       this.assertTransition(job.state, "cancelled");
       if (input.apply !== undefined) input.apply(this.db);
+      this.cancelSourceRunForJob(job, reason, timestamp);
       if (job.current_attempt_id !== null) {
         this.db
           .query(
@@ -3485,6 +3489,21 @@ export class ResearchStore {
     const timestamp = now.toISOString();
     const transaction = this.db.transaction((): Job => {
       const job = this.requireJob(jobId);
+      if (
+        toState === "queued" &&
+        job.kind === "source_sync" &&
+        job.run_id !== null
+      ) {
+        const run = this.db
+          .query("SELECT terminal_outcome FROM runs WHERE id=?")
+          .get(job.run_id) as { terminal_outcome: string | null } | null;
+        if (run !== null && run.terminal_outcome !== null) {
+          throw new CliError(
+            "source_run_terminal",
+            "a terminal source-sync job cannot be reopened; admit a new Source Run",
+          );
+        }
+      }
       this.assertTransition(job.state, toState);
       if (job.current_attempt_id !== null) {
         this.db
@@ -3515,9 +3534,46 @@ export class ResearchStore {
         null,
         timestamp,
       );
+      if (toState === "excluded") {
+        this.cancelSourceRunForJob(job, reason, timestamp);
+      }
       return this.requireJob(jobId);
     });
     return transaction.immediate();
+  }
+
+  private cancelSourceRunForJob(
+    job: Job,
+    reason: string,
+    timestamp: string,
+  ): void {
+    if (job.kind !== "source_sync" || job.run_id === null) return;
+    const run = this.db
+      .query("SELECT source_id, terminal_outcome FROM runs WHERE id=?")
+      .get(job.run_id) as {
+      source_id: number | null;
+      terminal_outcome: string | null;
+    } | null;
+    if (run === null || run.terminal_outcome !== null) return;
+    this.db
+      .query(
+        `UPDATE runs SET state='cancelled', terminal_outcome='cancelled',
+           finished_at=?, updated_at=? WHERE id=? AND terminal_outcome IS NULL`,
+      )
+      .run(timestamp, timestamp, job.run_id);
+    if (run.source_id !== null) {
+      this.db
+        .query(
+          `UPDATE sources SET health_state='unhealthy', health_detail=?,
+             last_evaluated_at=?, updated_at=? WHERE id=?`,
+        )
+        .run(
+          sanitizeExternalError(reason),
+          timestamp,
+          timestamp,
+          run.source_id,
+        );
+    }
   }
 
   private guardActiveToken(

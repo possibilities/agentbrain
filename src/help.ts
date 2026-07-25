@@ -421,8 +421,8 @@ Usage:
   agentbrain sources list [--limit N] [--json]
   agentbrain sources show SOURCE_ID [--json]
   agentbrain sources status [SOURCE_ID] [--json]
-  agentbrain sources sync SOURCE_ID [--dry-run] [--json]
-  agentbrain sources sync --due [--dry-run] [--limit N] [--json]
+  agentbrain sources sync SOURCE_ID [--due] [--dry-run] [--wait] [--wait-timeout-seconds N] [--wait-timeout-ok] [--json]
+  agentbrain sources sync --due [--dry-run] [--limit N] [--wait] [--wait-timeout-seconds N] [--wait-timeout-ok] [--json]
   agentbrain sources pause SOURCE_ID [--reason TEXT] [--actor NAME] [--json]
   agentbrain sources resume SOURCE_ID [--reason TEXT] [--actor NAME] [--json]
 
@@ -433,10 +433,10 @@ kinds remain listable and showable but source sync will not admit work for them.
 
 sources apply reads a versioned manifest (default: the bundled config/sources.yaml
 covering confirmed blog/X sources and disabled candidate X accounts) and durably creates
-or updates matching source definitions. It never toggles enabled, deletes a definition,
-or runs implicitly; an operator invokes it explicitly, and re-applying identical content
-is a no-op. Raising a source's version without changing its kind admits the new content;
-changing content without raising the version is refused.
+or updates matching source definitions. A higher version may declaratively enable or
+disable a Source; apply never deletes a definition or runs it implicitly. Re-applying
+identical content is a no-op. Raising a source's version without changing its kind admits
+the new content; changing content without raising the version is refused.
 
 Schedule evaluation admits at most one catch-up Run for each overdue source and advances
 its next due time from the current evaluation, not once per missed wall-clock tick. Paused
@@ -447,6 +447,11 @@ A Run's attempted cursor is in-progress evidence, separate from its committed ch
 A checkpoint may advance only after a complete successful window has durably admitted or
 explicitly suppressed every discovered observation. Source sync performs no HTTP work,
 remote discovery, extraction, or document writes; those remain Worker/provider work.
+--wait waits for the admitted source discovery Run to finish through the resident Worker
+and returns a scheduler-facing execution receipt; it does not wait for every discovered
+child URL extraction. Timeout exits 124, and a non-success terminal outcome exits 1.
+For supervisors that treat every nonzero exit as an execution failure, --wait-timeout-ok
+keeps timed_out:true in JSON but exits 0 because the durable Run continues independently.
 `,
   guide: `agentbrain guide — machine-readable CLI contract for agents
 

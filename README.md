@@ -10,6 +10,7 @@ Architecture references:
 - [Durable ingestion job lifecycle](docs/adr/0004-durable-ingestion-job-lifecycle.md)
 - [Public Admission contract](docs/adr/0005-public-ingestion-admission-contract.md)
 - [Single Worker operation](docs/adr/0011-single-worker-source-scheduling.md)
+- [External recurring-Source trigger contract](docs/adr/0016-external-source-trigger-contract.md)
 - [Agentbrain database namespace](docs/adr/0014-agentbrain-database-namespace.md)
 - [Parser-derived content classification](docs/adr/0015-parser-derived-content-classification.md)
 
@@ -123,13 +124,13 @@ Uninstall is also idempotent:
 
 It gracefully unloads the Worker and removes only owned command links and the marker-owned service file. It intentionally preserves the namespaced database, Artifacts, and private log. For rollback, uninstall the service before restoring a pre-migration database snapshot, restore the matching Agentbrain code, run the temporary-database smoke with that version, and only then install its service. Never start the newer Worker against a snapshot being restored.
 
-The LaunchAgent drains already admitted ingestion jobs only. Installation does **not** create, discover, schedule, or enable recurring remote Sources. Remote Source activation remains deferred to a later, explicit operator rollout.
+The LaunchAgent drains already admitted ingestion jobs only. Installation does **not** create, schedule, or enable recurring remote Sources. A future external scheduling service may invoke the idempotent one-shot Source commands below; Agentbrain remains the durable Run/checkpoint authority and the resident Worker executes admitted work.
 
 Legacy provenance labels such as `source=linkctl` remain queryable as historical data. They do not identify a live Ingress or an installed command.
 
 ## Recurring sources
 
-A Source is a recurring producer or discovery definition, such as a blog feed or an X account. Two kinds are currently supported and executable: `blog_source` (feed/homepage discovery) and `x_account` (forward-only X timeline polling by stable post ID, never claiming complete historical pagination). Any other kind, including the disabled `x_account_candidate` recommendation records below, is listable and showable but never admits a Run.
+A Source is a recurring producer or discovery definition, such as a direct RSS/Atom feed, a blog homepage that advertises a feed, or an X account. Three names are executable: `blog_feed` and `blog_source` share the bounded feed discovery path, while `x_account` performs forward-only X timeline polling by stable post ID and never claims complete historical pagination. Any other kind, including the disabled `x_account_candidate` recommendation records below, is listable and showable but never admits a Run.
 
 The bundled manifest at `config/sources.yaml` currently encodes the 11 confirmed blog sources and 14 confirmed X accounts recovered from historical operator evidence, plus 13 recommended-but-unconfirmed X accounts represented as `x_account_candidate` — disabled candidate evidence, not active configuration. Every definition in the bundled manifest ships `enabled: false`; applying it creates or updates durable source rows without scheduling any Run. Confirmed blogs default to daily cadence, confirmed X accounts to hourly, each with an explicit bounded `limits.max_items_per_run` / `limits.max_pages_per_run` so a first activation cannot silently request an unbounded or deep-historical X backfill. Enabling confirmed sources in controlled cohorts is an explicit operator rollout performed with the activation overlay described below — never an implicit side effect of `sources apply`.
 
@@ -139,11 +140,16 @@ agentbrain sources list --json
 agentbrain sources show blog.simon-willison --json
 agentbrain sources status --json
 agentbrain sources sync --due --dry-run --json
+agentbrain sources sync x.karpathy --due --wait --wait-timeout-seconds 300 --wait-timeout-ok --json
 agentbrain sources pause x.karpathy --reason "provider smoke pending" --json
 agentbrain sources resume x.karpathy --json
 ```
 
-`sources apply` reads a manifest (default: `config/sources.yaml`) and durably creates or updates matching source definitions; it never toggles `enabled` and never runs implicitly. Re-applying identical content is a no-op; raising `version` admits changed content, while changing content without raising `version` is refused. `sources list` / `show` / `status` expose kind, cadence, bounded limits, collection and sensitivity policy, checkpoint presence, and health without credentials, payload secrets, or private content — `credential_refs` are opaque reference names, never credential values. `sources sync --due` performs schedule evaluation only: it durably admits at most one catch-up Run per overdue source and advances that source's next due time, without performing HTTP work, remote discovery, or extraction itself. Discovery and extraction remain the Worker/Agentscrape path once a Run's `source_sync` job is claimed. `sources pause` / `resume` append audit evidence and immediately block or unblock admission without discarding earlier Runs or checkpoints.
+`sources apply` reads a manifest (default: `config/sources.yaml`) and durably creates or updates matching source definitions; a higher version may declaratively enable or disable a Source, but apply never deletes or runs one implicitly. Re-applying identical content is a no-op; raising `version` admits changed content, while changing content without raising `version` is refused. `sources list` / `show` / `status` expose kind, cadence, bounded limits, collection and sensitivity policy, checkpoint presence, and health without credentials, payload secrets, or private content — `credential_refs` are opaque reference names, never credential values.
+
+`sources sync SOURCE_ID --due` is the preferred external-scheduler trigger. It durably admits at most one catch-up Run when due; repeated invocations return the pending/active Run instead of duplicating it. `--wait` returns a scheduler-facing terminal receipt through the resident Worker: timeout normally exits 124 and non-success exits 1. A `not_due` retry includes the latest terminal Run when one exists, preventing an observer timeout from hiding a later failure; no prior Run or a latest success remains an exit-0 no-op. Supervisors that treat every nonzero exit as an execution failure can add `--wait-timeout-ok`; JSON still records `timed_out:true` while the independent durable Run continues. Source completion covers discovery, durable observations/admissions, and checkpointing—not eventual completion of every independently retryable child URL job. Live X and RSS/Atom/blog discovery remain Agentscrape-owned provider work. See [the external scheduling runbook](docs/runbooks/external-source-scheduling.md) and [ADR 0016](docs/adr/0016-external-source-trigger-contract.md).
+
+`sources sync --due` remains the global manual catch-up command. `sources pause` / `resume` append audit evidence and immediately block or unblock admission without discarding earlier Runs or checkpoints.
 
 ### Activating confirmed cohorts
 

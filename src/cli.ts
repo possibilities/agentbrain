@@ -238,7 +238,7 @@ async function runParsed(
 
   if (command === "sources") {
     const { runSourceCommands } = await import("./sources-cli");
-    runSourceCommands(
+    await runSourceCommands(
       parsed.globals.dbPath,
       parsed.commandArgv,
       parsed.globals,

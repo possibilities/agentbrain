@@ -122,7 +122,19 @@ export interface FeedDiscoveryEnvelope {
       | "response_limit"
       | "timeout"
       | "cancelled"
-      | "malformed_page";
+      | "malformed_page"
+      | "not_modified"
+      | "transport_failure"
+      | "network_error"
+      | "policy"
+      | "authentication"
+      | "http_error"
+      | "redirect_error"
+      | "redirect_limit"
+      | "unsupported_encoding"
+      | "malformed_response"
+      | "feed_discovery"
+      | "unsupported_source";
     next_url: string | null;
   };
   warnings: DiscoveryWarning[];
@@ -158,10 +170,12 @@ export interface XTimelineDiscoveryEnvelope {
 export interface FeedDiscoveryRequest {
   sourceUrl: string;
   sourceKind?: "auto" | "feed" | "archive";
-  /** Current Agentscrape supports recorded feed responses at this boundary. */
+  /** Optional offline response fixture; omitted for live Agentscrape-owned transport. */
   recordedInputFile?: string;
   /** Prior committed validators for conditional Agentscrape-owned transport. */
   validators?: { etag: string | null; lastModified: string | null };
+  /** Exact effective feed URL to which those validators are bound. */
+  validatorUrl?: string;
   /** Validators attached to an offline recorded response fixture. */
   recordedValidators?: { etag?: string; lastModified?: string };
   since?: string;
@@ -1430,7 +1444,13 @@ function parseDiscoveryWarnings(
   return value.map((item) => {
     const warning = discoveryRecord(
       item,
-      feed ? ["code", "message", "page_url"] : ["code", "message"],
+      feed &&
+        item !== null &&
+        typeof item === "object" &&
+        !Array.isArray(item) &&
+        Object.hasOwn(item, "page_url")
+        ? ["code", "message", "page_url"]
+        : ["code", "message"],
       "discovery warning",
     );
     return {
@@ -1439,7 +1459,7 @@ function parseDiscoveryWarnings(
       ...(feed
         ? {
             page_url:
-              warning.page_url === null
+              warning.page_url === undefined || warning.page_url === null
                 ? null
                 : discoveryUrl(warning.page_url, "warning page URL"),
           }
@@ -1493,6 +1513,21 @@ const FEED_FAILURE_CODES = new Set([
   "cancelled",
   "input_error",
   "internal_error",
+  "authentication_required",
+  "rate_limited",
+  "upstream_unavailable",
+  "network_error",
+  "http_error",
+  "unsupported_content_type",
+  "unsafe_destination",
+  "transport_policy_violation",
+  "unsupported_encoding",
+  "malformed_response",
+  "redirect_error",
+  "redirect_limit_exceeded",
+  "invalid_utf8",
+  "feed_not_discovered",
+  "unsupported_media_type",
 ]);
 
 function parseFeedValidators(value: unknown): {
@@ -1634,6 +1669,18 @@ export function validateFeedDiscoveryEnvelope(
     "timeout",
     "cancelled",
     "malformed_page",
+    "not_modified",
+    "transport_failure",
+    "network_error",
+    "policy",
+    "authentication",
+    "http_error",
+    "redirect_error",
+    "redirect_limit",
+    "unsupported_encoding",
+    "malformed_response",
+    "feed_discovery",
+    "unsupported_source",
   ]);
   if (!stopReasons.has(String(pagination.stop_reason))) {
     return discoveryProtocol("feed pagination stop reason is unsupported");
@@ -1705,9 +1752,10 @@ export function validateFeedDiscoveryEnvelope(
   const complete = pagination.complete as boolean;
   const stopReason =
     pagination.stop_reason as FeedDiscoveryEnvelope["pagination"]["stop_reason"];
+  const notModified = stopReason === "not_modified";
   const successfulBoundary =
     complete &&
-    stopReason === "exhausted" &&
+    (stopReason === "exhausted" || notModified) &&
     cursorNextUrl === null &&
     paginationNextUrl === null;
   if (
@@ -1715,6 +1763,10 @@ export function validateFeedDiscoveryEnvelope(
     (status === "success" && failure !== null) ||
     (status === "failure" && failure === null) ||
     (status === "success" && !successfulBoundary) ||
+    (notModified &&
+      (items.length !== 0 ||
+        pages.length !== 0 ||
+        record.source_format !== "unknown")) ||
     (complete && status !== "success") ||
     cursorNextUrl !== paginationNextUrl ||
     JSON.stringify(validators) !== JSON.stringify(cursorValidators) ||
@@ -1936,27 +1988,48 @@ async function runDiscoveryCommand(
   return result;
 }
 
-export async function discoverFeedWithAgentscrape(
-  request: FeedDiscoveryRequest,
-): Promise<FeedDiscoveryEnvelope> {
-  const sourceUrl = normalizedWebUrl(request.sourceUrl);
-  if (request.recordedInputFile === undefined) {
+async function assertLiveFeedCapability(
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const result = await runDiscoveryCommand(
+    ["discover-feed", "--help"],
+    Math.min(timeoutMs, 5_000),
+    signal,
+  );
+  if (
+    result.status !== 0 ||
+    !/^Usage:\s+agentscrape\s+discover-feed\s+\[FILE\]\s+--source-url\s+URL\b/m.test(
+      result.stdout,
+    )
+  ) {
     throw new AgentscrapeDiscoveryError(
-      "agentscrape feed discovery requires an Agentscrape-owned recorded response input; remote feed transport is not exposed by the installed contract",
+      "installed agentscrape lacks live discover-feed capability",
       "auth_config",
       "auth_config",
     );
   }
+}
+
+export async function discoverFeedWithAgentscrape(
+  request: FeedDiscoveryRequest,
+): Promise<FeedDiscoveryEnvelope> {
+  const sourceUrl = normalizedWebUrl(request.sourceUrl);
   const timeoutMs = positiveInteger(
     request.timeoutMs ?? AGENTSCRAPE_DEFAULT_TIMEOUT_MS,
     "agentscrape feed discovery timeout",
-    AGENTSCRAPE_TIMEOUT_MAX_MS,
+    300_000,
   );
   const maxPages = positiveInteger(request.maxPages, "feed page limit", 100);
   const maxItems = positiveInteger(request.maxItems, "feed item limit", 10_000);
-  const args = [
-    "discover-feed",
-    request.recordedInputFile,
+  if (request.recordedInputFile === undefined) {
+    await assertLiveFeedCapability(timeoutMs, request.signal);
+  }
+  const args = ["discover-feed"];
+  if (request.recordedInputFile !== undefined) {
+    args.push(request.recordedInputFile);
+  }
+  args.push(
     "--source-url",
     sourceUrl,
     "--source-kind",
@@ -1971,12 +2044,28 @@ export async function discoverFeedWithAgentscrape(
     String(Math.max(0.001, timeoutMs / 1_000)),
     "--format",
     "json",
-  ];
-  if (request.recordedValidators?.etag !== undefined) {
-    args.push("--etag", request.recordedValidators.etag);
+  );
+  const validators =
+    request.recordedInputFile === undefined
+      ? request.validators
+      : request.recordedValidators === undefined
+        ? undefined
+        : {
+            etag: request.recordedValidators.etag ?? null,
+            lastModified: request.recordedValidators.lastModified ?? null,
+          };
+  if (validators?.etag != null) {
+    args.push("--etag", validators.etag);
   }
-  if (request.recordedValidators?.lastModified !== undefined) {
-    args.push("--last-modified", request.recordedValidators.lastModified);
+  if (validators?.lastModified != null) {
+    args.push("--last-modified", validators.lastModified);
+  }
+  if (
+    request.recordedInputFile === undefined &&
+    request.validatorUrl !== undefined &&
+    (validators?.etag != null || validators?.lastModified != null)
+  ) {
+    args.push("--validator-url", normalizedWebUrl(request.validatorUrl));
   }
   if (request.since !== undefined) args.push("--since", request.since);
   const result = await runDiscoveryCommand(args, timeoutMs, request.signal);

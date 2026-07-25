@@ -18,6 +18,7 @@ import {
   extractWithAgentscrape,
   scrapeWithAgentscrape,
   validateExtractionEnvelope,
+  validateFeedDiscoveryEnvelope,
 } from "../src/agentscrape";
 
 const dirs: string[] = [];
@@ -396,7 +397,12 @@ test("feed and X discovery use bounded explicit Agentscrape argv", async () => {
       stop_reason: "exhausted",
       next_url: null,
     },
-    warnings: [],
+    warnings: [
+      {
+        code: "naive_date_assumed_utc",
+        message: "A timezone-free entry date was interpreted as UTC.",
+      },
+    ],
     absence_implies_deletion: false,
     failure: null,
   };
@@ -414,9 +420,90 @@ printf '%s' ${shellLiteral(JSON.stringify(feed))}
     maxItems: 7,
   });
   expect(feedResult.pagination.complete).toBe(true);
+  expect(feedResult.warnings[0]?.page_url).toBeNull();
   expect(readFileSync(process.env.LOG, "utf8")).toContain(
     `discover-feed\n${input}\n--source-url\n${sourceUrl}\n`,
   );
+
+  const notModified = {
+    ...feed,
+    source_format: "unknown",
+    validators: { etag: '"prior"', last_modified: null },
+    cursor: {
+      validators: { etag: '"prior"', last_modified: null },
+      newest_seen_at: null,
+      next_url: null,
+    },
+    pagination: {
+      pages: [],
+      complete: true,
+      stop_reason: "not_modified",
+      next_url: null,
+    },
+  };
+  writeExecutable(
+    executable,
+    `#!/bin/sh\nif [ "$2" = "--help" ]; then\n  printf 'Usage: agentscrape discover-feed [FILE] --source-url URL [OPTIONS]\\n'\n  exit 0\nfi\nprintf '%s\\n' "$@" > "$LOG"\nprintf '%s' ${shellLiteral(JSON.stringify(notModified))}\n`,
+  );
+  process.env.LOG = join(dir, "live-feed-argv.txt");
+  const liveFeedResult = await discoverFeedWithAgentscrape({
+    sourceUrl,
+    validators: {
+      etag: '"prior"',
+      lastModified: "Wed, 22 Jul 2026 00:00:00 GMT",
+    },
+    validatorUrl: sourceUrl,
+    maxPages: 2,
+    maxItems: 7,
+  });
+  expect(liveFeedResult.pagination).toMatchObject({
+    complete: true,
+    stop_reason: "not_modified",
+  });
+  expect(readFileSync(process.env.LOG, "utf8")).toBe(
+    `discover-feed\n--source-url\n${sourceUrl}\n--source-kind\nauto\n--max-response-bytes\n2000000\n--max-pages\n2\n--max-items\n7\n--timeout-seconds\n120\n--format\njson\n--etag\n"prior"\n--last-modified\nWed, 22 Jul 2026 00:00:00 GMT\n--validator-url\n${sourceUrl}\n`,
+  );
+
+  const liveFailureCases = [
+    ["unsafe_source_url", "policy", false],
+    ["unsafe_destination", "policy", false],
+    ["transport_policy_violation", "policy", false],
+    ["unsupported_encoding", "unsupported_encoding", false],
+    ["malformed_response", "malformed_response", false],
+    ["redirect_error", "redirect_error", false],
+    ["redirect_limit_exceeded", "redirect_limit", false],
+    ["invalid_utf8", "malformed_response", false],
+    ["feed_not_discovered", "feed_discovery", false],
+    ["unsupported_media_type", "unsupported_source", false],
+    ["network_error", "network_error", true],
+    ["http_error", "http_error", true],
+  ] as const;
+  await expect(
+    discoverFeedWithAgentscrape({
+      sourceUrl,
+      timeoutMs: 300_001,
+      maxPages: 2,
+      maxItems: 7,
+    }),
+  ).rejects.toThrow("feed discovery timeout");
+
+  for (const [code, stopReason, retryable] of liveFailureCases) {
+    const validated = validateFeedDiscoveryEnvelope(
+      {
+        ...notModified,
+        status: "failure",
+        pagination: {
+          pages: [],
+          complete: false,
+          stop_reason: stopReason,
+          next_url: null,
+        },
+        failure: { code, retryable, message: "classified live failure" },
+      },
+      sourceUrl,
+    );
+    expect(validated.failure, code).toMatchObject({ code, retryable });
+  }
 
   const timeline = {
     handle: "person",
@@ -441,6 +528,26 @@ printf '%s' ${shellLiteral(JSON.stringify(feed))}
   expect(readFileSync(process.env.LOG, "utf8")).toBe(
     "fetch-links\nhttps://x.com/person\n--preset\nx-timeline\n--limit\n8\n--max-scrolls\n3\n--json\n--since-id\n456\n",
   );
+});
+
+test("live feed discovery rejects a recorded-only Agentscrape deployment", async () => {
+  installAgentscrape(`#!/bin/sh
+if [ "$2" = "--help" ]; then
+  printf 'Usage: agentscrape discover-feed FILE --source-url URL [OPTIONS]\\n'
+  exit 0
+fi
+exit 1
+`);
+  await expect(
+    discoverFeedWithAgentscrape({
+      sourceUrl: "https://blog.example/feed.xml",
+      maxPages: 2,
+      maxItems: 10,
+    }),
+  ).rejects.toMatchObject({
+    disposition: "auth_config",
+    outcome: "auth_config",
+  });
 });
 
 test("classified extraction failures map without parsing stderr", async () => {

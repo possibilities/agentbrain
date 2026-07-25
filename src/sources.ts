@@ -18,6 +18,7 @@ import type {
   SourceManifestOverlay,
   SourceRunCounts,
   SourceRunOutcome,
+  SourceRunStatus,
   SourceSchedule,
   SourceStatus,
   SourceSyncAdmission,
@@ -43,6 +44,12 @@ const SENSITIVITIES = new Set<Sensitivity>([
   "sensitive",
   "private",
 ]);
+const SOURCE_SENSITIVITY_RANK: Record<Sensitivity, number> = {
+  public: 0,
+  normal: 1,
+  sensitive: 2,
+  private: 3,
+};
 const KNOWN_SOURCE_KIND_SET = new Set<KnownSourceKind>([
   "blog_feed",
   "blog_source",
@@ -294,6 +301,9 @@ function validateKnownPayload(
       validateHttpUrl(requiredString(homepage, "payload.homepage_url", 2_000));
     if (feed !== undefined)
       validateHttpUrl(requiredString(feed, "payload.feed_url", 2_000));
+    if (payload.timeout_ms !== undefined) {
+      positiveInteger(payload.timeout_ms, "payload.timeout_ms", 300_000);
+    }
     return;
   }
   if (kind === "x_account") {
@@ -383,6 +393,16 @@ export function validateSourceDefinition(value: unknown): SourceDefinition {
     sensitivity,
     credential_refs: parseCredentialRefs(input.credential_refs ?? []),
   };
+  if (
+    (kind === "blog_feed" || kind === "blog_source") &&
+    payload.recorded_input_file === undefined &&
+    definition.limits.max_pages_per_run > 10
+  ) {
+    throw sourceError(
+      "bad_source_manifest",
+      "live blog Sources support at most 10 pages per run",
+    );
+  }
   if (
     Buffer.byteLength(JSON.stringify(definition), "utf8") > MAX_DEFINITION_BYTES
   ) {
@@ -734,6 +754,86 @@ export function sourceStatuses(
   return rows.map((row) => status(db, row, options.now ?? new Date()));
 }
 
+export function sourceRunStatus(db: Database, runId: number): SourceRunStatus {
+  const row = db
+    .query(
+      `SELECT s.identifier AS source_identifier,
+              r.id AS run_id, r.state AS run_state,
+              r.terminal_outcome, r.warnings,
+              r.discovered_count, r.admitted_count, r.suppressed_count,
+              r.committed_checkpoint, r.created_at, r.started_at, r.finished_at,
+              j.id AS job_id, j.state AS job_state,
+              j.failure_class, j.failure_summary
+       FROM runs r
+       JOIN sources s ON s.id=r.source_id
+       LEFT JOIN jobs j ON j.run_id=r.id AND j.kind='source_sync'
+       WHERE r.id=? AND r.run_type='source_sync'
+       ORDER BY j.id ASC LIMIT 1`,
+    )
+    .get(runId) as {
+    source_identifier: string;
+    run_id: number;
+    run_state: RunState;
+    terminal_outcome: SourceRunOutcome | null;
+    warnings: string;
+    discovered_count: number;
+    admitted_count: number;
+    suppressed_count: number;
+    committed_checkpoint: string | null;
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+    job_id: number | null;
+    job_state: JobState | null;
+    failure_class: string | null;
+    failure_summary: string | null;
+  } | null;
+  if (row === null) {
+    throw new CliError("source_run_not_found", `source Run ${runId} not found`);
+  }
+  return {
+    source_id: row.source_identifier,
+    run_id: row.run_id,
+    run_state: row.run_state,
+    outcome: row.terminal_outcome,
+    terminal: row.terminal_outcome !== null,
+    warnings: parseJson<unknown[]>(row.warnings, []).length,
+    counts: {
+      discovered: row.discovered_count,
+      admitted: row.admitted_count,
+      suppressed: row.suppressed_count,
+    },
+    checkpoint_committed: row.committed_checkpoint !== null,
+    created_at: row.created_at,
+    started_at: row.started_at,
+    finished_at: row.finished_at,
+    job:
+      row.job_id === null || row.job_state === null
+        ? null
+        : {
+            id: row.job_id,
+            state: row.job_state,
+            failure_class: row.failure_class,
+            failure_summary: row.failure_summary,
+          },
+  };
+}
+
+export function latestSourceRunStatus(
+  db: Database,
+  stableSourceId: string,
+): SourceRunStatus | null {
+  const row = db
+    .query(
+      `SELECT r.id
+       FROM runs r JOIN sources s ON s.id=r.source_id
+       WHERE s.identifier=? AND r.run_type='source_sync'
+       ORDER BY r.id DESC LIMIT 1`,
+    )
+    .get(stableSourceId) as { id: number } | null;
+  return row === null ? null : sourceRunStatus(db, row.id);
+}
+
 export interface SourceApplyResult {
   source_id: string;
   database_id: number;
@@ -1083,6 +1183,7 @@ export class SourceRegistry {
     counts?: SourceRunCounts;
     healthDetail?: string;
     pauseReason?: string;
+    updateSource?: boolean;
     now?: Date;
   }): Run {
     if (
@@ -1196,49 +1297,51 @@ export class SourceRegistry {
         input.pauseReason === undefined
           ? null
           : this.validatedSourceReason(input.pauseReason);
-      this.db
-        .query(
-          `UPDATE sources SET checkpoint=COALESCE(?, checkpoint),
-             health_state=?, health_detail=?, last_evaluated_at=?,
-             last_success_at=CASE WHEN ?='success' THEN ? ELSE last_success_at END,
-             paused=CASE WHEN ? IS NULL THEN paused ELSE 1 END,
-             pause_reason=COALESCE(?, pause_reason), updated_at=? WHERE id=?`,
-        )
-        .run(
-          checkpoint,
-          healthState,
-          healthDetail,
-          timestamp,
-          input.outcome,
-          timestamp,
-          pauseReason,
-          pauseReason,
-          timestamp,
-          run.source_id,
-        );
-      if (pauseReason !== null) {
-        const source = this.db
-          .query(
-            "SELECT definition_version, definition_hash FROM sources WHERE id=?",
-          )
-          .get(run.source_id) as {
-          definition_version: number;
-          definition_hash: string;
-        };
+      if (input.updateSource !== false) {
         this.db
           .query(
-            `INSERT INTO source_audit_events(
-               source_id, action, actor, reason, definition_version,
-               definition_hash, created_at
-             ) VALUES (?, 'paused', 'source-worker', ?, ?, ?, ?)`,
+            `UPDATE sources SET checkpoint=COALESCE(?, checkpoint),
+               health_state=?, health_detail=?, last_evaluated_at=?,
+               last_success_at=CASE WHEN ?='success' THEN ? ELSE last_success_at END,
+               paused=CASE WHEN ? IS NULL THEN paused ELSE 1 END,
+               pause_reason=COALESCE(?, pause_reason), updated_at=? WHERE id=?`,
           )
           .run(
-            run.source_id,
-            pauseReason,
-            source.definition_version,
-            source.definition_hash,
+            checkpoint,
+            healthState,
+            healthDetail,
             timestamp,
+            input.outcome,
+            timestamp,
+            pauseReason,
+            pauseReason,
+            timestamp,
+            run.source_id,
           );
+        if (pauseReason !== null) {
+          const source = this.db
+            .query(
+              "SELECT definition_version, definition_hash FROM sources WHERE id=?",
+            )
+            .get(run.source_id) as {
+            definition_version: number;
+            definition_hash: string;
+          };
+          this.db
+            .query(
+              `INSERT INTO source_audit_events(
+                 source_id, action, actor, reason, definition_version,
+                 definition_hash, created_at
+               ) VALUES (?, 'paused', 'source-worker', ?, ?, ?, ?)`,
+            )
+            .run(
+              run.source_id,
+              pauseReason,
+              source.definition_version,
+              source.definition_hash,
+              timestamp,
+            );
+        }
       }
       return this.requireSourceRun(input.runId);
     });
@@ -1274,6 +1377,11 @@ export class SourceRegistry {
     const timestamp = (input.now ?? new Date()).toISOString();
     const transaction = this.db.transaction((): Run => {
       const context = this.sourceRunExecution(input.runId);
+      const runSensitivity =
+        SOURCE_SENSITIVITY_RANK[context.source.sensitivity] >
+        SOURCE_SENSITIVITY_RANK[context.definition.sensitivity]
+          ? context.source.sensitivity
+          : context.definition.sensitivity;
       if (context.run.terminal_outcome !== null) {
         if (
           (input.disposition === "success" &&
@@ -1383,7 +1491,7 @@ export class SourceRegistry {
               .run(
                 observation.resourceKey.type,
                 observation.resourceKey.value,
-                context.source.sensitivity,
+                runSensitivity,
                 timestamp,
                 timestamp,
               ).lastInsertRowid,
@@ -1396,12 +1504,7 @@ export class SourceRegistry {
                       (SELECT rank FROM sensitivity_levels WHERE level=resources.sensitivity)
                  THEN ? ELSE sensitivity END, updated_at=? WHERE id=?`,
             )
-            .run(
-              context.source.sensitivity,
-              context.source.sensitivity,
-              timestamp,
-              resourceId,
-            );
+            .run(runSensitivity, runSensitivity, timestamp, resourceId);
         }
 
         this.db
@@ -1568,7 +1671,7 @@ export class SourceRegistry {
                   resourceId,
                   context.source.id,
                   input.runId,
-                  context.source.sensitivity,
+                  runSensitivity,
                   timestamp,
                   timestamp,
                   timestamp,
@@ -1608,8 +1711,8 @@ export class SourceRegistry {
               )
               .run(
                 resourceId,
-                context.source.sensitivity,
-                context.source.sensitivity,
+                runSensitivity,
+                runSensitivity,
                 timestamp,
                 job.id,
               );
@@ -1622,13 +1725,7 @@ export class SourceRegistry {
                    slug, title, sensitivity, created_at, updated_at
                  ) VALUES (?, ?, ?, ?, ?)`,
               )
-              .run(
-                slug,
-                slug,
-                context.source.sensitivity,
-                timestamp,
-                timestamp,
-              );
+              .run(slug, slug, runSensitivity, timestamp, timestamp);
             this.db
               .query(
                 `INSERT OR IGNORE INTO collection_memberships(
@@ -1660,11 +1757,26 @@ export class SourceRegistry {
         admitted: Number(countRows.admitted),
         suppressed: Number(countRows.suppressed),
       };
+      if (input.disposition === "success") {
+        input.beforeCheckpointCommit?.();
+      }
+      const currentSource = this.requireSource(context.source.identifier);
+      const staleDefinition =
+        currentSource.definition_version !==
+        context.run.source_definition_version;
+      const disposition =
+        input.disposition === "success" && staleDefinition
+          ? "partial"
+          : input.disposition;
       const priorWarnings = this.parseSourceWarnings(
         this.requireSourceRun(input.runId).warnings,
       );
       const mergedWarnings = [
-        ...new Set([...priorWarnings, ...input.warnings]),
+        ...new Set([
+          ...priorWarnings,
+          ...input.warnings,
+          ...(staleDefinition ? ["source_definition_changed_during_run"] : []),
+        ]),
       ];
       const warnings = this.validatedSourceWarnings(
         mergedWarnings.length <= 100
@@ -1672,7 +1784,7 @@ export class SourceRegistry {
           : [...mergedWarnings.slice(0, 99), "warnings_truncated"],
       );
 
-      if (input.disposition === "retry") {
+      if (disposition === "retry") {
         this.recordSourceRunProgress({
           runId: input.runId,
           attemptedCursor: input.attemptedCursor,
@@ -1680,33 +1792,33 @@ export class SourceRegistry {
           counts,
           now: new Date(timestamp),
         });
-        this.db
-          .query(
-            `UPDATE sources SET health_state='warning', health_detail=?,
-               last_evaluated_at=?, updated_at=? WHERE id=?`,
-          )
-          .run(
-            limitCodePoints(sanitizeExternalError(input.healthDetail), 500),
-            timestamp,
-            timestamp,
-            context.source.id,
-          );
+        if (!staleDefinition) {
+          this.db
+            .query(
+              `UPDATE sources SET health_state='warning', health_detail=?,
+                 last_evaluated_at=?, updated_at=? WHERE id=?`,
+            )
+            .run(
+              limitCodePoints(sanitizeExternalError(input.healthDetail), 500),
+              timestamp,
+              timestamp,
+              context.source.id,
+            );
+        }
         return this.requireSourceRun(input.runId);
-      }
-      if (input.disposition === "success") {
-        input.beforeCheckpointCommit?.();
       }
       return this.finishSourceRun({
         runId: input.runId,
-        outcome: input.disposition,
+        outcome: disposition,
         attemptedCursor: input.attemptedCursor,
-        ...(input.disposition === "success"
-          ? { checkpoint: input.checkpoint }
-          : {}),
+        ...(disposition === "success" ? { checkpoint: input.checkpoint } : {}),
         warnings,
         counts,
-        healthDetail: input.healthDetail,
-        pauseReason: input.pauseReason,
+        healthDetail: staleDefinition
+          ? "source definition changed during discovery; checkpoint withheld"
+          : input.healthDetail,
+        pauseReason: staleDefinition ? undefined : input.pauseReason,
+        updateSource: !staleDefinition,
         now: new Date(timestamp),
       });
     });
@@ -1920,18 +2032,6 @@ export class SourceRegistry {
       scheduled_for: source.next_due_at,
       dry_run: dryRun,
     };
-    if (!source.enabled) return { ...base, status: "disabled" };
-    if (source.paused) return { ...base, status: "paused" };
-    if (!isExecutableSourceKind(source.source_type)) {
-      return { ...base, status: "unsupported" };
-    }
-    if (
-      dueOnly &&
-      (source.next_due_at === null ||
-        Date.parse(source.next_due_at) > now.getTime())
-    ) {
-      return { ...base, status: "not_due" };
-    }
     const active = this.db
       .query(
         `SELECT r.id AS run_id, j.id AS job_id, r.scheduled_for
@@ -1953,6 +2053,18 @@ export class SourceRegistry {
         job_id: active.job_id,
         scheduled_for: active.scheduled_for,
       };
+    }
+    if (!source.enabled) return { ...base, status: "disabled" };
+    if (source.paused) return { ...base, status: "paused" };
+    if (!isExecutableSourceKind(source.source_type)) {
+      return { ...base, status: "unsupported" };
+    }
+    if (
+      dueOnly &&
+      (source.next_due_at === null ||
+        Date.parse(source.next_due_at) > now.getTime())
+    ) {
+      return { ...base, status: "not_due" };
     }
     const scheduleKey = dueOnly
       ? `catchup:${source.next_due_at}`
