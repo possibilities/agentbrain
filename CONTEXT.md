@@ -25,6 +25,7 @@
 - **Provenance** — Typed evidence connecting ingress, sources, runs, jobs, resources, artifacts, and relations; preserved raw historical metadata may accompany that evidence.
 - **Relation** — A typed resource-to-resource edge, such as a content link, citation, reply, or version relationship.
 - **Saved link** — A resource submitted through human ingress for membership in the saved-links collection; it is not a separate resource type. A human-authored URL sent to Agentbot's Secretary DM is explicit saved-link ingress; the DM transport does not raise sensitivity on its own.
+- **Share ingress** — The authenticated local HTTP listener that accepts link and content submissions from personal device clients and resolves each into exactly one Admission intent. It is an Ingress, not a store: it owns no queue, index, or extraction. Its bearer token is an authorization boundary distinct from tailnet reachability, which is transport only.
 - **Recovery evidence** — A provenance record reconstructed from historical catalogs, artifacts, or metadata. Evidence may identify a candidate resource without approving content ingestion.
 - **Candidate evidence row** — One exact recovered locator plus its independent disposition and provenance accounting. It is neither an observation, a logical resource, an ingestion job, nor proof of fetch approval.
 - **Comparison URI** — A derived normalization for possible reconciliation matches. It never collapses candidate evidence rows or proves resource identity.

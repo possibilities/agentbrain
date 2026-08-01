@@ -246,6 +246,16 @@ async function runParsed(
     return;
   }
 
+  if (command === "share") {
+    const { runShareCommands } = await import("./share-cli");
+    await runShareCommands(
+      parsed.globals.dbPath,
+      parsed.commandArgv,
+      parsed.globals,
+    );
+    return;
+  }
+
   if (command === "guide") {
     writeByFormat(
       "guide",

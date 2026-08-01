@@ -13,6 +13,7 @@ Architecture references:
 - [External recurring-Source trigger contract](docs/adr/0016-external-source-trigger-contract.md)
 - [Agentbrain database namespace](docs/adr/0014-agentbrain-database-namespace.md)
 - [Parser-derived content classification](docs/adr/0015-parser-derived-content-classification.md)
+- [Authenticated share ingress](docs/adr/0017-authenticated-share-ingress.md)
 
 ## Quick start
 
@@ -127,6 +128,21 @@ It gracefully unloads the Worker and removes only owned command links and the ma
 The LaunchAgent drains already admitted ingestion jobs only. Installation does **not** create, schedule, or enable recurring remote Sources. A future external scheduling service may invoke the idempotent one-shot Source commands below; Agentbrain remains the durable Run/checkpoint authority and the resident Worker executes admitted work.
 
 Legacy provenance labels such as `source=linkctl` remain queryable as historical data. They do not identify a live Ingress or an installed command.
+
+## Share ingress for Chrome and Android
+
+A Chrome extension and an Android share target can send links and content into the same durable ingestion ledger the CLI uses. Both go through one endpoint served by `agentbrain share serve`.
+
+```bash
+agentbrain share token init --json                       # one-time, writes 0600
+agentbrain share serve --host 100.101.102.103 --port 8787
+```
+
+The ingress resolves each payload into exactly one Admission intent and calls the same `submit` path, so it owns no queue, tables, or documents of its own; a replayed share returns `duplicate` with the same job identity. The clients are deliberately thin — the server, not the extension or the app, decides whether a payload is a URL job or a text job, including recovering a locator from a free-text Android share.
+
+Network reachability is not authorization. Every route, including health, requires a bearer token compared in constant time; the default bind is `127.0.0.1`, exposure requires naming the tailnet address explicitly, and binding every interface additionally requires `--allow-any-interface`. Request logs record method, path, status, outcome, and job id only — never shared URLs, titles, or bodies. This surface is the separate authorization decision that [ADR 0012](docs/adr/0012-local-security-and-sensitive-ingestion.md) deferred; it is recorded in [ADR 0017](docs/adr/0017-authenticated-share-ingress.md).
+
+Clients live in [`clients/`](clients). Setup, platform limitations, and troubleshooting are in [`docs/runbooks/share-ingress.md`](docs/runbooks/share-ingress.md); the wire format is [`docs/contracts/share-ingest-v1.md`](docs/contracts/share-ingest-v1.md).
 
 ## Recurring sources
 

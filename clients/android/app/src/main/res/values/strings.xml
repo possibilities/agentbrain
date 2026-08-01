@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Agentbrain Share</string>
+    <string name="share_target_label">Agentbrain</string>
+
+    <string name="server_url_label">Server URL</string>
+    <string name="server_url_hint">http://host.tailnet.ts.net:8787</string>
+    <string name="token_label">Share token</string>
+    <string name="token_hint">paste the share token</string>
+    <string name="save">Save</string>
+    <string name="test">Test connection</string>
+    <string name="setup_hint">Run \'agentbrain share token show --reveal\' on the server host to get the token.</string>
+
+    <string name="saved">Saved.</string>
+    <string name="testing">Testing…</string>
+    <string name="connected">Connected. Agentbrain is ready to receive shares.</string>
+    <string name="bad_server_url">Enter an http:// or https:// server URL.</string>
+    <string name="missing_token">Enter the share token.</string>
+
+    <string name="sending">Sending to Agentbrain…</string>
+    <string name="not_configured">Set the Agentbrain server URL and token first.</string>
+    <string name="nothing_to_share">Nothing shareable was received.</string>
+    <string name="queued">Saved to Agentbrain (job %1$d).</string>
+    <string name="duplicate">Already saved (job %1$d).</string>
+    <string name="rejected">Agentbrain rejected it: %1$s</string>
+    <string name="unreachable">Could not reach Agentbrain. Is the tailnet up?</string>
+</resources>

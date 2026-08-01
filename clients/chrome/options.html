@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agentbrain Share — Options</title>
+    <style>
+      body {
+        font: 14px/1.5 system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+        max-width: 560px;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      p.sub { color: #555; margin: 0 0 20px; }
+      label { display: block; font-weight: 600; margin: 16px 0 4px; }
+      input {
+        width: 100%;
+        padding: 8px;
+        font: inherit;
+        border: 1px solid #bbb;
+        border-radius: 6px;
+        box-sizing: border-box;
+      }
+      .hint { color: #666; font-size: 12px; margin-top: 4px; }
+      .row { display: flex; gap: 8px; margin-top: 20px; }
+      button {
+        font: inherit;
+        padding: 8px 14px;
+        border-radius: 6px;
+        border: 1px solid #bbb;
+        background: #f6f6f6;
+        cursor: pointer;
+      }
+      button.primary { background: #1b7f4b; border-color: #1b7f4b; color: #fff; }
+      #status { margin-top: 16px; padding: 10px; border-radius: 6px; display: none; }
+      #status.ok { display: block; background: #e6f4ec; color: #14532d; }
+      #status.err { display: block; background: #fdeaea; color: #7f1d1d; }
+      code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <h1>Agentbrain Share</h1>
+    <p class="sub">Sends pages, links, and selections to your private Agentbrain ingress.</p>
+
+    <label for="serverUrl">Server URL</label>
+    <input id="serverUrl" type="url" placeholder="http://100.x.y.z:8787" />
+    <div class="hint">
+      The Tailscale address where <code>agentbrain share serve</code> is listening.
+      Saving requests permission for this exact origin.
+    </div>
+
+    <label for="token">Share token</label>
+    <input id="token" type="password" placeholder="paste the share token" />
+    <div class="hint">
+      From <code>agentbrain share token show --reveal</code> on the server host.
+    </div>
+
+    <div class="row">
+      <button id="save" class="primary" type="button">Save &amp; grant access</button>
+      <button id="test" type="button">Test connection</button>
+    </div>
+
+    <div id="status"></div>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

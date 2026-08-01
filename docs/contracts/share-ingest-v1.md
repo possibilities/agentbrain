@@ -1,0 +1,141 @@
+# Share ingest JSON contract (v1)
+
+The share ingress is one endpoint shared by every device client. It is served by
+`agentbrain share serve` and authorized by
+[ADR 0017](../adr/0017-authenticated-share-ingress.md).
+
+```text
+POST http://<agentbrain-host>:8787/v1/share
+GET  http://<agentbrain-host>:8787/v1/health
+```
+
+Both routes require `Authorization: Bearer <token>`. There is no anonymous
+route: network reachability is not authorization.
+
+## Request
+
+`POST /v1/share` with `Content-Type: application/json` and a body of at most
+1 MiB:
+
+```json
+{
+  "version": 1,
+  "client": "chrome-extension",
+  "url": "https://example.com/article",
+  "title": "Example article",
+  "tags": ["reading"],
+  "collections": ["saved-links"],
+  "idempotency_key": null
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `version` | no | Contract version; defaults to `1`. Any other value is rejected. |
+| `client` | yes | `chrome-extension` or `android-share`. Becomes the durable job `ingress`. |
+| `url` | one of | An http(s) locator. Credentialed URLs are rejected. |
+| `text` | one of | Free text, up to 100,000 characters. |
+| `title` | no | Up to 500 characters. |
+| `tags` | no | Up to 32 strings, normalized by the usual tag rules. |
+| `collections` | no | Up to 32 names. Defaults to `["saved-links"]`. |
+| `idempotency_key` | no | Overrides the derived key. Up to 200 characters. |
+
+At least one of `url` or `text` must be present.
+
+## Resolution
+
+The server, not the client, decides what was shared:
+
+1. If `url` is present, it is the locator and `text` is ignored.
+2. Otherwise `text` is scanned for the **first** valid http(s) URL. Trailing
+   prose punctuation (`.,;:!?`) and unmatched closing brackets are stripped, so
+   `worth reading https://example.com/post, really` resolves to
+   `https://example.com/post` while `/wiki/Foo_(bar)` is preserved intact.
+3. If no URL is found, the payload is admitted as a text job.
+
+Taking the first URL is a deliberate policy. Android places no contract on how
+an app lays out `EXTRA_TEXT`; Chromium currently appends the URL after any
+selected text, but that ordering is sender- and version-specific rather than
+guaranteed.
+
+The resolved intent is passed to the same `admitSubmission` path the CLI uses.
+The ingress owns no storage of its own.
+
+## Success response
+
+```json
+{
+  "schema_version": 1,
+  "ok": true,
+  "command": "share /v1/share",
+  "data": {
+    "version": 1,
+    "client": "chrome-extension",
+    "status": "queued",
+    "job_id": 41,
+    "idempotency_key": "submit:v1:f6fdcae2…",
+    "intent_hash": "f6fdcae2…",
+    "state": "queued",
+    "resolved_kind": "url",
+    "resolved_url": "https://example.com/article",
+    "extracted_from_text": false,
+    "collections": ["saved-links"],
+    "tags": ["reading"]
+  },
+  "meta": {
+    "db_path": "/Users/you/.local/share/agentbrain/research.db",
+    "read_only": false,
+    "generated_at": "2026-08-01T16:26:13.876Z"
+  }
+}
+```
+
+`status` is `queued` for a new intent and `duplicate` for a replay of an
+identical one. **Both are HTTP 200 and both are successes**: a duplicate means
+Agentbrain already holds that exact intent as the job named by `job_id`, so a
+client that retries after a timeout cannot create a second job.
+
+`resolved_url` is `null` for text jobs. A text body is never echoed back.
+
+## Errors
+
+Errors use the standard Agentbrain error envelope:
+
+```json
+{
+  "schema_version": 1,
+  "ok": false,
+  "command": "share /v1/share",
+  "error": { "code": "bad_payload", "message": "…", "hint": "…" }
+}
+```
+
+| HTTP | Code | Cause |
+| --- | --- | --- |
+| 400 | `bad_payload` | Not JSON, not an object, missing/unknown `client`, no `url` or `text`, wrong field type, oversized field. |
+| 400 | `bad_source` | `url` is not a usable http(s) locator. |
+| 400 | `unsupported_version` | `version` is not `1`. |
+| 401 | `unauthorized` | Missing or non-matching bearer token. |
+| 404 | `not_found` | Unknown path. |
+| 405 | `method_not_allowed` | Wrong method for the route. |
+| 409 | `idempotency_conflict` | An explicit `idempotency_key` already names a different intent. |
+| 413 | `payload_too_large` | Body exceeds 1 MiB. |
+| 415 | `unsupported_media_type` | `Content-Type` is not JSON. |
+| 500 | `share_failed` | Unexpected server fault. Details are logged locally, never returned. |
+
+A 4xx other than 401 means the payload is wrong and must not be resent
+unchanged. A 401 means the token is wrong. A 500 or a connection failure is
+safely retryable — replays deduplicate.
+
+## Cross-origin behavior
+
+`OPTIONS` preflight is answered for `chrome-extension://` origins only, and the
+allowed origin is echoed rather than wildcarded, so a web page on the tailnet
+cannot read share responses. A Chrome MV3 service worker holding a host
+permission does not need CORS at all; the preflight support exists for
+completeness.
+
+## Disclosure
+
+Request logs contain method, path, HTTP status, a safe outcome label, and job id
+only. Shared URLs, titles, text bodies, and the token never appear in logs.

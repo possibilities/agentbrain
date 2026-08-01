@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Agentbrain Share",
+  "version": "1.0.0",
+  "description": "Send the current page, a link, or a selection to your private Agentbrain share ingress.",
+  "permissions": ["contextMenus", "storage", "notifications", "activeTab"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": { "128": "icon128.png" },
+  "action": {
+    "default_title": "Send this page to Agentbrain",
+    "default_icon": { "128": "icon128.png" }
+  },
+  "options_page": "options.html",
+  "commands": {
+    "share-current-page": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Send the current page to Agentbrain"
+    }
+  }
+}

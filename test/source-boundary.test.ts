@@ -13,6 +13,12 @@ function sourceFiles(root: string): string[] {
   return output;
 }
 
+/**
+ * The one module authorized to bind a socket, per ADR 0017. Outbound network
+ * clients remain forbidden everywhere, including here.
+ */
+const SHARE_INGRESS_FILE = join("src", "share-server.ts");
+
 test("production source has no direct DNS/HTTP client boundary", () => {
   const root = join(import.meta.dir, "..", "src");
   expect(existsSync(join(root, "url-safety.ts"))).toBe(false);
@@ -24,19 +30,48 @@ test("production source has no direct DNS/HTTP client boundary", () => {
     /import\(["'](?:undici|axios|got|node-fetch|request|superagent|playwright|puppeteer|selenium-webdriver)["']\)/,
     /require\(["'](?:undici|axios|got|node-fetch|request|superagent|playwright|puppeteer|selenium-webdriver)["']\)/,
     /\b(?:globalThis\.)?fetch\s*\(/,
-    /\bBun\.(?:connect|udpSocket|serve)\s*\(/,
+    /\bBun\.(?:connect|udpSocket)\s*\(/,
     /\bDeno\.(?:connect|serve|listen)\s*\(/,
     /\b(?:new\s+)?(?:WebSocket|EventSource|XMLHttpRequest)\b/,
     /\b(?:http|https)Request\b/,
   ];
+  // Inbound binding is allowed only in the share ingress authorized by ADR 0017.
+  const inboundBinding = /\bBun\.serve\s*\(/;
   const violations: string[] = [];
   for (const path of sourceFiles(root)) {
     const text = readFileSync(path, "utf8");
     for (const pattern of forbidden) {
       if (pattern.test(text)) violations.push(`${path}: ${pattern}`);
     }
+    if (!path.endsWith(SHARE_INGRESS_FILE) && inboundBinding.test(text)) {
+      violations.push(`${path}: ${inboundBinding}`);
+    }
   }
   expect(violations).toEqual([]);
+});
+
+test("only the ADR 0017 share ingress binds a socket", () => {
+  const root = join(import.meta.dir, "..", "src");
+  const binding = sourceFiles(root)
+    .filter((path) => /\bBun\.serve\s*\(/.test(readFileSync(path, "utf8")))
+    .map((path) => path.slice(path.indexOf(join("src", ""))));
+  expect(binding).toEqual([SHARE_INGRESS_FILE]);
+});
+
+test("the share ingress performs no outbound network work", () => {
+  const text = readFileSync(
+    join(import.meta.dir, "..", SHARE_INGRESS_FILE),
+    "utf8",
+  );
+  // Agentscrape remains the only URL fetcher (ADR 0002); the ingress is
+  // inbound only and must never acquire an egress path.
+  for (const pattern of [
+    /\b(?:globalThis\.)?fetch\s*\(/,
+    /\bBun\.connect\s*\(/,
+    /from\s+["']node:(?:dns(?:\/promises)?|http|https|net|tls|dgram)["']/,
+  ]) {
+    expect(pattern.test(text)).toBe(false);
+  }
 });
 
 test("production source outside the Agentscrape adapter has no browser or preset hooks", () => {

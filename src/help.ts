@@ -60,6 +60,10 @@ export const COMMANDS = [
     summary: "Apply, inspect, schedule, pause, and resume recurring sources",
   },
   {
+    name: "share",
+    summary: "Serve the authenticated share ingress for Chrome and Android",
+  },
+  {
     name: "guide",
     summary: "Print the stable machine-readable agent contract",
   },
@@ -452,6 +456,34 @@ and returns a scheduler-facing execution receipt; it does not wait for every dis
 child URL extraction. Timeout exits 124, and a non-success terminal outcome exits 1.
 For supervisors that treat every nonzero exit as an execution failure, --wait-timeout-ok
 keeps timed_out:true in JSON but exits 0 because the durable Run continues independently.
+`,
+  share: `agentbrain share — authenticated share ingress for Chrome and Android
+
+Usage:
+  agentbrain share serve [--host ADDR] [--port N] [--token-file PATH] [--allow-any-interface] [--json]
+  agentbrain share token init [--force] [--token-file PATH] [--json]
+  agentbrain share token show --reveal [--token-file PATH] [--json]
+  agentbrain share token path [--json]
+
+share serve exposes one ingestion contract, POST /v1/share, plus GET /v1/health.
+Both require Authorization: Bearer <token>. The server is the authoritative
+ingestion point: it resolves each payload into exactly one Admission intent and
+calls the same durable submit path as the CLI, so a replayed share returns
+duplicate with the same job identity rather than creating a second job.
+
+A payload carries client (chrome-extension or android-share) plus url or text.
+Free-text shares are scanned server-side for the first valid http(s) URL, so an
+Android payload like "great read https://example.com/post" becomes a URL job.
+Text with no URL becomes a text job. Shares default to the saved-links collection.
+
+Network reachability is not authorization. The default bind is 127.0.0.1; pass
+the tailnet address explicitly (--host 100.x.y.z) to accept device shares.
+Binding 0.0.0.0 or :: additionally requires --allow-any-interface. The token
+lives at ~/.local/share/agentbrain/share-token with 0600 permissions, or in
+AGENTBRAIN_SHARE_TOKEN for supervised service contexts. Request logs record
+method, path, status, outcome, and job id only — never shared URLs or bodies.
+
+See docs/contracts/share-ingest-v1.md and docs/runbooks/share-ingress.md.
 `,
   guide: `agentbrain guide — machine-readable CLI contract for agents
 

@@ -68,6 +68,8 @@ export function buildGuide(): unknown {
         "submit",
         "ingest",
         "worker",
+        "share serve",
+        "share token init",
         "jobs retry/cancel/exclude",
         "jobs show --reveal-content",
         "delete",
@@ -137,6 +139,8 @@ export function buildGuide(): unknown {
       tags: "Tag discovery.",
       sources:
         "Apply and inspect versioned recurring Source definitions, durably admit due X/feed discovery Runs, pause/resume them, and optionally wait for a scheduler-facing discovery/checkpoint receipt without waiting for child URL extraction.",
+      share:
+        "Serve the authenticated Chrome/Android share ingress (POST /v1/share) and manage its bearer token; every share resolves to exactly one Admission intent through the same durable submit path, so a replay returns duplicate with the same job.",
       prompt: "Prompt another harness to generate docs from this help surface.",
     },
     safety: {
