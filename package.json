@@ -12,6 +12,7 @@
     "agentbrain": "src/cli.ts"
   },
   "scripts": {
+    "dev:share": "bun run src/cli.ts share serve --portless",
     "lint": "biome check src test",
     "format": "biome check --write src test",
     "typecheck": "tsc --noEmit",

@@ -2,12 +2,21 @@ import { optBoolean, optNumber, optString, parseOptions } from "./args";
 import { CliError } from "./errors";
 import { writeByFormat } from "./format";
 import {
+  alreadyInsidePortless,
+  cliEntryPoint,
+  execPortless,
+  PORTLESS_INSIDE_ENV,
+  repositoryRoot,
+  shareNameFor,
+} from "./portless";
+import {
   defaultShareTokenPath,
   generateShareToken,
   readShareToken,
+  resolveSharePort,
   SHARE_CONTRACT_VERSION,
   SHARE_DEFAULT_HOST,
-  SHARE_DEFAULT_PORT,
+  type SharePortSource,
   writeShareToken,
 } from "./share";
 import { type ShareServerEvent, startShareServer } from "./share-server";
@@ -53,6 +62,22 @@ function assertBindableHost(host: string, allowAny: boolean): void {
   }
 }
 
+/**
+ * Loopback in the RFC 6761 sense. A Portless `.localhost` name resolves nowhere
+ * but this machine, so it can only ever front a loopback bind; asking for both
+ * a named URL and a tailnet address is a contradiction worth naming rather than
+ * silently resolving one way.
+ */
+function isLoopbackHost(host: string): boolean {
+  const value = host.trim().toLowerCase();
+  return (
+    value === "127.0.0.1" ||
+    value === "::1" ||
+    value === "[::1]" ||
+    value === "localhost"
+  );
+}
+
 export async function runShareCommands(
   dbPath: string,
   argv: string[],
@@ -65,9 +90,12 @@ export async function runShareCommands(
   if (subcommand === "serve") {
     const opts = parseOptions(args, {
       host: { type: "string", default: SHARE_DEFAULT_HOST },
-      port: { type: "number", default: SHARE_DEFAULT_PORT },
+      // No default: the flag has to stay distinguishable from its absence so
+      // PORT can sit underneath it. resolveSharePort applies the default.
+      port: { type: "number" },
       "token-file": { type: "string" },
       "allow-any-interface": { type: "boolean" },
+      portless: { type: "boolean" },
     });
     if (opts._.length > 0) {
       throw new CliError(
@@ -77,12 +105,51 @@ export async function runShareCommands(
       );
     }
     const host = optString(opts, "host") ?? SHARE_DEFAULT_HOST;
-    const port = optNumber(opts, "port") ?? SHARE_DEFAULT_PORT;
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-      throw new CliError("bad_port", "--port must be between 1 and 65535", {
-        exitCode: 2,
-      });
+    const portFlag = optNumber(opts, "port");
+
+    // --portless re-enters this same command with Portless owning the process
+    // tree; the child then arrives with PORTLESS_URL set and simply serves.
+    if (optBoolean(opts, "portless") && !alreadyInsidePortless(process.env)) {
+      if (portFlag !== undefined) {
+        throw new CliError(
+          "portless_port_conflict",
+          "--port and --portless are mutually exclusive",
+          {
+            exitCode: 2,
+            hint: "Portless allocates a free port and passes it in PORT; drop --port.",
+          },
+        );
+      }
+      if (!isLoopbackHost(host)) {
+        throw new CliError(
+          "portless_host_conflict",
+          `--portless is loopback-only and cannot serve --host ${host}`,
+          {
+            exitCode: 2,
+            hint: "A .localhost name resolves only on this machine. For phone shares run share serve --host <tailnet-addr> without --portless.",
+          },
+        );
+      }
+      const root = repositoryRoot();
+      // The globals (--db, --json, --quiet) were consumed before this function
+      // received its arguments, so the child is rebuilt from the process's own
+      // argv; only --portless is dropped, so the child does not recurse.
+      const passthrough = Bun.argv
+        .slice(2)
+        .filter(
+          (arg) => arg !== "--portless" && !arg.startsWith("--portless="),
+        );
+      process.exit(
+        await execPortless(shareNameFor(root, process.env), [
+          process.execPath,
+          "run",
+          cliEntryPoint(root),
+          ...passthrough,
+        ]),
+      );
     }
+
+    const { port, source: portSource } = resolveSharePort(portFlag);
     assertBindableHost(host, optBoolean(opts, "allow-any-interface"));
     const tokenPath = tokenPathFor(opts);
     const { token, source } = resolveServerToken(tokenPath);
@@ -99,19 +166,41 @@ export async function runShareCommands(
     };
     const running = startShareServer({ store, token, host, port, onEvent });
 
+    // Present only when Portless is proxying us, and reported as what it is: a
+    // loopback-only development name that supplements the tailnet address.
+    const portlessUrl = process.env[PORTLESS_INSIDE_ENV]?.trim();
+    const payload: {
+      version: number;
+      host: string;
+      port: number;
+      port_source: SharePortSource;
+      url: string;
+      endpoint: string;
+      token_source: string;
+      portless_url?: string;
+    } = {
+      version: SHARE_CONTRACT_VERSION,
+      host,
+      // Bun types the bound port as optional (unix sockets have none); this
+      // server is always a TCP listener, so the requested port is the answer.
+      port: running.server.port ?? port,
+      port_source: portSource,
+      url: running.url,
+      endpoint: `${running.url}/v1/share`,
+      token_source: source,
+      ...(portlessUrl ? { portless_url: portlessUrl } : {}),
+    };
+
     writeByFormat(
       "share serve",
-      {
-        version: SHARE_CONTRACT_VERSION,
-        host,
-        port: running.server.port,
-        url: running.url,
-        endpoint: `${running.url}/v1/share`,
-        token_source: source,
-      },
+      payload,
       globals,
       (data) =>
-        `Agentbrain share ingress listening on ${data.url}\nPOST ${data.endpoint}\ntoken: ${data.token_source}\n`,
+        `Agentbrain share ingress listening on ${data.url}\nPOST ${data.endpoint}\ntoken: ${data.token_source}\nport: ${data.port} (${data.port_source})\n${
+          data.portless_url === undefined
+            ? ""
+            : `named URL: ${data.portless_url} (this machine only)\n`
+        }`,
       { readOnly: false },
     );
 

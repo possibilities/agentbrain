@@ -460,7 +460,7 @@ keeps timed_out:true in JSON but exits 0 because the durable Run continues indep
   share: `agentbrain share — authenticated share ingress for Chrome and Android
 
 Usage:
-  agentbrain share serve [--host ADDR] [--port N] [--token-file PATH] [--allow-any-interface] [--json]
+  agentbrain share serve [--host ADDR] [--port N] [--portless] [--token-file PATH] [--allow-any-interface] [--json]
   agentbrain share token init [--force] [--token-file PATH] [--json]
   agentbrain share token show --reveal [--token-file PATH] [--json]
   agentbrain share token path [--json]
@@ -482,6 +482,20 @@ Binding 0.0.0.0 or :: additionally requires --allow-any-interface. The token
 lives at ~/.local/share/agentbrain/share-token with 0600 permissions, or in
 AGENTBRAIN_SHARE_TOKEN for supervised service contexts. Request logs record
 method, path, status, outcome, and job id only — never shared URLs or bodies.
+
+Port precedence: --port, then PORT, then 8787. PORT exists so a supervisor that
+allocates a free port can hand one over; the flag always wins, and 8787 remains
+the direct default the device clients are configured against. A malformed PORT
+is refused rather than silently falling back.
+
+--portless is local desktop development only. It re-runs this command behind the
+portless CLI so the ingress answers on a stable https://<name>.localhost URL
+that survives branch changes and never collides between worktrees. Portless is a
+machine prerequisite (npm i -g portless, Node >= 24), not a dependency: without
+it the command says so instead of starting an unnamed server. A .localhost name
+resolves only on this machine, so it supplements the tailnet address rather than
+replacing it, and --portless is refused alongside --port or a non-loopback
+--host. Override the derived name with AGENTBRAIN_PORTLESS_NAME.
 
 See docs/contracts/share-ingest-v1.md and docs/runbooks/share-ingress.md.
 `,

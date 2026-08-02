@@ -201,5 +201,6 @@ Document:
 6. Queued and duplicate submission acknowledgements, explicit idempotency conflicts, and --wait observation.
 7. The opt-in real Agentscrape smoke: temporary database, queued URL Admission, worker --once, search verification, and preserved failed evidence.
 8. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.local/share/agentbrain/research.db.
+9. Share ingress port precedence: --port, then PORT, then 8787; --portless is loopback-only desktop development and never replaces the tailnet address devices use.
 
 Keep it short enough for an AGENTS.md / CLAUDE.md / harness instruction file.`;

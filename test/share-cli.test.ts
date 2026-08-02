@@ -169,6 +169,11 @@ test("share appears on every public discovery surface", () => {
   expect(commandHelp).toContain("Authorization: Bearer");
   // The bind default is a security property; it must be discoverable.
   expect(commandHelp).toContain("127.0.0.1");
+  // Precedence is a contract, exactly as --db/AGENTBRAIN_DB is.
+  expect(commandHelp).toContain("--port, then PORT, then 8787");
+  // The named URL must never read as a replacement for the device path.
+  expect(commandHelp).toContain("--portless");
+  expect(commandHelp).toContain("supplements the tailnet address");
 
   const guide = JSON.parse(runCli(["guide", "--json"]).stdout) as {
     data: {
@@ -178,4 +183,116 @@ test("share appears on every public discovery surface", () => {
   };
   expect(guide.data.commands.share).toBeDefined();
   expect(guide.data.output_contract.mutation_commands).toContain("share serve");
+});
+
+interface ServeEnvelope {
+  ok: boolean;
+  data: { port: number; port_source: string; url: string };
+}
+
+/**
+ * Starts the ingress, reads the envelope it prints once it is listening, and
+ * stops it. The command is long-lived by design, so the test cannot wait for
+ * an exit the way every other one here does.
+ */
+async function serveAndStop(
+  args: string[],
+  env: Record<string, string>,
+  dbPath: string,
+): Promise<ServeEnvelope> {
+  const proc = Bun.spawn(
+    [
+      process.execPath,
+      "run",
+      CLI,
+      "--db",
+      dbPath,
+      "--json",
+      "share",
+      "serve",
+      ...args,
+    ],
+    {
+      cwd: REPO,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, AGENTBRAIN_SHARE_TOKEN: "", ...env },
+    },
+  );
+  try {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const chunk of proc.stdout) {
+      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+      try {
+        return JSON.parse(buffer) as ServeEnvelope;
+      } catch {
+        // The envelope is pretty-printed over several chunks; keep reading.
+      }
+    }
+    throw new Error(`share serve printed no envelope: ${buffer}`);
+  } finally {
+    proc.kill("SIGTERM");
+    await proc.exited;
+  }
+}
+
+test("share serve binds PORT when no --port is given, and says where it came from", async () => {
+  const dir = workspace();
+  const tokenFile = join(dir, "share-token");
+  const dbPath = join(dir, "research.db");
+  runCli(["--json", "share", "token", "init", "--token-file", tokenFile]);
+
+  // PORT is the hook a port-allocating supervisor uses; nothing else changes.
+  const fromEnv = await serveAndStop(
+    ["--token-file", tokenFile],
+    { PORT: "45237" },
+    dbPath,
+  );
+  expect(fromEnv.ok).toBe(true);
+  expect(fromEnv.data.port).toBe(45_237);
+  expect(fromEnv.data.port_source).toBe("env:PORT");
+  expect(fromEnv.data.url).toBe("http://127.0.0.1:45237");
+
+  // The explicit flag stays highest precedence even with PORT present.
+  const fromFlag = await serveAndStop(
+    ["--token-file", tokenFile, "--port", "45238"],
+    { PORT: "45237" },
+    dbPath,
+  );
+  expect(fromFlag.data.port).toBe(45_238);
+  expect(fromFlag.data.port_source).toBe("flag");
+});
+
+test("a malformed PORT is refused rather than quietly binding the default", async () => {
+  const dir = workspace();
+  const tokenFile = join(dir, "share-token");
+  runCli(["--json", "share", "token", "init", "--token-file", tokenFile]);
+
+  // Binding 8787 here would leave a supervisor proxying a socket nothing is
+  // listening on. The unbound default itself is covered in share.test.ts;
+  // this asserts only that a broken PORT never reaches a listener.
+  const proc = Bun.spawnSync(
+    [
+      process.execPath,
+      "run",
+      CLI,
+      "--db",
+      join(dir, "research.db"),
+      "--json",
+      "share",
+      "serve",
+      "--token-file",
+      tokenFile,
+    ],
+    {
+      cwd: REPO,
+      env: { ...process.env, AGENTBRAIN_SHARE_TOKEN: "", PORT: "http" },
+    },
+  );
+  expect(proc.exitCode).toBe(2);
+  expect(JSON.parse(new TextDecoder().decode(proc.stdout))).toMatchObject({
+    ok: false,
+    error: { code: "bad_port" },
+  });
 });

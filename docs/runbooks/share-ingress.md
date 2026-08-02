@@ -71,6 +71,57 @@ owner-only.
 A share is durable the moment it is admitted. Materialization still waits for
 the resident Worker, so run both.
 
+### Choosing the port
+
+`--port`, then `PORT`, then 8787. The flag is highest precedence; `PORT` is
+there so a supervisor that allocates a free port can hand one over; 8787 is the
+direct default every device client is configured against, so leave it alone
+unless you have a reason. A `PORT` that is not an integer in 1–65535 is refused
+rather than quietly falling back, because a supervisor that asked for one port
+and got another would forward to a socket nothing is listening on.
+
+### Named URLs for desktop development
+
+**This section is for working on Agentbrain on the machine itself. It does not
+apply to phones, and it does not replace anything above.** A `.localhost` name
+resolves only on the machine that serves it — RFC 6761 reserves the whole suffix
+for loopback — so it cannot receive a share from a device. Devices continue to
+use the tailnet address from step 2.
+
+Two checkouts both want 8787, and the second one loses. To give each checkout a
+stable URL of its own instead:
+
+```bash
+bun run dev:share            # → https://<name>.localhost
+agentbrain share serve       # the direct path, unchanged, on 127.0.0.1:8787
+```
+
+`dev:share` is `agentbrain share serve --portless`. It re-runs the command
+behind the `portless` CLI in *direct named mode* (`portless --name <name> --
+<command>`), passing a name derived from the checkout's absolute path: the
+directory name plus six hex of that path. That name identifies the worktree and
+only the worktree, so it survives a branch rename and a detached HEAD, and two
+sibling worktrees can never land on the same URL. Portless's own inferred name
+would not: it comes from the branch's last segment and is withheld entirely for
+a detached HEAD, which is the usual state of an Orca worktree. Override the
+derived name with `AGENTBRAIN_PORTLESS_NAME` — two clones of the repository, as
+opposed to two worktrees of one, are both main checkouts and would otherwise
+share a name.
+
+Portless is a **machine prerequisite**, not a dependency of this package:
+`npm i -g portless`, Node ≥ 24. Without it `dev:share` exits with
+`portless_unavailable` and tells you so, rather than starting an unnamed server
+under a command that promised a name. Installing and first running it is the
+operator's decision: serving over HTTPS generates a local CA and offers to add
+it to the trust store, and it runs a resident proxy. Agentbrain neither installs
+it, starts its daemon, nor touches the trust store, and still binds exactly one
+listener of its own — the proxy is separate software in front of it.
+
+Nothing about the ingress's security changes: every route still requires the
+bearer token, the bind is still `127.0.0.1`, and `--portless` is refused
+alongside `--port` (Portless allocates the port and passes it in `PORT`) or a
+non-loopback `--host` (a `.localhost` name cannot front a tailnet address).
+
 ## 4. Install the Chrome extension
 
 1. Open `chrome://extensions`, enable **Developer mode**.
@@ -151,6 +202,9 @@ podcast apps, and plain notes.
 | Extension errors with a permission message | Host permission not granted | Reopen Options and click **Save & grant access** |
 | Share succeeds but nothing is searchable | Worker not running, or extraction failed | `agentbrain jobs list --state failed --json`; check the Worker and that `agentscrape` is on its `PATH` |
 | Everything returns `duplicate` | Working as intended | The intent is already queued; check `agentbrain jobs show <id> --json` |
+| `EADDRINUSE` on 8787 | Another checkout already holds the port | Use `bun run dev:share` for a named URL of this checkout's own, or pass `--port` |
+| `dev:share` fails with `portless_unavailable` | Portless is not installed | `npm i -g portless` (Node ≥ 24), or use `agentbrain share serve` directly |
+| A phone cannot reach the `.localhost` URL | Working as intended | `.localhost` is loopback-only; devices use the tailnet address from step 2 |
 
 Inspect what arrived:
 

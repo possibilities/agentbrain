@@ -10,7 +10,9 @@ import {
   parseShareRequest,
   readShareToken,
   resolveShare,
+  resolveSharePort,
   SHARE_DEFAULT_COLLECTION,
+  SHARE_DEFAULT_PORT,
   tokenMatches,
   writeShareToken,
 } from "../src/share";
@@ -201,4 +203,47 @@ test("bearer parsing accepts only a well-formed header", () => {
   expect(bearerToken("Basic abc123")).toBeNull();
   expect(bearerToken("abc123")).toBeNull();
   expect(bearerToken(null)).toBeNull();
+});
+
+test("the listening port is --port, then PORT, then the fixed default", () => {
+  // The flag is highest precedence and wins even when a supervisor supplied one.
+  expect(resolveSharePort(9001, { PORT: "4321" })).toEqual({
+    port: 9001,
+    source: "flag",
+  });
+  // PORT is the fallback a port-allocating supervisor (Portless) fills in.
+  expect(resolveSharePort(undefined, { PORT: "4321" })).toEqual({
+    port: 4321,
+    source: "env:PORT",
+  });
+  // With neither, the documented port the device clients are configured against.
+  expect(resolveSharePort(undefined, {})).toEqual({
+    port: SHARE_DEFAULT_PORT,
+    source: "default",
+  });
+});
+
+test("an absent PORT is absent and a malformed PORT is refused", () => {
+  // An inherited empty value must not break the direct path.
+  for (const value of ["", "   "]) {
+    expect(resolveSharePort(undefined, { PORT: value }).source).toBe("default");
+  }
+
+  // Silently falling back would bind 8787 while the supervisor proxied
+  // elsewhere, so the ingress would answer on a port nothing points at.
+  for (const value of ["http", "0", "65536", "80.5", "-1"]) {
+    expect(() => resolveSharePort(undefined, { PORT: value })).toThrow(
+      CliError,
+    );
+    try {
+      resolveSharePort(undefined, { PORT: value });
+    } catch (error) {
+      expect((error as CliError).code).toBe("bad_port");
+      expect((error as CliError).hint).toContain("--port always wins");
+    }
+  }
+
+  for (const value of [0, 65_536, 8787.5]) {
+    expect(() => resolveSharePort(value, {})).toThrow(CliError);
+  }
 });

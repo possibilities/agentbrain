@@ -142,6 +142,10 @@ The ingress resolves each payload into exactly one Admission intent and calls th
 
 Network reachability is not authorization. Every route, including health, requires a bearer token compared in constant time; the default bind is `127.0.0.1`, exposure requires naming the tailnet address explicitly, and binding every interface additionally requires `--allow-any-interface`. Request logs record method, path, status, outcome, and job id only — never shared URLs, titles, or bodies. This surface is the separate authorization decision that [ADR 0012](docs/adr/0012-local-security-and-sensitive-ingestion.md) deferred; it is recorded in [ADR 0017](docs/adr/0017-authenticated-share-ingress.md).
 
+The listening port is `--port`, then `PORT`, then 8787. `PORT` is the hook a port-allocating supervisor uses; the flag always wins, and 8787 stays the direct default the device clients are configured against.
+
+For desktop development, `bun run dev:share` runs that same command behind [Portless](https://github.com/vercel-labs/portless), giving this checkout a stable `https://<name>.localhost` URL instead of a fixed port — so sibling worktrees can each run an ingress without contending for 8787, and the URL does not move when the branch does or when HEAD is detached. It is loopback-only by construction, since RFC 6761 reserves `.localhost` for the local machine: it **supplements the tailnet address above and cannot serve a phone**, so the device path is exactly unchanged and `--portless` is refused alongside `--port` or a non-loopback `--host`. Portless is a machine prerequisite (`npm i -g portless`, Node ≥ 24), not a dependency — without it the command says so rather than starting an unnamed server, and plain `agentbrain share serve` keeps working. Agentbrain still binds exactly one listener; the proxy is separate software the operator installs and runs.
+
 Clients live in [`clients/`](clients). Setup, platform limitations, and troubleshooting are in [`docs/runbooks/share-ingress.md`](docs/runbooks/share-ingress.md); the wire format is [`docs/contracts/share-ingest-v1.md`](docs/contracts/share-ingest-v1.md).
 
 ## Recurring sources

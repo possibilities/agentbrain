@@ -15,6 +15,62 @@ export const SHARE_DEFAULT_PORT = 8787;
 export const SHARE_DEFAULT_HOST = "127.0.0.1";
 export const SHARE_TOKEN_BYTES = 32;
 
+/** Where the port the ingress binds came from, so the choice stays inspectable. */
+export type SharePortSource = "flag" | "env:PORT" | "default";
+
+export interface ResolvedSharePort {
+  port: number;
+  source: SharePortSource;
+}
+
+function usablePort(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 65_535;
+}
+
+/**
+ * Resolves the listening port: `--port`, then `PORT`, then the fixed default.
+ *
+ * `PORT` exists so a supervisor that allocates a free port can hand one over —
+ * Portless does exactly this for the local development URL — without displacing
+ * either the explicit flag or the documented 8787 the device clients are
+ * configured against. A malformed `PORT` is an error rather than a silent fall
+ * back to the default, because a supervisor that asked for one port and got
+ * another would proxy to a socket nothing is listening on. An unset or empty
+ * `PORT` is simply absent, so an inherited empty value cannot break the direct
+ * path.
+ */
+export function resolveSharePort(
+  flag: number | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedSharePort {
+  if (flag !== undefined) {
+    if (!usablePort(flag)) {
+      throw new CliError("bad_port", "--port must be between 1 and 65535", {
+        exitCode: 2,
+      });
+    }
+    return { port: flag, source: "flag" };
+  }
+
+  const fromEnv = env.PORT?.trim();
+  if (fromEnv !== undefined && fromEnv.length > 0) {
+    const parsed = Number(fromEnv);
+    if (!usablePort(parsed)) {
+      throw new CliError(
+        "bad_port",
+        `PORT must be an integer between 1 and 65535, got '${fromEnv}'`,
+        {
+          exitCode: 2,
+          hint: "Unset PORT, or pass --port explicitly; --port always wins.",
+        },
+      );
+    }
+    return { port: parsed, source: "env:PORT" };
+  }
+
+  return { port: SHARE_DEFAULT_PORT, source: "default" };
+}
+
 /**
  * Clients this ingress recognizes. Unknown values are rejected so that
  * `ingress` stays a bounded enum in durable job intent rather than
