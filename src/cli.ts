@@ -24,7 +24,14 @@ import { ResearchCache } from "./db";
 import { CliError } from "./errors";
 import { errorEnvelope, formatList, writeByFormat, writeJson } from "./format";
 import { buildGuide, HARNESS_DOCS_PROMPT } from "./guide";
-import { COMMANDS, helpFor, TOP_HELP, VERSION } from "./help";
+import {
+  AGENT_HELP,
+  AGENT_TEASER,
+  COMMANDS,
+  helpFor,
+  TOP_HELP,
+  VERSION,
+} from "./help";
 import type { IngestSourceType } from "./ingest";
 import type { DoctorReport } from "./jobs";
 import {
@@ -186,6 +193,16 @@ async function runParsed(
 
   if (parsed.showVersion) {
     process.stdout.write(`agentbrain ${VERSION}\n`);
+    return;
+  }
+
+  if (parsed.showAgentHelp) {
+    process.stdout.write(AGENT_HELP);
+    return;
+  }
+
+  if (parsed.showAgentTeaser) {
+    process.stdout.write(`${AGENT_TEASER}\n`);
     return;
   }
 

@@ -8,6 +8,8 @@ export interface ParsedArgv {
   globals: GlobalOptions;
   showHelp: boolean;
   showVersion: boolean;
+  showAgentHelp: boolean;
+  showAgentTeaser: boolean;
   usesDefaultDb: boolean;
 }
 
@@ -44,6 +46,8 @@ export function parseTopLevel(
   let quiet = false;
   let showHelp = false;
   let showVersion = false;
+  let showAgentHelp = false;
+  let showAgentTeaser = false;
   const rest: string[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -95,6 +99,14 @@ export function parseTopLevel(
       showVersion = true;
       continue;
     }
+    if (arg === "--agent-help") {
+      showAgentHelp = true;
+      continue;
+    }
+    if (arg === "--agent-teaser") {
+      showAgentTeaser = true;
+      continue;
+    }
     rest.push(arg);
   }
 
@@ -104,6 +116,8 @@ export function parseTopLevel(
     globals: { dbPath: expandHome(dbPath, env.HOME), format, quiet },
     showHelp,
     showVersion,
+    showAgentHelp,
+    showAgentTeaser,
     usesDefaultDb,
   };
 }

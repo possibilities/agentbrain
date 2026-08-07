@@ -44,6 +44,15 @@ export function buildGuide(): unknown {
         meaning:
           "Streaming-friendly records; currently most useful for search.",
       },
+      {
+        flag: "--agent-help",
+        meaning:
+          "Text runbook for agents; this guide is the full machine card.",
+      },
+      {
+        flag: "--agent-teaser",
+        meaning: "One-line capability summary.",
+      },
     ],
     output_contract: {
       json_envelope: {

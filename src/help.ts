@@ -91,6 +91,8 @@ Global options:
   --quiet, -q        Suppress non-essential human output
   --help, -h         Show this help
   --version, -V      Show version
+  --agent-help       Show usage and workflow guidance for agents
+  --agent-teaser     Show a one-line capability summary
 
 Commands:
 ${COMMAND_LINES}
@@ -111,6 +113,45 @@ Recovery import verifies the complete frozen generation and local Artifact hashe
 admission; --dry-run writes no database or Artifact state and performs no network work.
 Use --help on any command for command-specific options. Job inspection omits durable
 intent bodies and URLs unless jobs show is given the audited --reveal-content option.
+`;
+
+export const AGENT_TEASER =
+  "Search, retrieve, and durably ingest a local research index: FTS search with citations, bounded context, a durable submission ledger, and recurring sources.";
+
+export const AGENT_HELP = `agentbrain — local research index (agent runbook)
+
+Search and read the durable local research index, and submit new material into
+its ingestion ledger. Admission is durable and offline: extraction happens
+later through the worker and Agentscrape, so never expect a URL submit to be
+searchable immediately.
+
+Reading (read-only, safe anytime)
+  agentbrain context "query" --json      One bounded search-and-evidence call.
+  agentbrain search "query" --json       Ranked FTS hits; follow with
+  agentbrain get --chunk-id ID --json    (or --document-id / --source-uri).
+  agentbrain stats / tags / sources      Inventory when discovery is poor;
+                                         retry alternate terms before
+                                         inferring absence.
+Cite document_id, chunk_id when present, title, and source_uri.
+
+Writing (durable admission)
+  agentbrain submit <url|file|dir|text>  Durably queue an intent; local bytes
+                                         are snapshotted first, URL admission
+                                         performs no network work.
+  queued and duplicate are success; already_indexed names the existing
+  document_id (add --force to rematerialize).
+  agentbrain jobs list/show/stats        Watch the ledger; retry, cancel, and
+                                         exclude are explicit operator acts.
+  agentbrain doctor                      Health including stranded ingestion.
+
+Contract
+  --json emits the stable {schema_version, ok, command, data, error, meta}
+  envelope. Exit codes: 0 success, 1 runtime failure, 2 argument fault,
+  124 wait-observation timeout (the durable Run continues).
+  Read commands open the database read-only and never migrate.
+
+Full machine-readable card: agentbrain guide --json
+Per-command help: agentbrain help <command> or <command> --help
 `;
 
 export const HELP: Record<string, string> = {
