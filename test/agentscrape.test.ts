@@ -360,7 +360,7 @@ printf '%s' ${shellLiteral(JSON.stringify(envelope))}
   });
 
   expect(readFileSync(log, "utf8")).toBe(
-    "fetch-markdown\nhttps://example.com/article\n--envelope\n--max-content-bytes\n1000\n--max-relations\n3\n",
+    "fetch-markdown\nhttps://example.com/article\n--envelope\n--allow-private-network\n--max-content-bytes\n1000\n--max-relations\n3\n",
   );
   expect(result).toMatchObject({
     status: "success",
@@ -554,7 +554,8 @@ test("classified extraction failures map without parsing stderr", async () => {
   const url = "https://example.com/failure";
   const { executable } = installAgentscrape("#!/bin/sh\nexit 1\n");
   const cases = [
-    ["upstream_unavailable", true, "item_transient", "item", 1],
+    ["upstream_unavailable", true, "infra", "infrastructure", 1],
+    ["browser_error", true, "item_transient", "item", 1],
     ["authentication_required", false, "auth_config", "auth_config", 2],
     ["provider_error", false, "permanent", "permanent", 1],
     ["invalid_request", false, "permanent", "policy", 1],

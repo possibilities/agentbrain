@@ -24,7 +24,7 @@ import type {
   RecoveryImportReport,
   Sensitivity,
 } from "./types";
-import { normalizedWebUrl } from "./url";
+import { normalizedWebUrl, xArticleId, xStatusId } from "./url";
 
 export const SUBMISSION_VERSION = 1 as const;
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
@@ -435,6 +435,55 @@ function assertEquivalent(
       { exitCode: 2 },
     );
   }
+}
+
+export interface AlreadyIndexedResult {
+  version: typeof SUBMISSION_VERSION;
+  status: "already_indexed";
+  document_id: number;
+  resource_key: string;
+}
+
+/**
+ * Read-only pre-admission lookup: the already-materialized document for a URL
+ * submission, keyed by the same conservative resource identity the worker
+ * derives (x:status and x:article aliases converge; generic URLs match only
+ * their conservative normalization). Returns null for non-web sources and for
+ * resources that exist without a materialized document.
+ */
+export function indexedDocumentForUrl(
+  store: ResearchStore,
+  source: string,
+): AlreadyIndexedResult | null {
+  let url: string;
+  try {
+    url = normalizedWebUrl(String(source ?? "").trim());
+  } catch {
+    return null;
+  }
+  const statusId = xStatusId(url);
+  const articleId = xArticleId(url);
+  const key = statusId
+    ? { type: "x:status", value: statusId }
+    : articleId
+      ? { type: "x:article", value: articleId }
+      : { type: "url", value: url };
+  const row = store.db
+    .query(
+      "SELECT key_type, key_value, document_id FROM resources WHERE key_type=? AND key_value=? AND document_id IS NOT NULL",
+    )
+    .get(key.type, key.value) as {
+    key_type: string;
+    key_value: string;
+    document_id: number;
+  } | null;
+  if (row === null) return null;
+  return {
+    version: SUBMISSION_VERSION,
+    status: "already_indexed",
+    document_id: row.document_id,
+    resource_key: `${row.key_type}:${row.key_value}`,
+  };
 }
 
 export function admitSubmission(

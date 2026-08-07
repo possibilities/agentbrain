@@ -79,6 +79,8 @@ export function buildGuide(): unknown {
         version: 1,
         new_status: "queued",
         replay_status: "duplicate",
+        indexed_url_status: "already_indexed",
+        indexed_url_force_flag: "--force",
         success_exit: 0,
         wait_timeout_preserves_job: true,
       },
@@ -115,7 +117,7 @@ export function buildGuide(): unknown {
       "Inspect stats/tags/sources when discovery is poor and retry alternate terms before inferring absence.",
       "Use jobs list/show/stats and doctor for content-safe operations; pass --reveal-content only when Artifact bodies are required and an audit record is appropriate.",
       "Cite document_id, chunk_id when applicable, title, source_uri, and relevant relation provenance.",
-      "Use `agentbrain submit` for every text, file, directory, or URL intent. Treat queued and duplicate as successful durable acknowledgements.",
+      "Use `agentbrain submit` for every text, file, directory, or URL intent. Treat queued and duplicate as successful durable acknowledgements; already_indexed reports the existing document_id for a URL instead of queuing, and --force queues rematerialization.",
     ],
     commands: {
       stats:
@@ -198,7 +200,7 @@ Document:
 3. Zero-result recovery through alternate terms, tags, and sources.
 4. Generic explicit ingestion and guarded deletion.
 5. The ownership boundary: Agentbrain owns durable admission, ingestion jobs, Artifact snapshots, and index writes; Agentscrape owns URL extraction/network/backend behavior.
-6. Queued and duplicate submission acknowledgements, explicit idempotency conflicts, and --wait observation.
+6. Queued, duplicate, and already_indexed submission acknowledgements, explicit idempotency conflicts, and --wait observation.
 7. The opt-in real Agentscrape smoke: temporary database, queued URL Admission, worker --once, search verification, and preserved failed evidence.
 8. DB override precedence: --db, then AGENTBRAIN_DB, then ~/.local/share/agentbrain/research.db.
 9. Share ingress port precedence: --port, then PORT, then 8787; --portless is loopback-only desktop development and never replaces the tailnet address devices use.

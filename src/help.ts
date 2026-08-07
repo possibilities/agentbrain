@@ -234,9 +234,12 @@ Options:
   --json               Emit a versioned success or error envelope
 
 A new intent exits 0 with status queued. An equivalent intent exits 0 with status
-duplicate and the same job_id. Reusing an explicit idempotency key for different intent
-fails. Local bytes are snapshotted into the Artifact store before acknowledgement. URL
-admission performs no network work. A wait timeout leaves the job queued and recoverable.
+duplicate and the same job_id. A URL whose conservative resource identity already
+carries a materialized document exits 0 with status already_indexed and its
+document_id instead of queuing; pass --force to queue rematerialization anyway.
+Reusing an explicit idempotency key for different intent fails. Local bytes are
+snapshotted into the Artifact store before acknowledgement. URL admission performs
+no network work. A wait timeout leaves the job queued and recoverable.
 `,
   ingest: `agentbrain ingest — queued compatibility alias
 
