@@ -26,6 +26,7 @@ import { errorEnvelope, formatList, writeByFormat, writeJson } from "./format";
 import { buildGuide, HARNESS_DOCS_PROMPT } from "./guide";
 import { COMMANDS, helpFor, TOP_HELP, VERSION } from "./help";
 import type { IngestSourceType } from "./ingest";
+import type { DoctorReport } from "./jobs";
 import {
   doctor,
   jobStats,
@@ -36,6 +37,7 @@ import {
   showJob,
   showRun,
 } from "./jobs";
+import { notifyStranded, type StrandedNotifyResult } from "./notify";
 import { assertDefaultDatabaseLocationReady } from "./paths";
 import { parseTags } from "./query";
 import { readRecoveryGeneration } from "./recovery";
@@ -1033,12 +1035,31 @@ async function runRecovery(
   }
 }
 
+/**
+ * Attach the outcome of the operator notification to the report.
+ *
+ * The notice is reported rather than silent so a scheduled run leaves evidence
+ * of whether the operator was actually reachable.
+ */
+function withStrandedNotice(data: DoctorReport): DoctorReport & {
+  notification: StrandedNotifyResult;
+} {
+  const check = data.checks.find(
+    (entry) => entry.name === "stranded_ingestion",
+  );
+  const match = check?.detail.match(/^(\d+) stranded/);
+  const stranded = match === null || match === undefined ? 0 : Number(match[1]);
+  return { ...data, notification: notifyStranded(stranded) };
+}
+
 function runDoctor(
   cache: ResearchCache,
   argv: string[],
   globals: GlobalOptions,
 ): void {
-  const opts = parseOptions(argv, {});
+  const opts = parseOptions(argv, {
+    notify: { type: "boolean", default: false },
+  });
   if (opts._.length > 0)
     throw new CliError(
       "unexpected_args",
@@ -1046,9 +1067,10 @@ function runDoctor(
       { exitCode: 2 },
     );
   const data = doctor(cache);
+  const report = opts.notify === true ? withStrandedNotice(data) : data;
   writeByFormat(
     "doctor",
-    data,
+    report,
     globals,
     (value) => `${JSON.stringify(value, null, 2)}\n`,
   );

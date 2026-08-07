@@ -156,7 +156,8 @@ test("installer renders one private owned worker service idempotently", () => {
     join(REPO, "src/cli.ts"),
   );
   expect(existsSync(join(fixture.bin, "research-ingest-link"))).toBe(false);
-  expect(readdirSync(fixture.launchAgents)).toEqual([
+  expect(readdirSync(fixture.launchAgents).sort()).toEqual([
+    "agentbrain.doctor.plist",
     "agentbrain.worker.plist",
   ]);
 
@@ -189,7 +190,8 @@ test("installer renders one private owned worker service idempotently", () => {
   }
 
   expect(runInstaller(fixture, "--install").exitCode).toBe(0);
-  expect(readdirSync(fixture.launchAgents)).toEqual([
+  expect(readdirSync(fixture.launchAgents).sort()).toEqual([
+    "agentbrain.doctor.plist",
     "agentbrain.worker.plist",
   ]);
   expect(mode(fixture.state)).toBe(0o700);
@@ -414,11 +416,19 @@ test("installer waits for stale service removal before load and uninstall is ide
   const receipt = join(fixture.state, "deployed-sha");
   expect(readFileSync(receipt, "utf8")).toBe(`${sourceSha}\n`);
   expect(mode(receipt)).toBe(0o600);
+  // Each install reloads the worker and then the health reporter that watches
+  // it; each uninstall withdraws the reporter first, so the worker is never the
+  // only thing still running.
   expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
     `bootout ${domain}/agentbrain.worker`,
     `bootstrap ${domain} ${join(fixture.launchAgents, "agentbrain.worker.plist")}`,
+    `bootout ${domain}/agentbrain.doctor`,
+    `bootstrap ${domain} ${join(fixture.launchAgents, "agentbrain.doctor.plist")}`,
     `bootout ${domain}/agentbrain.worker`,
     `bootstrap ${domain} ${join(fixture.launchAgents, "agentbrain.worker.plist")}`,
+    `bootout ${domain}/agentbrain.doctor`,
+    `bootstrap ${domain} ${join(fixture.launchAgents, "agentbrain.doctor.plist")}`,
+    `bootout ${domain}/agentbrain.doctor`,
     `bootout ${domain}/agentbrain.worker`,
     `bootout ${domain}/agentbrain.worker`,
   ]);
@@ -645,7 +655,8 @@ test("installer owns no share ingress until a bind address is named", () => {
 
   // ADR 0017 admits no configuration in which the ingress is exposed by
   // default, so the default install must leave the listener uninstalled.
-  expect(readdirSync(fixture.launchAgents)).toEqual([
+  expect(readdirSync(fixture.launchAgents).sort()).toEqual([
+    "agentbrain.doctor.plist",
     "agentbrain.worker.plist",
   ]);
   expect(existsSync(join(fixture.state, "share.log"))).toBe(false);
@@ -660,6 +671,7 @@ test("naming a bind address installs a private owned share ingress", () => {
   expect(result.exitCode).toBe(0);
 
   expect(readdirSync(fixture.launchAgents).sort()).toEqual([
+    "agentbrain.doctor.plist",
     "agentbrain.share.plist",
     "agentbrain.worker.plist",
   ]);
@@ -715,7 +727,8 @@ test("an unnamed address leaves an installed ingress alone", () => {
     }).exitCode,
   ).toBe(0);
   expect(existsSync(service)).toBe(false);
-  expect(readdirSync(fixture.launchAgents)).toEqual([
+  expect(readdirSync(fixture.launchAgents).sort()).toEqual([
+    "agentbrain.doctor.plist",
     "agentbrain.worker.plist",
   ]);
 });

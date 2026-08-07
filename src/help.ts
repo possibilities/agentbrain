@@ -382,11 +382,21 @@ is completed_with_review. Snapshot rollback is local-only and cannot undo remote
   doctor: `agentbrain doctor — operational health checks
 
 Usage:
-  agentbrain doctor [--json]
+  agentbrain doctor [--notify] [--json]
 
 Uses a structurally read-only database connection. Reports safe status/count data for
-SQLite integrity, schema, Artifact references, leases, and Agentscrape availability.
-Exits 1 when a required check fails.
+SQLite integrity, schema, Artifact references, leases, stranded ingestion, and
+Agentscrape availability. Exits 1 when a required check fails.
+
+A stranded ingestion job is one in blocked or failed: no attempt is scheduled and no
+submitter is left to inform, so links accepted at admission never became searchable.
+Excluded and cancelled are operator dispositions and are not stranded; dispose of a
+job you do not intend to recover with agentbrain jobs exclude.
+
+--notify posts an operator notification through funk-notify or terminal-notifier when
+the stranded count rises above the last notified value, and reports what it did under
+"notification". A steady backlog stays silent and a missing notifier is not an error.
+This command never mutates the ledger; triage stays an explicit operator act.
 `,
   delete: `agentbrain delete — delete one indexed document
 

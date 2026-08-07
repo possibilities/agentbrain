@@ -76,6 +76,11 @@ SHARE_LOG_PATH="$STATE_DIR/share.log"
 SHARE_SERVICE_LABEL="agentbrain.share"
 SHARE_OWNERSHIP_MARKER="agentbrain-installer-owned: agentbrain.share.v1"
 SHARE_HOST="${AGENTBRAIN_INSTALL_SHARE_HOST:-}"
+DOCTOR_PLIST_SOURCE="$ROOT/system/Library/LaunchAgents/agentbrain.doctor.plist"
+DOCTOR_SERVICE_DEST="$LAUNCH_AGENTS_DIR/agentbrain.doctor.plist"
+DOCTOR_LOG_PATH="$STATE_DIR/doctor.log"
+DOCTOR_SERVICE_LABEL="agentbrain.doctor"
+DOCTOR_OWNERSHIP_MARKER="agentbrain-installer-owned: agentbrain.doctor.v1"
 # Reads one environment value out of the service already installed, so a
 # reinstall that says nothing about the conduit keeps the one in use rather than
 # silently blanking it. plutil is macOS-only and optional here: without it the
@@ -397,15 +402,32 @@ remove_owned_share_service() {
   return 1
 }
 
+# Withdraws the health reporter. Like the ingress this is driven by the owned
+# plist on disk, so an older installation that predates the reporter is left
+# alone rather than probed for a service it never had.
+remove_owned_doctor_service() {
+  check_service_destination \
+    "$DOCTOR_SERVICE_DEST" "$DOCTOR_OWNERSHIP_MARKER" "$DOCTOR_SERVICE_LABEL"
+  if service_is_owned \
+    "$DOCTOR_SERVICE_DEST" "$DOCTOR_OWNERSHIP_MARKER" "$DOCTOR_SERVICE_LABEL"; then
+    check_loaded_service "$DOCTOR_SERVICE_LABEL"
+    unload_owned_service "$DOCTOR_SERVICE_LABEL"
+    rm -f "$DOCTOR_SERVICE_DEST"
+    return 0
+  fi
+  return 1
+}
+
 if [[ "$ACTION" == uninstall ]]; then
   preflight_owned_removal "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL" "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL"
   check_service_destination "$SERVICE_DEST" "$OWNERSHIP_MARKER" "$SERVICE_LABEL"
   check_loaded_service "$SERVICE_LABEL"
 
   remove_owned_share_service || true
+  remove_owned_doctor_service || true
 
-  # remove_owned_share_service leaves LOADED_SERVICE_STATE describing the
-  # ingress, so the worker's state has to be read again before it decides.
+  # Those removals leave LOADED_SERVICE_STATE describing the service they
+  # touched, so the worker's state has to be read again before it decides.
   inspect_loaded_service "$SERVICE_LABEL"
   if service_is_owned "$SERVICE_DEST" "$OWNERSHIP_MARKER" "$SERVICE_LABEL" ||
     [[ "$LOADED_SERVICE_STATE" == owned ]]; then
@@ -442,6 +464,8 @@ check_service_destination "$SERVICE_DEST" "$OWNERSHIP_MARKER" "$SERVICE_LABEL"
 check_loaded_service "$SERVICE_LABEL"
 check_service_destination \
   "$SHARE_SERVICE_DEST" "$SHARE_OWNERSHIP_MARKER" "$SHARE_SERVICE_LABEL"
+check_service_destination \
+  "$DOCTOR_SERVICE_DEST" "$DOCTOR_OWNERSHIP_MARKER" "$DOCTOR_SERVICE_LABEL"
 
 # A bind address is the operator's decision to expose a listener, so it is
 # validated before anything is written rather than discovered by a service that
@@ -545,6 +569,32 @@ else
   printf 'installed %s (launchctl unavailable; service not loaded)\n' "$SERVICE_DEST"
 fi
 printf 'installed %s -> %s\n' "$BIN_DIR/agentbrain" "$AGENTBRAIN_SOURCE"
+
+# The health reporter follows the worker because it reports on the worker's
+# outcomes. It is not optional: it reads only, and a silent stranded job is the
+# failure it exists to prevent, so there is no configuration in which an
+# operator wants ingestion running without anything watching it.
+touch "$DOCTOR_LOG_PATH"
+chmod 600 "$DOCTOR_LOG_PATH"
+inspect_loaded_service "$DOCTOR_SERVICE_LABEL"
+if service_is_owned \
+  "$DOCTOR_SERVICE_DEST" "$DOCTOR_OWNERSHIP_MARKER" "$DOCTOR_SERVICE_LABEL" ||
+  [[ "$LOADED_SERVICE_STATE" == owned ]]; then
+  unload_owned_service "$DOCTOR_SERVICE_LABEL"
+fi
+render_service_plist \
+  "$DOCTOR_PLIST_SOURCE" "$DOCTOR_SERVICE_DEST" "$DOCTOR_LOG_PATH" "$DOCTOR_SERVICE_LABEL"
+if launchctl_available; then
+  "$LAUNCHCTL" bootstrap "gui/$(id -u)" "$DOCTOR_SERVICE_DEST"
+  inspect_loaded_service "$DOCTOR_SERVICE_LABEL"
+  if [[ "$LOADED_SERVICE_STATE" != owned ]]; then
+    echo "loaded service failed ownership verification: $DOCTOR_SERVICE_LABEL" >&2
+    exit 1
+  fi
+  printf 'installed and loaded %s\n' "$DOCTOR_SERVICE_DEST"
+else
+  printf 'installed %s (launchctl unavailable; service not loaded)\n' "$DOCTOR_SERVICE_DEST"
+fi
 
 # The ingress is deliberately last: it is the only optional artifact, and the
 # worker is what makes an admitted share become searchable, so a half-finished

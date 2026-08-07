@@ -658,6 +658,19 @@ export function doctor(cache: ResearchCache, now = new Date()): DoctorReport {
     status: stats.stale_leases === 0 ? "ok" : "warning",
     detail: `${stats.active_leases} active, ${stats.stale_leases} expired`,
   });
+  // A job in blocked or failed has stopped moving and no retry will revive it,
+  // yet admission already acknowledged the submitter. Without this check the
+  // report stays healthy while shared links silently never become searchable.
+  // Excluded and cancelled are operator dispositions, so they are not stranded.
+  const stranded = stats.by_state.blocked + stats.by_state.failed;
+  checks.push({
+    name: "stranded_ingestion",
+    status: stranded === 0 ? "ok" : "failed",
+    detail:
+      stranded === 0
+        ? "No stranded ingestion jobs"
+        : `${stranded} stranded ingestion jobs (${stats.by_state.blocked} blocked, ${stats.by_state.failed} failed); triage with agentbrain jobs list --state blocked`,
+  });
   const agentscrape = findExecutable("agentscrape");
   checks.push({
     name: "agentscrape",
