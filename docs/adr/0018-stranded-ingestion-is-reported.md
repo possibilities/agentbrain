@@ -1,8 +1,7 @@
 # ADR 0018: Stranded ingestion is unhealthy and notifies the operator
 
-## Status
-
-Accepted.
+- Status: Accepted
+- Date: 2026-08-07
 
 ## Context
 

@@ -1,4 +1,4 @@
-# ADR 0018: Deletion purges the resource and redacts its locator
+# ADR 0019: Deletion purges the resource and redacts its locator
 
 - Status: Accepted
 - Date: 2026-08-07
