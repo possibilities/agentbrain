@@ -170,9 +170,15 @@ cd clients/android
 ./gradlew :app:installDebug     # requires the Android SDK and a connected device
 ```
 
-If you have no Gradle wrapper checked in, generate one first with
-`gradle wrapper` from an Android Studio install, or open `clients/android/` in
-Android Studio and run it from there.
+Use the checked-in `./gradlew`, which pins Gradle 8.7, rather than a system
+`gradle`: AGP 8.5.2 does not accept the Gradle 9 line that Homebrew currently
+installs. The build also needs JDK 17 and SDK Platform 34 with Build-Tools
+34.0.0 — `sdkmanager "platforms;android-34" "build-tools;34.0.0"`. See
+[the client README](../../clients/android/README.md) for the full matrix.
+
+A device on the far side of the tailnet works as well as a cabled one:
+`adb connect <tailnet-ip>:<port>`, taking the port from the phone's
+**Wireless debugging** screen, which reassigns it on each toggle.
 
 Then open **Agentbrain Share**, enter the same server URL and token, and press
 **Test connection**.
