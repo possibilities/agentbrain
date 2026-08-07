@@ -61,12 +61,26 @@ The first POST returns `"status":"queued"`; repeating it returns
 
 ### Running it resident
 
-The ingress is a separate long-running process from the Worker. To keep it up
-across logins on macOS, install a LaunchAgent alongside `agentbrain.worker`,
-modeled on `system/Library/LaunchAgents/agentbrain.worker.plist`, whose
-`ProgramArguments` are the absolute `agentbrain` path plus
-`share serve --host <tailnet-ip>`. Keep `Umask 63` so any state it writes stays
-owner-only.
+The ingress is a separate long-running process from the Worker. The installer
+owns a LaunchAgent for it, but only when you name the address to bind:
+
+```bash
+AGENTBRAIN_INSTALL_SHARE_HOST=100.101.102.103 ./scripts/install.sh
+```
+
+That installs and loads `agentbrain.share` alongside `agentbrain.worker`,
+logging to `~/.local/state/agentbrain/share.log`. Naming the address is the
+whole point: ADR 0017 admits no configuration in which the ingress is exposed
+by default, so an unset variable installs no listener at all. An unset variable
+on a later run leaves an ingress you already asked for alone; removing one is
+the explicit `AGENTBRAIN_INSTALL_SHARE_HOST=none`. `0.0.0.0`, `::`, and
+addresses carrying shell or option syntax are refused before anything is
+written, rather than by a service that starts, is refused, and is restarted
+forever by `KeepAlive`.
+
+The token is never written into the service description. The ingress reads the
+`0600` token file as usual, so `launchctl print` discloses how to reach the
+listener but not how to authenticate to it.
 
 A share is durable the moment it is admitted. Materialization still waits for
 the resident Worker, so run both.

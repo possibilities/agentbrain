@@ -638,3 +638,130 @@ test("installer help states queue ownership and defers recurring sources", () =>
   expect(output).toContain("~/.local/share/agentbrain/research.db");
   expect(output).toContain("refuses unmigrated legacy DB state");
 });
+
+test("installer owns no share ingress until a bind address is named", () => {
+  const fixture = setup();
+  expect(runInstaller(fixture, "--install").exitCode).toBe(0);
+
+  // ADR 0017 admits no configuration in which the ingress is exposed by
+  // default, so the default install must leave the listener uninstalled.
+  expect(readdirSync(fixture.launchAgents)).toEqual([
+    "agentbrain.worker.plist",
+  ]);
+  expect(existsSync(join(fixture.state, "share.log"))).toBe(false);
+});
+
+test("naming a bind address installs a private owned share ingress", () => {
+  const fixture = setup();
+  const host = "100.101.102.103";
+  const result = runInstaller(fixture, "--install", {
+    AGENTBRAIN_INSTALL_SHARE_HOST: host,
+  });
+  expect(result.exitCode).toBe(0);
+
+  expect(readdirSync(fixture.launchAgents).sort()).toEqual([
+    "agentbrain.share.plist",
+    "agentbrain.worker.plist",
+  ]);
+
+  const service = join(fixture.launchAgents, "agentbrain.share.plist");
+  const plist = readFileSync(service, "utf8");
+  expect(plist).toContain("agentbrain-installer-owned: agentbrain.share.v1");
+  expect(plist).toContain("<string>agentbrain.share</string>");
+  expect(plist).toContain("<key>Umask</key>\n\t<integer>63</integer>");
+  expect(plist).not.toContain("__AGENTBRAIN_");
+  expect(plistProgramArguments(plist)).toEqual([
+    join(fixture.bin, "agentbrain"),
+    "share",
+    "serve",
+    "--host",
+    host,
+  ]);
+
+  const log = join(fixture.state, "share.log");
+  expect(plist).toContain(`<string>${log}</string>`);
+  expect(mode(log)).toBe(0o600);
+  expect(mode(service)).toBe(0o600);
+
+  // The token is never rendered into a service description: the plist records
+  // how to reach the ingress, and the 0600 token file remains the credential.
+  expect(plist).not.toContain("AGENTBRAIN_SHARE_TOKEN");
+
+  if (Bun.which("plutil")) {
+    expect(Bun.spawnSync({ cmd: ["plutil", "-lint", service] }).exitCode).toBe(
+      0,
+    );
+  }
+});
+
+test("an unnamed address leaves an installed ingress alone", () => {
+  const fixture = setup();
+  const host = "100.101.102.103";
+  expect(
+    runInstaller(fixture, "--install", { AGENTBRAIN_INSTALL_SHARE_HOST: host })
+      .exitCode,
+  ).toBe(0);
+  const service = join(fixture.launchAgents, "agentbrain.share.plist");
+  const before = readFileSync(service, "utf8");
+
+  // Re-running without the variable must not silently withdraw a service the
+  // operator asked for; only an explicit `none` removes it.
+  expect(runInstaller(fixture, "--install").exitCode).toBe(0);
+  expect(readFileSync(service, "utf8")).toBe(before);
+
+  expect(
+    runInstaller(fixture, "--install", {
+      AGENTBRAIN_INSTALL_SHARE_HOST: "none",
+    }).exitCode,
+  ).toBe(0);
+  expect(existsSync(service)).toBe(false);
+  expect(readdirSync(fixture.launchAgents)).toEqual([
+    "agentbrain.worker.plist",
+  ]);
+});
+
+test("installer refuses an any-interface or unsafe share bind", () => {
+  for (const host of ["0.0.0.0", "::", "-oProxyCommand=x", "a b"]) {
+    const fixture = setup();
+    const result = runInstaller(fixture, "--install", {
+      AGENTBRAIN_INSTALL_SHARE_HOST: host,
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain("refusing");
+    // A refused bind must not leave a half-installed machine behind.
+    expect(existsSync(join(fixture.bin, "agentbrain"))).toBe(false);
+    expect(existsSync(fixture.launchAgents)).toBe(false);
+  }
+});
+
+test("installer never overwrites a foreign share service", () => {
+  const fixture = setup();
+  mkdirSync(fixture.launchAgents, { recursive: true });
+  const service = join(fixture.launchAgents, "agentbrain.share.plist");
+  writeFileSync(service, "foreign", { mode: 0o600 });
+
+  const result = runInstaller(fixture, "--install", {
+    AGENTBRAIN_INSTALL_SHARE_HOST: "100.101.102.103",
+  });
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr.toString()).toContain(
+    "refusing to overwrite foreign service",
+  );
+  expect(readFileSync(service, "utf8")).toBe("foreign");
+  expect(existsSync(join(fixture.bin, "agentbrain"))).toBe(false);
+});
+
+test("uninstall removes both owned services and keeps both logs", () => {
+  const fixture = setup();
+  expect(
+    runInstaller(fixture, "--install", {
+      AGENTBRAIN_INSTALL_SHARE_HOST: "100.101.102.103",
+    }).exitCode,
+  ).toBe(0);
+
+  expect(runInstaller(fixture, "--uninstall").exitCode).toBe(0);
+  expect(readdirSync(fixture.launchAgents)).toEqual([]);
+  expect(existsSync(join(fixture.bin, "agentbrain"))).toBe(false);
+  expect(existsSync(join(fixture.state, "worker.log"))).toBe(true);
+  expect(existsSync(join(fixture.state, "share.log"))).toBe(true);
+});
