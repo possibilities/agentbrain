@@ -342,3 +342,38 @@ test("reconciliation never deletes an orphan whose bytes mismatch its address", 
   expect(report.promotedOrphans[0].removed).toBe(false);
   expect(existsSync(artifacts.pathFor(stored.contentDigest))).toBe(true);
 });
+
+test("re-promoting identical content leaves the stored Artifact untouched", () => {
+  const root = temporaryRoot();
+  const artifacts = new ArtifactStore(join(root, "artifacts"));
+  const first = artifacts.captureBytes("identical content");
+  const path = join(root, "artifacts", first.storagePath);
+  const before = statSync(path, { bigint: true });
+
+  // Content addressing means a second capture of the same bytes resolves to
+  // this same inode. Promotion must not rewrite metadata it does not need to:
+  // a gratuitous chmod moves ctime, and a concurrent promotion reading this
+  // inode watches ctime to decide whether the file changed while it was being
+  // verified. It would see a change nobody made and fail a correct submission.
+  const second = artifacts.captureBytes("identical content");
+  const after = statSync(path, { bigint: true });
+
+  expect(second.contentDigest).toBe(first.contentDigest);
+  expect(second.storagePath).toBe(first.storagePath);
+  expect(after.ino).toBe(before.ino);
+  expect(after.ctimeNs).toBe(before.ctimeNs);
+  expect(after.mtimeNs).toBe(before.mtimeNs);
+  expect(statSync(path).mode & 0o777).toBe(PRIVATE_FILE_MODE);
+});
+
+test("promotion still repairs a stored Artifact whose mode drifted", () => {
+  const root = temporaryRoot();
+  const artifacts = new ArtifactStore(join(root, "artifacts"));
+  const stored = artifacts.captureBytes("drifting content");
+  const path = join(root, "artifacts", stored.storagePath);
+  chmodSync(path, 0o644);
+
+  // Skipping the redundant chmod must not become skipping a needed one.
+  artifacts.captureBytes("drifting content");
+  expect(statSync(path).mode & 0o777).toBe(PRIVATE_FILE_MODE);
+});

@@ -137,6 +137,19 @@ function modeOf(path: string): number {
   return statSync(path).mode & 0o777;
 }
 
+/**
+ * Enforces the private file mode without rewriting one that is already correct.
+ *
+ * A redundant chmod is not free: it moves ctime, and content-addressed
+ * promotion has several processes reading the one inode that identical content
+ * resolves to. A verifier watching for the file changing mid-read cannot tell a
+ * gratuitous metadata write from a real one, so it must not be given one.
+ */
+function ensurePrivateFileMode(path: string): void {
+  if (modeOf(path) === PRIVATE_FILE_MODE) return;
+  chmodSync(path, PRIVATE_FILE_MODE);
+}
+
 function ensurePrivateDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   chmodSync(path, PRIVATE_DIRECTORY_MODE);
@@ -414,7 +427,12 @@ export class ArtifactStore {
     try {
       linkSync(stagingPath, finalPath);
       linked = true;
-      chmodSync(finalPath, PRIVATE_FILE_MODE);
+      // The staged file was already private, and a hard link shares its inode
+      // and mode, so rewriting the mode here normally changes nothing except
+      // ctime. That matters: another process promoting the identical content
+      // reads this same inode, and a ctime it did not cause looks to it like
+      // the Artifact changed underneath it.
+      ensurePrivateFileMode(finalPath);
       const promoted = this.hashRegularFile(finalPath, staged.byteSize);
       if (
         promoted.contentDigest !== digest ||
@@ -441,7 +459,7 @@ export class ArtifactStore {
           "existing content-addressed Artifact failed verification",
         );
       }
-      chmodSync(finalPath, PRIVATE_FILE_MODE);
+      ensurePrivateFileMode(finalPath);
     }
     safeUnlink(stagingPath);
     fsyncDirectory(dirname(finalPath));
@@ -576,7 +594,7 @@ export class ArtifactStore {
       closeSync(fd);
       chmodSync(stagingPath, PRIVATE_FILE_MODE);
       renameSync(stagingPath, finalPath);
-      chmodSync(finalPath, PRIVATE_FILE_MODE);
+      ensurePrivateFileMode(finalPath);
       fsyncDirectory(this.urlExtractionRoot);
       fsyncDirectory(this.stagingRoot);
     } catch (error) {
