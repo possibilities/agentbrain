@@ -2,7 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { admitSubmission, waitForAdmission } from "../src/admission";
+import {
+  admitSubmission,
+  indexedDocumentForUrl,
+  waitForAdmission,
+} from "../src/admission";
 import { ArtifactStore } from "../src/artifacts";
 import { ResearchStore } from "../src/store";
 
@@ -203,5 +207,63 @@ test("wait timeout observes the same active job", async () => {
   expect(
     store.db.query("SELECT id, state FROM jobs WHERE id=?").get(queued.job_id),
   ).toEqual({ id: queued.job_id, state: "queued" });
+  store.close();
+});
+
+test("indexedDocumentForUrl matches conservative resource identity only", () => {
+  const { store } = fixture();
+  const timestamp = "2026-08-07T00:00:00.000Z";
+  const tweet = store.upsertDocument({
+    sourceType: "tweet",
+    sourceUri: "https://x.com/i/status/42",
+    title: "Tweet",
+    content: "tweet content for identity",
+  });
+  const article = store.upsertDocument({
+    sourceType: "url",
+    sourceUri: "https://example.com/post",
+    title: "Post",
+    content: "generic page content for identity",
+  });
+  const insert = store.db.query(
+    `INSERT INTO resources(
+       key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
+     ) VALUES (?, ?, 'url', 'normal', ?, ?, ?)`,
+  );
+  insert.run("x:status", "42", tweet.document_id, timestamp, timestamp);
+  insert.run(
+    "url",
+    "https://example.com/post",
+    article.document_id,
+    timestamp,
+    timestamp,
+  );
+  // A discovered relation without a materialized document must not count.
+  insert.run("url", "https://example.com/api/", null, timestamp, timestamp);
+
+  // Every X status alias converges on the provider identity.
+  for (const alias of [
+    "https://x.com/i/status/42",
+    "https://x.com/someone/status/42",
+    "https://twitter.com/other/status/42?s=20",
+  ]) {
+    expect(indexedDocumentForUrl(store, alias)).toEqual({
+      version: 1,
+      status: "already_indexed",
+      document_id: tweet.document_id,
+      resource_key: "x:status:42",
+    });
+  }
+  // Generic URLs match only their conservative normalization.
+  expect(indexedDocumentForUrl(store, "https://EXAMPLE.com/post#intro")).toEqual({
+    version: 1,
+    status: "already_indexed",
+    document_id: article.document_id,
+    resource_key: "url:https://example.com/post",
+  });
+  expect(indexedDocumentForUrl(store, "https://example.com/post?utm=1")).toBeNull();
+  expect(indexedDocumentForUrl(store, "https://example.com/api/")).toBeNull();
+  expect(indexedDocumentForUrl(store, "not a url")).toBeNull();
+  expect(indexedDocumentForUrl(store, "/tmp/local-file.md")).toBeNull();
   store.close();
 });

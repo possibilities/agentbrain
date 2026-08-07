@@ -1232,14 +1232,17 @@ function envelopeFailure(detail: ExtractionFailureDetail): never {
   if (detail.failure_class === "invalid_request") {
     throw new AgentscrapeExtractionError(message, "permanent", "policy");
   }
+  if (detail.retryable && detail.failure_class === "upstream_unavailable") {
+    // An unavailable extraction dependency (missing agent-browser, browserctl
+    // outage) is infrastructure per ADR 0004: retry indefinitely with capped
+    // backoff instead of burning the bounded item-retry budget.
+    throw new AgentscrapeExtractionError(message, "infra", "infrastructure");
+  }
   if (
     detail.retryable &&
-    new Set([
-      "timeout",
-      "browser_error",
-      "provider_error",
-      "upstream_unavailable",
-    ]).has(detail.failure_class)
+    new Set(["timeout", "browser_error", "provider_error"]).has(
+      detail.failure_class,
+    )
   ) {
     throw new AgentscrapeExtractionError(message, "item_transient", "item");
   }
@@ -1292,6 +1295,9 @@ export async function extractWithAgentscrape(
     "fetch-markdown",
     requestedUrl,
     "--envelope",
+    // Browser-backed live routes deny egress without explicit consent. Operator
+    // admission of a URL for ingestion is that consent, so the worker grants it.
+    "--allow-private-network",
     "--max-content-bytes",
     String(maxContentBytes),
     "--max-relations",

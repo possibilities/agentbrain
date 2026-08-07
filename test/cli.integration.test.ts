@@ -924,3 +924,69 @@ test("completed-link compatibility commands are absent from every public surface
   expect(existsSync(join(REPO, "src/research-ingest-link.ts"))).toBe(false);
   expect(existsSync(join(REPO, "src/completed-link-input.ts"))).toBe(false);
 });
+
+test("submit skips an already-indexed URL and --force queues rematerialization", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-already-indexed-"));
+  tempDirs.push(dir);
+  const dbPath = join(dir, "research.db");
+  const env = { XDG_DATA_HOME: join(dir, "data") };
+  const store = new ResearchStore(dbPath);
+  const doc = store.upsertDocument({
+    sourceType: "tweet",
+    sourceUri: "https://x.com/i/status/99",
+    title: "Indexed tweet",
+    content: "already indexed tweet content",
+  });
+  store.db
+    .query(
+      `INSERT INTO resources(
+         key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
+       ) VALUES ('x:status', '99', 'url', 'normal', ?, ?, ?)`,
+    )
+    .run(doc.document_id, "2026-08-07T00:00:00.000Z", "2026-08-07T00:00:00.000Z");
+  store.close();
+
+  // An alias form of the same status is reported, not queued.
+  const skipped = runCli(
+    ["submit", "https://x.com/someone/status/99", "--json"],
+    dbPath,
+    env,
+  );
+  expect(skipped.exitCode, decode(skipped.stderr)).toBe(0);
+  expect(JSON.parse(decode(skipped.stdout))).toMatchObject({
+    ok: true,
+    command: "submit",
+    data: {
+      version: 1,
+      status: "already_indexed",
+      document_id: doc.document_id,
+      resource_key: "x:status:99",
+    },
+    meta: { read_only: true },
+  });
+
+  const human = runCli(["submit", "https://x.com/i/status/99"], dbPath, env);
+  expect(human.exitCode).toBe(0);
+  expect(decode(human.stdout)).toBe(
+    `already_indexed: document ${doc.document_id}\n` +
+      "resource_key: x:status:99\n" +
+      "Pass --force to queue rematerialization anyway.\n",
+  );
+
+  const jobs = new Database(dbPath)
+    .query("SELECT COUNT(*) AS count FROM jobs")
+    .get() as { count: number };
+  expect(jobs.count).toBe(0);
+
+  // --force restores durable admission for rematerialization.
+  const forced = runCli(
+    ["submit", "https://x.com/i/status/99", "--force", "--json"],
+    dbPath,
+    env,
+  );
+  expect(forced.exitCode, decode(forced.stderr)).toBe(0);
+  expect(JSON.parse(decode(forced.stdout))).toMatchObject({
+    ok: true,
+    data: { status: "queued", state: "queued" },
+  });
+});

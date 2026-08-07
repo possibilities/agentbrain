@@ -2,9 +2,11 @@
 import { existsSync } from "node:fs";
 import {
   type AdmissionResult,
+  type AlreadyIndexedResult,
   admitRecoveryGeneration,
   admitSubmission,
   DEFAULT_WAIT_TIMEOUT_MS,
+  indexedDocumentForUrl,
   SUBMISSION_VERSION,
   waitForAdmission,
 } from "./admission";
@@ -1260,12 +1262,36 @@ function humanAdmission(result: AdmissionResult): string {
   ].join("\n");
 }
 
+function humanAlreadyIndexed(result: AlreadyIndexedResult): string {
+  return [
+    `${result.status}: document ${result.document_id}`,
+    `resource_key: ${result.resource_key}`,
+    "Pass --force to queue rematerialization anyway.",
+    "",
+  ].join("\n");
+}
+
 async function executeAdmission(
   store: ResearchStore,
   request: IngestRequest,
   globals: GlobalOptions,
   command: "submit" | "ingest",
 ): Promise<void> {
+  if (
+    request.force !== true &&
+    (request.sourceType === "auto" || request.sourceType === "url")
+  ) {
+    // Read-only index consultation before durable admission: a URL whose
+    // conservative resource identity already carries a materialized document
+    // is reported instead of re-queued. --force restores rematerialization.
+    const indexed = indexedDocumentForUrl(store, request.source);
+    if (indexed !== null) {
+      writeByFormat(command, indexed, globals, humanAlreadyIndexed, {
+        readOnly: true,
+      });
+      return;
+    }
+  }
   let result = admitSubmission(store, {
     version: request.version as typeof SUBMISSION_VERSION,
     source: request.source,
