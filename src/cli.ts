@@ -1356,7 +1356,12 @@ function executeDelete(
   request: DeleteRequest,
   globals: GlobalOptions,
 ): void {
-  const result = store.deleteDocument(request);
+  // Deleting reclaims the Artifact bytes it orphans (ADR 0018), so the command
+  // needs the store that owns them rather than SQLite alone.
+  const result = store.deleteDocument({
+    ...request,
+    artifactStore: new ArtifactStore(defaultArtifactRoot()),
+  });
   writeByFormat("delete", result, globals, humanMutation, { readOnly: false });
 }
 

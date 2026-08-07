@@ -1728,11 +1728,16 @@ export class ResearchStore {
     documentId?: number;
     sourceUri?: string;
     confirm: string;
+    /** Supplied when unreferenced Artifact bytes should be reclaimed too. */
+    artifactStore?: ArtifactStore;
   }): {
     success: true;
     deleted_document_id: number;
     title: string | null;
     source_uri: string;
+    purged_resources: number;
+    redacted_jobs: number;
+    removed_artifacts: string[];
   } {
     if (input.confirm !== "delete") {
       throw new Error("set --confirm delete to delete from the research cache");
@@ -1761,20 +1766,139 @@ export class ResearchStore {
         source_uri: string;
       } | null;
       if (row === null) throw new CliError("not_found", "document not found");
+      // Everything the ingestion created goes, not just what answers searches.
+      // Resource identity is captured before the document is removed, because
+      // dropping the document sets resources.document_id to null and the
+      // Resources would otherwise become unreachable from here (ADR 0018).
+      const resourceIds = this.hasResourcesTable()
+        ? (
+            this.db
+              .query("SELECT id FROM resources WHERE document_id=?")
+              .all(row.id) as Array<{ id: number }>
+          ).map((resource) => resource.id)
+        : [];
+      const placeholders = resourceIds.map(() => "?").join(",");
+      const jobIds =
+        resourceIds.length === 0
+          ? []
+          : (
+              this.db
+                .query(
+                  `SELECT id FROM jobs WHERE resource_id IN (${placeholders})`,
+                )
+                .all(...resourceIds) as Array<{ id: number }>
+            ).map((job) => job.id);
+      const candidateArtifacts =
+        resourceIds.length === 0
+          ? []
+          : (
+              this.db
+                .query(
+                  `SELECT DISTINCT artifact_id FROM resource_artifacts
+                   WHERE resource_id IN (${placeholders})`,
+                )
+                .all(...resourceIds) as Array<{ artifact_id: number }>
+            ).map((link) => link.artifact_id);
+
       this.db
         .query(
           "DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id=?)",
         )
         .run(row.id);
       this.db.query("DELETE FROM documents WHERE id=?").run(row.id);
+
+      for (const jobId of jobIds) this.redactJobIntent(jobId);
+      if (resourceIds.length > 0) {
+        this.db
+          .query(`DELETE FROM resources WHERE id IN (${placeholders})`)
+          .run(...resourceIds);
+      }
+
+      // The Resource cascade removed the registrations; an Artifact is only
+      // unreferenced once no other Resource holds it and nothing derives from
+      // it, so shared content-addressed bytes survive this deletion.
+      const orphanedDigests: string[] = [];
+      for (const artifactId of candidateArtifacts) {
+        const referenced = this.db
+          .query("SELECT 1 FROM resource_artifacts WHERE artifact_id=? LIMIT 1")
+          .get(artifactId);
+        if (referenced !== null) continue;
+        const derived = this.db
+          .query(
+            "SELECT 1 FROM artifact_derivations WHERE parent_artifact_id=? LIMIT 1",
+          )
+          .get(artifactId);
+        if (derived !== null) continue;
+        const artifact = this.db
+          .query("SELECT content_hash FROM artifacts WHERE id=?")
+          .get(artifactId) as { content_hash: string } | null;
+        if (artifact === null) continue;
+        this.db.query("DELETE FROM artifacts WHERE id=?").run(artifactId);
+        const stillRegistered = this.db
+          .query("SELECT 1 FROM artifacts WHERE content_hash=? LIMIT 1")
+          .get(artifact.content_hash);
+        if (stillRegistered === null)
+          orphanedDigests.push(artifact.content_hash);
+      }
+
       return {
         success: true as const,
         deleted_document_id: row.id,
         title: row.title,
         source_uri: row.source_uri,
+        purged_resources: resourceIds.length,
+        redacted_jobs: jobIds.length,
+        orphaned_digests: orphanedDigests,
       };
     });
-    return transaction.immediate();
+    const result = transaction.immediate();
+
+    // SQLite has committed, so these bytes are provably unreferenced. An
+    // interruption here leaves orphans that reconciliation collects, which is
+    // the recoverable direction of the two-store problem (ADR 0008).
+    const removed: string[] = [];
+    if (input.artifactStore !== undefined) {
+      for (const digest of result.orphaned_digests) {
+        if (input.artifactStore.removeObject(digest)) removed.push(digest);
+      }
+    }
+    const { orphaned_digests, ...rest } = result;
+    return { ...rest, removed_artifacts: removed };
+  }
+
+  /**
+   * Strips the content-bearing parts of a job's immutable intent, keeping the
+   * row and its lifecycle. Per ADR 0018 the record that an ingestion happened
+   * is history worth keeping; the address of what was ingested is content, and
+   * an operator who deleted the content asked for that to be gone too. The
+   * idempotency key and intent hash stay: they are one-way digests.
+   */
+  private redactJobIntent(jobId: number): void {
+    const job = this.db
+      .query("SELECT intent FROM jobs WHERE id=?")
+      .get(jobId) as { intent: string } | null;
+    if (job === null) return;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(job.intent) as Record<string, unknown>;
+    } catch {
+      parsed = {};
+    }
+    if (parsed.redacted === true) return;
+    const options = { ...((parsed.options as Record<string, unknown>) ?? {}) };
+    options.title = undefined;
+    const redacted = {
+      version: parsed.version ?? 1,
+      kind: parsed.kind ?? null,
+      ingress: parsed.ingress ?? null,
+      collections: [],
+      payload: {},
+      options: JSON.parse(JSON.stringify(options)),
+      redacted: true,
+    };
+    this.db
+      .query("UPDATE jobs SET intent=?, updated_at=? WHERE id=?")
+      .run(JSON.stringify(redacted), new Date().toISOString(), jobId);
   }
 
   private hasResourcesTable(): boolean {

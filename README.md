@@ -14,6 +14,7 @@ Architecture references:
 - [Agentbrain database namespace](docs/adr/0014-agentbrain-database-namespace.md)
 - [Parser-derived content classification](docs/adr/0015-parser-derived-content-classification.md)
 - [Authenticated share ingress](docs/adr/0017-authenticated-share-ingress.md)
+- [Deletion purges the Resource](docs/adr/0018-deletion-purges-the-resource.md)
 
 ## Quick start
 
@@ -223,11 +224,15 @@ The rehearsal drives the real frozen generation and local artifacts through dry-
 
 ## Deletion
 
-Deletion is intentionally guarded:
+Deletion is intentionally guarded, and it purges rather than hides:
 
 ```bash
 agentbrain delete --document-id 123 --confirm delete --json
 ```
+
+One document per invocation, an explicit selector, and the literal confirmation token. Per [ADR 0018](docs/adr/0018-deletion-purges-the-resource.md), deleting removes everything the ingestion created: the document, chunks, and FTS rows, then the Resource with its aliases, Artifact registrations, collection memberships, provenance, relations, and observations. Artifact bytes are unlinked only once no surviving Resource references them, so content shared with another Resource survives. SQLite commits before any byte is unlinked, so an interrupted delete leaves reclaimable orphans rather than a registration pointing at nothing.
+
+The job, its attempts, and its transitions are kept — that lifecycle history is what makes the ledger auditable — but the job's intent is redacted, so the locator, text payload, and title of a deleted document are no longer recoverable from it. Re-submitting the same source derives a fresh idempotency key and admits a new job.
 
 ## Structural retagging
 

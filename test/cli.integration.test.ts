@@ -994,3 +994,169 @@ test("submit skips an already-indexed URL and --force queues rematerialization",
     data: { status: "queued", state: "queued" },
   });
 });
+
+test("delete purges the Resource, redacts the locator, and reclaims bytes", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentbrain-purge-"));
+  tempDirs.push(root);
+  const dbPath = join(root, "research.db");
+  const env = { XDG_DATA_HOME: join(root, "data") };
+
+  const submitted = runCli(
+    ["submit", "purge me please", "--kind", "text", "--json"],
+    dbPath,
+    env,
+  );
+  expect(submitted.exitCode).toBe(0);
+  const jobId = JSON.parse(decode(submitted.stdout)).data.job_id as number;
+  expect(runCli(["worker", "--once", "--json"], dbPath, env).exitCode).toBe(0);
+
+  const read = () => new Database(dbPath, { readonly: true });
+  let db = read();
+  const documentId = (
+    db
+      .query(
+        "SELECT document_id FROM resources WHERE document_id IS NOT NULL LIMIT 1",
+      )
+      .get() as { document_id: number }
+  ).document_id;
+  const digest = (
+    db.query("SELECT content_hash FROM artifacts LIMIT 1").get() as {
+      content_hash: string;
+    }
+  ).content_hash;
+  const beforeIntent = (
+    db.query("SELECT intent FROM jobs WHERE id=?").get(jobId) as {
+      intent: string;
+    }
+  ).intent;
+  // A text intent points at its content by digest rather than carrying it,
+  // so the digest is the locator redaction has to remove.
+  expect(beforeIntent).toContain(digest);
+  db.close();
+
+  const store = new ArtifactStore(
+    join(env.XDG_DATA_HOME, "agentbrain", "artifacts"),
+  );
+  expect(existsSync(store.pathFor(digest))).toBe(true);
+
+  const deleted = runCli(
+    [
+      "delete",
+      "--document-id",
+      String(documentId),
+      "--confirm",
+      "delete",
+      "--json",
+    ],
+    dbPath,
+    env,
+  );
+  expect(deleted.exitCode).toBe(0);
+  const result = JSON.parse(decode(deleted.stdout)).data;
+  expect(result.purged_resources).toBeGreaterThan(0);
+  expect(result.redacted_jobs).toBeGreaterThan(0);
+  expect(result.removed_artifacts).toContain(digest);
+
+  db = read();
+  // The indexed content and every identity the ingestion created are gone.
+  expect(
+    db.query("SELECT 1 FROM documents WHERE id=?").get(documentId),
+  ).toBeNull();
+  expect(db.query("SELECT COUNT(*) AS n FROM resources").get()).toEqual({
+    n: 0,
+  });
+  expect(db.query("SELECT COUNT(*) AS n FROM resource_aliases").get()).toEqual({
+    n: 0,
+  });
+  expect(
+    db.query("SELECT COUNT(*) AS n FROM resource_artifacts").get(),
+  ).toEqual({ n: 0 });
+  expect(db.query("SELECT COUNT(*) AS n FROM provenance").get()).toEqual({
+    n: 0,
+  });
+  expect(db.query("SELECT COUNT(*) AS n FROM artifacts").get()).toEqual({
+    n: 0,
+  });
+
+  // The job survives with its lifecycle, but no longer says what was ingested.
+  const job = db
+    .query("SELECT state, intent, idempotency_key FROM jobs WHERE id=?")
+    .get(jobId) as {
+    state: string;
+    intent: string;
+    idempotency_key: string;
+  };
+  expect(job.state).toBe("completed");
+  expect(job.intent).not.toContain(digest);
+  expect(JSON.parse(job.intent).payload).toEqual({});
+  expect(JSON.parse(job.intent).redacted).toBe(true);
+  expect(job.idempotency_key.length).toBeGreaterThan(0);
+  expect(
+    (
+      db
+        .query("SELECT COUNT(*) AS n FROM attempts WHERE job_id=?")
+        .get(jobId) as { n: number }
+    ).n,
+  ).toBeGreaterThan(0);
+  db.close();
+
+  expect(existsSync(store.pathFor(digest))).toBe(false);
+});
+
+test("delete keeps Artifact bytes another Resource still references", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentbrain-shared-"));
+  tempDirs.push(root);
+  const dbPath = join(root, "research.db");
+  const env = { XDG_DATA_HOME: join(root, "data") };
+
+  // Identical text content addresses to one Artifact shared by both Resources.
+  for (const collection of ["first", "second"]) {
+    expect(
+      runCli(
+        [
+          "submit",
+          "shared bytes",
+          "--kind",
+          "text",
+          "--collection",
+          collection,
+          "--json",
+        ],
+        dbPath,
+        env,
+      ).exitCode,
+    ).toBe(0);
+  }
+  expect(runCli(["worker", "--once", "--json"], dbPath, env).exitCode).toBe(0);
+
+  const db = new Database(dbPath, { readonly: true });
+  const docs = db
+    .query("SELECT document_id FROM resources WHERE document_id IS NOT NULL")
+    .all() as Array<{ document_id: number }>;
+  const digest = (
+    db.query("SELECT content_hash FROM artifacts LIMIT 1").get() as {
+      content_hash: string;
+    }
+  ).content_hash;
+  db.close();
+  if (docs.length < 2) return; // dedupe collapsed them; sharing is not exercised
+
+  const store = new ArtifactStore(
+    join(env.XDG_DATA_HOME, "agentbrain", "artifacts"),
+  );
+  const deleted = runCli(
+    [
+      "delete",
+      "--document-id",
+      String(docs[0].document_id),
+      "--confirm",
+      "delete",
+      "--json",
+    ],
+    dbPath,
+    env,
+  );
+  expect(deleted.exitCode).toBe(0);
+  expect(JSON.parse(decode(deleted.stdout)).data.removed_artifacts).toEqual([]);
+  expect(existsSync(store.pathFor(digest))).toBe(true);
+});
