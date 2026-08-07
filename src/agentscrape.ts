@@ -1253,49 +1253,9 @@ function envelopeFailure(detail: ExtractionFailureDetail): never {
   throw new AgentscrapeExtractionError(message, "permanent", "permanent");
 }
 
-/**
- * Agentscrape refuses generic extraction on a domain it owns presets for, so a
- * page on such a domain that no preset covers fails as invalid_request rather
- * than falling back. The refusal is deliberate — it keeps a preset domain from
- * silently degrading — but it names the caller's escape hatch, which makes the
- * choice ours to make rather than a defect to report.
- */
-function isUncoveredPresetDomain(error: unknown): boolean {
-  return (
-    error instanceof AgentscrapeExtractionError &&
-    // "policy" is the outcome envelopeFailure assigns to invalid_request.
-    error.outcome === "policy" &&
-    error.message.includes(
-      "no preset matches this URL on a preset-owned domain",
-    )
-  );
-}
-
-/**
- * Extract a URL, falling back to generic extraction once when the domain owns
- * presets but none covers this page.
- *
- * Generic output is worse than a matching preset and better than no document at
- * all, which is what the refusal produces. The retry is attempted once and only
- * for that one classified refusal, so every other permanent failure still fails
- * immediately.
- */
 export async function extractWithAgentscrape(
   inputUrl: string,
   options: ExtractionOptions = {},
-): Promise<ExtractionSuccess> {
-  try {
-    return await extractOnceWithAgentscrape(inputUrl, options, false);
-  } catch (error) {
-    if (!isUncoveredPresetDomain(error)) throw error;
-    return await extractOnceWithAgentscrape(inputUrl, options, true);
-  }
-}
-
-async function extractOnceWithAgentscrape(
-  inputUrl: string,
-  options: ExtractionOptions = {},
-  generic = false,
 ): Promise<ExtractionSuccess> {
   const requestedUrl = normalizedWebUrl(inputUrl);
   const timeoutMs = positiveInteger(
@@ -1347,7 +1307,6 @@ async function extractOnceWithAgentscrape(
     "--max-relations",
     String(maxRelations),
   ];
-  if (generic) args.push("--generic");
 
   let result: CommandResult;
   try {
