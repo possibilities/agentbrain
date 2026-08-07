@@ -556,9 +556,13 @@ test("child failure and retry never re-extract the parent and survive parent doc
     documentId: parentDocument.document_id,
     confirm: "delete",
   });
+  // Deleting the parent document purges the parent Resource (ADR 0018), and the
+  // schema cascades the relation with it: a relation whose source no longer
+  // exists describes nothing. What must survive is the child's own work, which
+  // the retry below asserts — it completes without re-extracting the parent.
   expect(
     store.db.query("SELECT COUNT(*) AS count FROM resource_relations").get(),
-  ).toEqual({ count: 1 });
+  ).toEqual({ count: 0 });
 
   childFails = false;
   const retry = await runWorker(store, {
@@ -582,9 +586,11 @@ test("child failure and retry never re-extract the parent and survive parent doc
       .query("SELECT state, attempt_count FROM jobs WHERE id=?")
       .get(child.id),
   ).toEqual({ state: "completed", attempt_count: 2 });
+  // The retry does not resurrect the relation either: its source Resource was
+  // purged, and the child's own Resource and document are what it produces.
   expect(
     store.db.query("SELECT COUNT(*) AS count FROM resource_relations").get(),
-  ).toEqual({ count: 1 });
+  ).toEqual({ count: 0 });
   store.close();
 });
 

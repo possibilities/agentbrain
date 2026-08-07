@@ -512,6 +512,25 @@ export class ArtifactStore {
     return { ...value, storagePath: this.relativePath(digest) };
   }
 
+  /**
+   * Unlinks one content-addressed object. Returns whether bytes were removed.
+   *
+   * The caller must have already committed the removal of every reference to
+   * this digest: SQLite and the filesystem cannot commit together (ADR 0008),
+   * and this order is the safe one. A crash after the commit leaves bytes that
+   * reconciliation collects, where the reverse leaves a registration pointing
+   * at nothing. Deletion is per-digest rather than a sweep so that removing one
+   * document cannot quietly collect unrelated orphans.
+   */
+  removeObject(contentDigest: string): boolean {
+    const digest = validateDigest(contentDigest);
+    const path = this.pathFor(digest);
+    if (!existsSync(path)) return false;
+    safeUnlink(path);
+    fsyncDirectory(dirname(path));
+    return true;
+  }
+
   readBytes(
     contentDigest: string,
     maxBytes = DEFAULT_MAX_ARTIFACT_BYTES,

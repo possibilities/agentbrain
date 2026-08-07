@@ -403,8 +403,17 @@ This command never mutates the ledger; triage stays an explicit operator act.
 Usage:
   agentbrain delete (--document-id ID | --source-uri URI) --confirm delete [--json]
 
-Exactly one selector and the literal confirmation token are required. The document,
-chunks, and FTS rows are removed transactionally; inbound relation targets become null.
+Exactly one selector and the literal confirmation token are required. Deletion purges
+everything the ingestion created: the document, chunks, and FTS rows, then the Resource
+and its aliases, Artifact registrations, collection memberships, provenance, relations,
+and observations. Artifact bytes are unlinked once no surviving Resource references them,
+so content shared with another Resource is kept.
+
+The job and its attempts survive with their states, timings, and outcomes, because that
+history is what makes the ledger auditable. Their intent is redacted: the locator, text
+payload, and title are removed, so a deleted URL is no longer recoverable from the job.
+The idempotency key and intent hash are one-way digests and are retained. Re-submitting
+the same source afterwards derives a fresh key and admits a new job.
 `,
   retag: `agentbrain retag — derive and apply structural tags
 
