@@ -416,6 +416,41 @@ test("operator commands append audits without erasing attempts", () => {
   store.close();
 });
 
+test("doctor separates broken ingestion from admission review", () => {
+  const value = fixture();
+  const now = new Date("2026-08-07T00:00:00.000Z").toISOString();
+  // A job admission withheld before any attempt, as a recovery disposition
+  // does, and one that ran and failed. Only the second is broken ingestion.
+  value.store.db.run(
+    `INSERT INTO jobs (id, idempotency_key, kind, state, run_at, block_reason,
+       failure_class, created_at, updated_at)
+     VALUES (901, 'k-review', 'url', 'blocked', ?, 'recovery disposition review_fetch',
+       NULL, ?, ?)`,
+    [now, now, now],
+  );
+  value.store.db.run(
+    `INSERT INTO jobs (id, idempotency_key, kind, state, run_at, block_reason,
+       failure_class, created_at, updated_at)
+     VALUES (902, 'k-broken', 'url', 'failed', ?, NULL, 'permanent', ?, ?)`,
+    [now, now, now],
+  );
+  value.store.close();
+
+  const doctor = runCli(value, ["doctor", "--json"]);
+  const report = jsonOutput<{
+    checks: Array<{ name: string; status: string; detail: string }>;
+  }>(doctor).data;
+  const stranded = report.checks.find((c) => c.name === "stranded_ingestion");
+  const review = report.checks.find((c) => c.name === "admission_review");
+
+  expect(stranded?.status).toBe("failed");
+  expect(stranded?.detail).toContain("1 stranded");
+  // A withheld job is an undecided question, not a broken ingestion, so it
+  // warns instead of failing the report.
+  expect(review?.status).toBe("warning");
+  expect(review?.detail).toContain("1 jobs withheld");
+});
+
 test("jobs stats is content-safe and doctor reports missing provider", () => {
   const value = fixture();
   admitSubmission(

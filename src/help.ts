@@ -388,10 +388,12 @@ Uses a structurally read-only database connection. Reports safe status/count dat
 SQLite integrity, schema, Artifact references, leases, stranded ingestion, and
 Agentscrape availability. Exits 1 when a required check fails.
 
-A stranded ingestion job is one in blocked or failed: no attempt is scheduled and no
-submitter is left to inform, so links accepted at admission never became searchable.
-Excluded and cancelled are operator dispositions and are not stranded; dispose of a
-job you do not intend to recover with agentbrain jobs exclude.
+A stranded ingestion job is one in blocked or failed that carries a failure class: an
+attempt ran, nothing will revive it, and links accepted at admission never became
+searchable. Excluded and cancelled are operator dispositions and are not stranded;
+dispose of a job you do not intend to recover with agentbrain jobs exclude. A job
+withheld at admission before any attempt is reported separately as admission_review,
+because an undecided question is not a defect.
 
 --notify posts an operator notification through funk-notify or terminal-notifier when
 the stranded count rises above the last notified value, and reports what it did under

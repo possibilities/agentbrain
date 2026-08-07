@@ -580,6 +580,54 @@ export function jobStats(
   };
 }
 
+export interface JobDispositions {
+  /** Blocked or failed after an attempt recorded a failure class. */
+  stranded: number;
+  blocked_after_failure: number;
+  failed: number;
+  /** Blocked by admission before any attempt, pending an operator decision. */
+  awaiting_review: number;
+}
+
+/**
+ * Separate ingestion that broke from ingestion an operator never authorized.
+ *
+ * Both land in blocked, but only one is evidence of a defect: a failure class
+ * is written by an attempt, so its absence means no attempt was ever made.
+ */
+export function jobDispositions(cache: ResearchCache): JobDispositions {
+  if (!tableExists(cache, "jobs"))
+    return {
+      stranded: 0,
+      blocked_after_failure: 0,
+      failed: 0,
+      awaiting_review: 0,
+    };
+  const row = cache.db
+    .query(
+      `SELECT
+         COUNT(*) FILTER (
+           WHERE state='blocked' AND failure_class IS NOT NULL
+         ) AS blocked_after_failure,
+         COUNT(*) FILTER (WHERE state='failed') AS failed,
+         COUNT(*) FILTER (
+           WHERE state='blocked' AND failure_class IS NULL
+         ) AS awaiting_review
+       FROM jobs`,
+    )
+    .get() as {
+    blocked_after_failure: number;
+    failed: number;
+    awaiting_review: number;
+  };
+  return {
+    stranded: row.blocked_after_failure + row.failed,
+    blocked_after_failure: row.blocked_after_failure,
+    failed: row.failed,
+    awaiting_review: row.awaiting_review,
+  };
+}
+
 export function doctor(cache: ResearchCache, now = new Date()): DoctorReport {
   const checks: DoctorCheck[] = [];
   try {
@@ -658,18 +706,32 @@ export function doctor(cache: ResearchCache, now = new Date()): DoctorReport {
     status: stats.stale_leases === 0 ? "ok" : "warning",
     detail: `${stats.active_leases} active, ${stats.stale_leases} expired`,
   });
-  // A job in blocked or failed has stopped moving and no retry will revive it,
-  // yet admission already acknowledged the submitter. Without this check the
-  // report stays healthy while shared links silently never become searchable.
-  // Excluded and cancelled are operator dispositions, so they are not stranded.
-  const stranded = stats.by_state.blocked + stats.by_state.failed;
+  // A job in blocked or failed with a recorded failure class has stopped moving
+  // and no retry will revive it, yet admission already acknowledged the
+  // submitter. Without this check the report stays healthy while shared links
+  // silently never become searchable. Excluded and cancelled are operator
+  // dispositions, so they are not stranded.
+  //
+  // A job blocked without a failure class never ran: admission itself withheld
+  // it, as the recovery import does when a disposition reserves the decision
+  // for an operator. That is an undecided question, not a broken ingestion, and
+  // conflating the two would report breakage that does not exist.
+  const disposition = jobDispositions(cache);
   checks.push({
     name: "stranded_ingestion",
-    status: stranded === 0 ? "ok" : "failed",
+    status: disposition.stranded === 0 ? "ok" : "failed",
     detail:
-      stranded === 0
+      disposition.stranded === 0
         ? "No stranded ingestion jobs"
-        : `${stranded} stranded ingestion jobs (${stats.by_state.blocked} blocked, ${stats.by_state.failed} failed); triage with agentbrain jobs list --state blocked`,
+        : `${disposition.stranded} stranded ingestion jobs (${disposition.blocked_after_failure} blocked, ${disposition.failed} failed); triage with agentbrain jobs list --state blocked`,
+  });
+  checks.push({
+    name: "admission_review",
+    status: disposition.awaiting_review === 0 ? "ok" : "warning",
+    detail:
+      disposition.awaiting_review === 0
+        ? "No jobs awaiting admission review"
+        : `${disposition.awaiting_review} jobs withheld at admission awaiting an operator decision`,
   });
   const agentscrape = findExecutable("agentscrape");
   checks.push({

@@ -25,11 +25,18 @@ the jobs themselves.
 
 ## Decision
 
-`doctor` gains a `stranded_ingestion` check that fails when any job is in
-`blocked` or `failed`. Those are unresolved terminal states. `excluded` and
-`cancelled` are operator dispositions and are never stranded, which gives the
-operator an existing, auditable way to make the check pass without pretending
-the job succeeded: `agentbrain jobs exclude` with a reason.
+`doctor` gains a `stranded_ingestion` check that fails when a job is in
+`blocked` or `failed` **and carries a failure class**. A failure class is written
+by an attempt, so its presence is what distinguishes ingestion that broke from
+ingestion that never ran. `excluded` and `cancelled` are operator dispositions
+and are never stranded, which gives the operator an existing, auditable way to
+make the check pass without pretending the job succeeded: `agentbrain jobs
+exclude` with a reason.
+
+A job blocked at admission before any attempt — as the recovery import does when
+a disposition reserves the decision for an operator — is reported separately as
+`admission_review`, at warning. It is an undecided question, not a defect, and
+counting the two together would report breakage that does not exist.
 
 `doctor --notify` posts an operator notification, and an installer-owned
 `agentbrain.doctor` LaunchAgent runs it on an interval. Notification fires only
@@ -41,7 +48,8 @@ error.
 ## Consequences
 
 - Doctor is unhealthy while any job is stranded. That is the intended reading:
-  links the operator submitted are not searchable.
+  links the operator submitted are not searchable. Jobs awaiting admission review
+  warn instead, so an unmade decision never masquerades as a broken pipeline.
 - Triage stays an explicit operator act. The reporter reads; it never retries,
   excludes, or mutates the ledger, so nothing silently disposes of evidence.
 - Notification is best-effort and out of band. Agentbrain does not depend on a

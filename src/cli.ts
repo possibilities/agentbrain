@@ -29,6 +29,7 @@ import type { IngestSourceType } from "./ingest";
 import type { DoctorReport } from "./jobs";
 import {
   doctor,
+  jobDispositions,
   jobStats,
   listJobs,
   parseJobState,
@@ -1041,15 +1042,14 @@ async function runRecovery(
  * The notice is reported rather than silent so a scheduled run leaves evidence
  * of whether the operator was actually reachable.
  */
-function withStrandedNotice(data: DoctorReport): DoctorReport & {
-  notification: StrandedNotifyResult;
-} {
-  const check = data.checks.find(
-    (entry) => entry.name === "stranded_ingestion",
-  );
-  const match = check?.detail.match(/^(\d+) stranded/);
-  const stranded = match === null || match === undefined ? 0 : Number(match[1]);
-  return { ...data, notification: notifyStranded(stranded) };
+function withStrandedNotice(
+  cache: ResearchCache,
+  data: DoctorReport,
+): DoctorReport & { notification: StrandedNotifyResult } {
+  return {
+    ...data,
+    notification: notifyStranded(jobDispositions(cache).stranded),
+  };
 }
 
 function runDoctor(
@@ -1067,7 +1067,7 @@ function runDoctor(
       { exitCode: 2 },
     );
   const data = doctor(cache);
-  const report = opts.notify === true ? withStrandedNotice(data) : data;
+  const report = opts.notify === true ? withStrandedNotice(cache, data) : data;
   writeByFormat(
     "doctor",
     report,
