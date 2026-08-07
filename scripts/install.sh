@@ -76,8 +76,30 @@ SHARE_LOG_PATH="$STATE_DIR/share.log"
 SHARE_SERVICE_LABEL="agentbrain.share"
 SHARE_OWNERSHIP_MARKER="agentbrain-installer-owned: agentbrain.share.v1"
 SHARE_HOST="${AGENTBRAIN_INSTALL_SHARE_HOST:-}"
-CONDUIT_SOCKET="${AGENTBRAIN_INSTALL_CONDUIT_SOCKET:-}"
-CONDUIT_TOKEN_FILE="${AGENTBRAIN_INSTALL_CONDUIT_TOKEN_FILE:-}"
+# Reads one environment value out of the service already installed, so a
+# reinstall that says nothing about the conduit keeps the one in use rather than
+# silently blanking it. plutil is macOS-only and optional here: without it the
+# value reads empty, which is the same answer as an unconfigured conduit.
+installed_service_env() {
+  local key="$1"
+  [[ -f "$SERVICE_DEST" && ! -L "$SERVICE_DEST" ]] || return 0
+  command -v plutil >/dev/null 2>&1 || return 0
+  plutil -extract "EnvironmentVariables.$key" raw -o - "$SERVICE_DEST" 2>/dev/null ||
+    true
+}
+
+# Unset preserves what is installed; set — including set to empty — is taken as
+# given, so clearing the conduit stays possible and stays explicit.
+if [[ -n "${AGENTBRAIN_INSTALL_CONDUIT_SOCKET+set}" ]]; then
+  CONDUIT_SOCKET="$AGENTBRAIN_INSTALL_CONDUIT_SOCKET"
+else
+  CONDUIT_SOCKET="$(installed_service_env AGENTSCRAPE_CONDUIT_SOCKET)"
+fi
+if [[ -n "${AGENTBRAIN_INSTALL_CONDUIT_TOKEN_FILE+set}" ]]; then
+  CONDUIT_TOKEN_FILE="$AGENTBRAIN_INSTALL_CONDUIT_TOKEN_FILE"
+else
+  CONDUIT_TOKEN_FILE="$(installed_service_env AGENTSCRAPE_CONDUIT_TOKEN_FILE)"
+fi
 EXPECTED_LEGACY_SOURCE="$(dirname "$ROOT")/hermes-greybird/bin/research-ingest-link"
 LAUNCHCTL="${AGENTBRAIN_INSTALL_LAUNCHCTL:-launchctl}"
 

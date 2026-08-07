@@ -797,3 +797,37 @@ test("worker carries conduit pass-through, empty unless configured", () => {
   expect(plist).toContain(`<string>${tokenFile}</string>`);
   expect(plist).not.toContain("__AGENTBRAIN_");
 });
+
+test("a reinstall that says nothing preserves the installed conduit", () => {
+  const fixture = setup();
+  const socket = join(fixture.home, "runtime", "agentweb.sock");
+  const tokenFile = join(fixture.home, "state", "worker-token");
+  expect(
+    runInstaller(fixture, "--install", {
+      AGENTBRAIN_INSTALL_CONDUIT_SOCKET: socket,
+      AGENTBRAIN_INSTALL_CONDUIT_TOKEN_FILE: tokenFile,
+    }).exitCode,
+  ).toBe(0);
+
+  // A plain reinstall must not silently blank a conduit already in use.
+  expect(runInstaller(fixture, "--install").exitCode).toBe(0);
+  const kept = readFileSync(
+    join(fixture.launchAgents, "agentbrain.worker.plist"),
+    "utf8",
+  );
+  expect(kept).toContain(`<string>${socket}</string>`);
+  expect(kept).toContain(`<string>${tokenFile}</string>`);
+
+  // Clearing stays possible, but has to be asked for.
+  expect(
+    runInstaller(fixture, "--install", {
+      AGENTBRAIN_INSTALL_CONDUIT_SOCKET: "",
+      AGENTBRAIN_INSTALL_CONDUIT_TOKEN_FILE: "",
+    }).exitCode,
+  ).toBe(0);
+  const cleared = readFileSync(
+    join(fixture.launchAgents, "agentbrain.worker.plist"),
+    "utf8",
+  );
+  expect(cleared).not.toContain(`<string>${socket}</string>`);
+});
