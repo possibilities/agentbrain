@@ -113,6 +113,8 @@ Recovery import verifies the complete frozen generation and local Artifact hashe
 admission; --dry-run writes no database or Artifact state and performs no network work.
 Use --help on any command for command-specific options. Job inspection omits durable
 intent bodies and URLs unless jobs show is given the audited --reveal-content option.
+
+Run agentbrain --agent-help for the agent runbook.
 `;
 
 export const AGENT_TEASER =
