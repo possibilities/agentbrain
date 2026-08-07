@@ -2,6 +2,7 @@ package dev.agentbrain.share
 
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.json.JSONObject
 import org.junit.Test
 
 /**
@@ -86,11 +87,21 @@ class ShareIntentParserTest {
         assertEquals("https://", payload?.text)
     }
 
+    // Asserted by decoding rather than by matching the serialized text. Android
+    // bundles an old AOSP org.json that escapes forward slashes as \/, while the
+    // org.json artifact these JVM tests run against no longer does, so a string
+    // match here tests which library the test happened to link, not the wire
+    // contract. Both encodings decode to the same field values, and the field
+    // values are what the server reads.
     @Test
     fun `json payload carries the contract version and client identity`() {
-        val json = SharePayload(url = "https://example.com/x", title = "T").toJson()
-        assert(json.contains("\"version\":1"))
-        assert(json.contains("\"client\":\"android-share\""))
-        assert(json.contains("\"url\":\"https:\\/\\/example.com\\/x\""))
+        val json = JSONObject(
+            SharePayload(url = "https://example.com/x", title = "T").toJson(),
+        )
+        assertEquals(SharePayload.SHARE_VERSION, json.getInt("version"))
+        assertEquals(SharePayload.SHARE_CLIENT, json.getString("client"))
+        assertEquals("https://example.com/x", json.getString("url"))
+        assertEquals("T", json.getString("title"))
+        assertEquals(0, json.getJSONArray("tags").length())
     }
 }
