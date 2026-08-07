@@ -32,7 +32,23 @@ rules live in one place and are tested once. See
 ./gradlew :app:testDebugUnitTest
 ```
 
-No Gradle wrapper is checked in. Generate one with `gradle wrapper`, or open
-this directory in Android Studio.
-
 Minimum SDK 26, target 34.
+
+### Toolchain
+
+The Gradle wrapper is checked in and pins **Gradle 8.7**. Build through
+`./gradlew`, not a system `gradle`: AGP 8.5.2 requires Gradle 8.7 or newer but
+is not compatible with the Gradle 9 line, so a current Homebrew `gradle` fails
+this project. The pin is the point of the wrapper — generating one with a
+system Gradle 9 reproduces the incompatibility it exists to prevent.
+
+| Component | Required |
+| --- | --- |
+| Gradle | 8.7 (wrapper-pinned) |
+| Android Gradle Plugin | 8.5.2 |
+| JDK | 17 |
+| SDK Platform | 34 (`compileSdk`/`targetSdk`) |
+| Build-Tools | 34.0.0 |
+
+With the command-line tools installed, the two SDK components come from
+`sdkmanager "platforms;android-34" "build-tools;34.0.0"`.

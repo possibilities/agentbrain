@@ -92,7 +92,8 @@ The idempotent installer creates only these owned entries:
 - `~/.local/bin/agentbrain`, linked to this checkout;
 - `~/Library/LaunchAgents/agentbrain.worker.plist`, invoking only the installed `agentbrain worker` command;
 - `${XDG_STATE_HOME:-~/.local/state}/agentbrain/worker.log` in a private state directory;
-- `~/.local/share/agentbrain/research.db` as the default durable database.
+- `~/.local/share/agentbrain/research.db` as the default durable database;
+- `~/Library/LaunchAgents/agentbrain.share.plist` and a sibling `share.log`, **only** when `AGENTBRAIN_INSTALL_SHARE_HOST` names the address to bind. Per [ADR 0017](docs/adr/0017-authenticated-share-ingress.md) there is no configuration in which the ingress is exposed by default, so naming that address is the operator's act of exposing a listener; `none` withdraws it, and an unset value leaves an existing one untouched.
 
 The data and state directories are mode `0700`; the database, rendered plist, and log are mode `0600`; the service uses umask `077`. Its arguments contain no submitted content, URLs, Artifact paths, or credentials. Installation runs `bun install --frozen-lockfile` before changing the command or service, so immutable managed checkouts do not expose a runtime missing its dependencies. Reinstall unloads the known label, atomically replaces only a marker-owned plist, and loads it again. The installer may replace the exact legacy command link `/Users/mike/code/agentbrain/src/cli.ts`; managed deployments with a different known predecessor can set `AGENTBRAIN_INSTALL_LEGACY_SOURCE` to that one exact source. It refuses unrelated command links, regular files, and foreign service files rather than taking them over.
 
