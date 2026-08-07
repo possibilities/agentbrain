@@ -943,7 +943,11 @@ test("submit skips an already-indexed URL and --force queues rematerialization",
          key_type, key_value, kind, sensitivity, document_id, created_at, updated_at
        ) VALUES ('x:status', '99', 'url', 'normal', ?, ?, ?)`,
     )
-    .run(doc.document_id, "2026-08-07T00:00:00.000Z", "2026-08-07T00:00:00.000Z");
+    .run(
+      doc.document_id,
+      "2026-08-07T00:00:00.000Z",
+      "2026-08-07T00:00:00.000Z",
+    );
   store.close();
 
   // An alias form of the same status is reported, not queued.

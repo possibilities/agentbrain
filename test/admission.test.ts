@@ -255,13 +255,17 @@ test("indexedDocumentForUrl matches conservative resource identity only", () => 
     });
   }
   // Generic URLs match only their conservative normalization.
-  expect(indexedDocumentForUrl(store, "https://EXAMPLE.com/post#intro")).toEqual({
+  expect(
+    indexedDocumentForUrl(store, "https://EXAMPLE.com/post#intro"),
+  ).toEqual({
     version: 1,
     status: "already_indexed",
     document_id: article.document_id,
     resource_key: "url:https://example.com/post",
   });
-  expect(indexedDocumentForUrl(store, "https://example.com/post?utm=1")).toBeNull();
+  expect(
+    indexedDocumentForUrl(store, "https://example.com/post?utm=1"),
+  ).toBeNull();
   expect(indexedDocumentForUrl(store, "https://example.com/api/")).toBeNull();
   expect(indexedDocumentForUrl(store, "not a url")).toBeNull();
   expect(indexedDocumentForUrl(store, "/tmp/local-file.md")).toBeNull();
