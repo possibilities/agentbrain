@@ -765,3 +765,35 @@ test("uninstall removes both owned services and keeps both logs", () => {
   expect(existsSync(join(fixture.state, "worker.log"))).toBe(true);
   expect(existsSync(join(fixture.state, "share.log"))).toBe(true);
 });
+
+test("worker carries conduit pass-through, empty unless configured", () => {
+  const bare = setup();
+  expect(runInstaller(bare, "--install").exitCode).toBe(0);
+  const unset = readFileSync(
+    join(bare.launchAgents, "agentbrain.worker.plist"),
+    "utf8",
+  );
+  expect(unset).toContain("<key>AGENTSCRAPE_CONDUIT_SOCKET</key>");
+  expect(unset).toContain("<string></string>");
+  expect(unset).not.toContain("__AGENTBRAIN_");
+
+  const fixture = setup();
+  const socket = join(fixture.home, "runtime", "agentweb.sock");
+  const tokenFile = join(fixture.home, "state", "worker-token");
+  expect(
+    runInstaller(fixture, "--install", {
+      AGENTBRAIN_INSTALL_CONDUIT_SOCKET: socket,
+      AGENTBRAIN_INSTALL_CONDUIT_TOKEN_FILE: tokenFile,
+    }).exitCode,
+  ).toBe(0);
+
+  const plist = readFileSync(
+    join(fixture.launchAgents, "agentbrain.worker.plist"),
+    "utf8",
+  );
+  expect(plist).toContain(`<string>${socket}</string>`);
+  // The credential is named by path and read by the process that needs it, so
+  // a service description never carries the token itself.
+  expect(plist).toContain(`<string>${tokenFile}</string>`);
+  expect(plist).not.toContain("__AGENTBRAIN_");
+});

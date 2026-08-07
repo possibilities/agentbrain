@@ -23,6 +23,13 @@ exposing one. Set the value to `none` to remove an ingress installed earlier.
 An unset value leaves an already-installed ingress alone rather than silently
 withdrawing a service the operator asked for.
 
+AGENTBRAIN_INSTALL_CONDUIT_SOCKET and AGENTBRAIN_INSTALL_CONDUIT_TOKEN_FILE are
+passed through to the worker's environment for Agentscrape, which owns every
+fetch. They let it replay a browser session an operator established for a site
+that requires signing in. Agentbrain does not interpret them, holds no
+credential of its own for them, and extraction proceeds without a session when
+they are unset.
+
 Uninstall gracefully unloads and removes only the owned LaunchAgents and known
 command links. It preserves the database, Artifacts, and the private worker and
 share logs.
@@ -69,6 +76,8 @@ SHARE_LOG_PATH="$STATE_DIR/share.log"
 SHARE_SERVICE_LABEL="agentbrain.share"
 SHARE_OWNERSHIP_MARKER="agentbrain-installer-owned: agentbrain.share.v1"
 SHARE_HOST="${AGENTBRAIN_INSTALL_SHARE_HOST:-}"
+CONDUIT_SOCKET="${AGENTBRAIN_INSTALL_CONDUIT_SOCKET:-}"
+CONDUIT_TOKEN_FILE="${AGENTBRAIN_INSTALL_CONDUIT_TOKEN_FILE:-}"
 EXPECTED_LEGACY_SOURCE="$(dirname "$ROOT")/hermes-greybird/bin/research-ingest-link"
 LAUNCHCTL="${AGENTBRAIN_INSTALL_LAUNCHCTL:-launchctl}"
 
@@ -455,6 +464,8 @@ export AGENTBRAIN_RENDER_HOME="$HOME"
 export AGENTBRAIN_RENDER_PATH="$SERVICE_PATH"
 export AGENTBRAIN_RENDER_LOG="$log"
 export AGENTBRAIN_RENDER_SHARE_HOST="$SHARE_HOST"
+export AGENTBRAIN_RENDER_CONDUIT_SOCKET="$CONDUIT_SOCKET"
+export AGENTBRAIN_RENDER_CONDUIT_TOKEN_FILE="$CONDUIT_TOKEN_FILE"
 # The single-quoted argument intentionally contains JavaScript template literals.
 # shellcheck disable=SC2016
 bun -e '
@@ -471,6 +482,9 @@ bun -e '
     __AGENTBRAIN_PATH__: process.env.AGENTBRAIN_RENDER_PATH,
     __AGENTBRAIN_LOG__: process.env.AGENTBRAIN_RENDER_LOG,
     __AGENTBRAIN_SHARE_HOST__: process.env.AGENTBRAIN_RENDER_SHARE_HOST,
+    __AGENTBRAIN_CONDUIT_SOCKET__: process.env.AGENTBRAIN_RENDER_CONDUIT_SOCKET,
+    __AGENTBRAIN_CONDUIT_TOKEN_FILE__:
+      process.env.AGENTBRAIN_RENDER_CONDUIT_TOKEN_FILE,
   };
   let rendered = await Bun.file(source).text();
   for (const [token, value] of Object.entries(replacements)) {

@@ -10,12 +10,22 @@
 		<string>__AGENTBRAIN_PROGRAM__</string>
 		<string>worker</string>
 	</array>
+	<!-- The conduit values are passed through to Agentscrape, which the worker
+	     spawns and which owns every fetch; Agentbrain neither reads nor
+	     interprets them. Empty means unconfigured, and Agentscrape then extracts
+	     without an operator session rather than failing. Neither value is a
+	     credential: the token is named by path, and read from that 0600 file by
+	     the process that needs it. -->
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>HOME</key>
 		<string>__AGENTBRAIN_HOME__</string>
 		<key>PATH</key>
 		<string>__AGENTBRAIN_PATH__</string>
+		<key>AGENTSCRAPE_CONDUIT_SOCKET</key>
+		<string>__AGENTBRAIN_CONDUIT_SOCKET__</string>
+		<key>AGENTSCRAPE_CONDUIT_TOKEN_FILE</key>
+		<string>__AGENTBRAIN_CONDUIT_TOKEN_FILE__</string>
 	</dict>
 	<key>RunAtLoad</key>
 	<true/>
