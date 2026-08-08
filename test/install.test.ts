@@ -504,12 +504,26 @@ test("installer removes only known retired links and preserves unrelated binarie
   expect(existsSync(join(owned.bin, "research-ingest-link"))).toBe(false);
 
   const legacy = setup();
-  symlinkSync(
-    join(dirname(REPO), "hermes-greybird/bin/research-ingest-link"),
-    join(legacy.bin, "research-ingest-link"),
+  const legacyAdapter = join(
+    legacy.dir,
+    "legacy-adapter",
+    "research-ingest-link",
   );
+  mkdirSync(dirname(legacyAdapter), { recursive: true });
+  writeFileSync(legacyAdapter, "#!/usr/bin/env bash\n");
+  const legacyLink = join(legacy.bin, "research-ingest-link");
+  symlinkSync(legacyAdapter, legacyLink);
+
+  // Unnamed, the adapter is somebody else's file: the installer leaves it.
   expect(runInstaller(legacy).exitCode).toBe(0);
-  expect(existsSync(join(legacy.bin, "research-ingest-link"))).toBe(false);
+  expect(existsSync(legacyLink)).toBe(true);
+
+  expect(
+    runInstaller(legacy, "--install", {
+      AGENTBRAIN_INSTALL_LEGACY_ADAPTER: legacyAdapter,
+    }).exitCode,
+  ).toBe(0);
+  expect(existsSync(legacyLink)).toBe(false);
 
   const unrelated = setup();
   const foreign = join(unrelated.bin, "research-ingest-link");

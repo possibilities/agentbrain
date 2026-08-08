@@ -30,6 +30,12 @@ that requires signing in. Agentbrain does not interpret them, holds no
 credential of its own for them, and extraction proceeds without a session when
 they are unset.
 
+AGENTBRAIN_INSTALL_LEGACY_SOURCE and AGENTBRAIN_INSTALL_LEGACY_ADAPTER each name
+a checkout this machine installed from before — an older agentbrain entry point,
+and a retired research-ingest-link adapter. Naming one widens what the installer
+will treat as its own and replace; both are unset by default, because an
+installer that guesses at foreign paths eventually guesses wrong.
+
 Uninstall gracefully unloads and removes only the owned LaunchAgents and known
 command links. It preserves the database, Artifacts, and the private worker and
 share logs.
@@ -62,7 +68,7 @@ DATA_DIR="$HOME/.local/share/agentbrain"
 DEFAULT_DB_PATH="$DATA_DIR/research.db"
 LEGACY_DB_PATH="$HOME/.hermes/research-cache/research.db"
 AGENTBRAIN_SOURCE="$ROOT/src/cli.ts"
-KNOWN_LEGACY_AGENTBRAIN_SOURCE="${AGENTBRAIN_INSTALL_LEGACY_SOURCE:-/Users/mike/code/agentbrain/src/cli.ts}"
+KNOWN_LEGACY_AGENTBRAIN_SOURCE="${AGENTBRAIN_INSTALL_LEGACY_SOURCE:-}"
 RETIRED_ADAPTER_SOURCE="$ROOT/src/research-ingest-link.ts"
 PLIST_SOURCE="$ROOT/system/Library/LaunchAgents/agentbrain.worker.plist"
 SERVICE_DEST="$LAUNCH_AGENTS_DIR/agentbrain.worker.plist"
@@ -105,7 +111,7 @@ if [[ -n "${AGENTBRAIN_INSTALL_CONDUIT_TOKEN_FILE+set}" ]]; then
 else
   CONDUIT_TOKEN_FILE="$(installed_service_env AGENTSCRAPE_CONDUIT_TOKEN_FILE)"
 fi
-EXPECTED_LEGACY_SOURCE="$(dirname "$ROOT")/hermes-greybird/bin/research-ingest-link"
+LEGACY_ADAPTER_SOURCE="${AGENTBRAIN_INSTALL_LEGACY_ADAPTER:-}"
 LAUNCHCTL="${AGENTBRAIN_INSTALL_LAUNCHCTL:-launchctl}"
 
 canonical_path() {
@@ -125,10 +131,18 @@ canonical_path() {
   ' "$1"
 }
 
+# An unset legacy path must stay empty rather than canonicalize: canonical_path
+# resolves "" to the working directory, and an ownership check against the
+# working directory would claim links this installer never made.
+optional_canonical_path() {
+  [[ -n "$1" ]] || return 0
+  canonical_path "$1"
+}
+
 AGENTBRAIN_CANONICAL="$(canonical_path "$AGENTBRAIN_SOURCE")"
-KNOWN_LEGACY_AGENTBRAIN_CANONICAL="$(canonical_path "$KNOWN_LEGACY_AGENTBRAIN_SOURCE")"
+KNOWN_LEGACY_AGENTBRAIN_CANONICAL="$(optional_canonical_path "$KNOWN_LEGACY_AGENTBRAIN_SOURCE")"
 RETIRED_ADAPTER_CANONICAL="$(canonical_path "$RETIRED_ADAPTER_SOURCE")"
-LEGACY_CANONICAL="$(canonical_path "$EXPECTED_LEGACY_SOURCE")"
+LEGACY_ADAPTER_CANONICAL="$(optional_canonical_path "$LEGACY_ADAPTER_SOURCE")"
 
 symlink_is_owned() {
   local destination="$1"
@@ -174,7 +188,8 @@ check_destination() {
 remove_known_retired_link() {
   local destination="$BIN_DIR/research-ingest-link"
   if symlink_is_owned "$destination" "$RETIRED_ADAPTER_CANONICAL" ||
-    symlink_is_owned "$destination" "$LEGACY_CANONICAL"; then
+    { [[ -n "$LEGACY_ADAPTER_CANONICAL" ]] &&
+      symlink_is_owned "$destination" "$LEGACY_ADAPTER_CANONICAL"; }; then
     rm -f "$destination"
   fi
 }
@@ -437,7 +452,9 @@ if [[ "$ACTION" == uninstall ]]; then
     rm -f "$SERVICE_DEST"
   fi
   if symlink_is_owned "$BIN_DIR/agentbrain" "$AGENTBRAIN_CANONICAL" ||
-    symlink_is_owned "$BIN_DIR/agentbrain" "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL"; then
+    { [[ -n "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL" ]] &&
+      symlink_is_owned "$BIN_DIR/agentbrain" \
+        "$KNOWN_LEGACY_AGENTBRAIN_CANONICAL"; }; then
     rm -f "$BIN_DIR/agentbrain"
   fi
   remove_known_retired_link
