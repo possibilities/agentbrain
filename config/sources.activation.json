@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "blog.example",
+      "version": 2,
+      "enabled": true
+    },
+    {
+      "id": "x.example",
+      "version": 2,
+      "enabled": true
+    }
+  ]
+}

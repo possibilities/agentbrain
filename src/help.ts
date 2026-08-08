@@ -201,7 +201,7 @@ Query modes:
 
 Examples:
   agentbrain search "agent memory systems" --json
-  agentbrain search "karpathy llm" --tag source-item --limit 5
+  agentbrain search "transformer scaling" --tag source-item --limit 5
   agentbrain search "model routing" --content-kind thread --json
   agentbrain search --mode all "cli mcp agents" --json
 `,
@@ -502,8 +502,8 @@ not identity. Definitions retain versioned schedules, bounded limits, collection
 sensitivity policy, and credential references without credential values. Unknown future
 kinds remain listable and showable but source sync will not admit work for them.
 
-sources apply reads a versioned manifest (default: the bundled config/sources.yaml
-covering confirmed blog/X sources and disabled candidate X accounts) and durably creates
+sources apply reads a versioned manifest (default: the bundled config/sources.json
+example, one disabled source per supported kind) and durably creates
 or updates matching source definitions. A higher version may declaratively enable or
 disable a Source; apply never deletes a definition or runs it implicitly. Re-applying
 identical content is a no-op. Raising a source's version without changing its kind admits

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "blog.example",
+      "version": 1,
+      "kind": "blog_source",
+      "display_name": "Example Blog",
+      "enabled": false,
+      "payload": {
+        "homepage_url": "https://blog.example.com/"
+      },
+      "schedule": {
+        "cadence": "daily"
+      },
+      "limits": {
+        "max_items_per_run": 20,
+        "max_pages_per_run": 2
+      },
+      "collections": ["blogs"],
+      "sensitivity": "public",
+      "credential_refs": []
+    },
+    {
+      "id": "x.example",
+      "version": 1,
+      "kind": "x_account",
+      "display_name": "Example Account",
+      "enabled": false,
+      "payload": {
+        "handle": "@example",
+        "profile_url": "https://x.com/example"
+      },
+      "schedule": {
+        "cadence": "hourly"
+      },
+      "limits": {
+        "max_items_per_run": 25,
+        "max_pages_per_run": 1
+      },
+      "collections": ["x-accounts"],
+      "sensitivity": "public",
+      "credential_refs": []
+    },
+    {
+      "id": "x-candidate.example",
+      "version": 1,
+      "kind": "x_account_candidate",
+      "display_name": "Example Candidate Account",
+      "enabled": false,
+      "payload": {
+        "handle": "@example_candidate",
+        "profile_url": "https://x.com/example_candidate"
+      },
+      "schedule": {
+        "cadence": "hourly"
+      },
+      "limits": {
+        "max_items_per_run": 25,
+        "max_pages_per_run": 1
+      },
+      "collections": ["x-candidates"],
+      "sensitivity": "public",
+      "credential_refs": []
+    }
+  ]
+}

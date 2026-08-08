@@ -14,10 +14,12 @@ set -euo pipefail
 # still passes when the durable ledger behaves, and prints per-source status so
 # the operator can judge provider health.
 
-blog_id="${1:-blog.simon-willison}"
-x_id="${2:-x.simonw}"
+# The bundled manifest's example sources do not resolve, so a live run means
+# naming two real source ids from a manifest of your own.
+blog_id="${1:-blog.example}"
+x_id="${2:-x.example}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-overlay_path="$repo_root/config/sources.activation.yaml"
+overlay_path="$repo_root/config/sources.activation.json"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/agentbrain-recurring-sources-smoke.XXXXXX")"
 db_path="$tmp_dir/research.db"
 home_dir="$tmp_dir/home"

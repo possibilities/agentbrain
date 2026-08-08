@@ -59,14 +59,14 @@ const MAX_SOURCES = 1_000;
 const MAX_DEFINITION_BYTES = 128 * 1024;
 
 /**
- * Bundled confirmed/candidate source manifest shipped with the repo. Never
- * applied implicitly; an operator or `sources apply` reads and applies it.
+ * Bundled example source manifest shipped with the repo. Never applied
+ * implicitly; an operator or `sources apply` reads and applies it.
  */
 export const DEFAULT_SOURCE_MANIFEST_PATH = join(
   import.meta.dir,
   "..",
   "config",
-  "sources.yaml",
+  "sources.json",
 );
 const SOURCE_COLUMNS = `id, source_type, identifier, display_name, enabled,
   sensitivity, schedule, checkpoint, definition_version, definition,

@@ -30,10 +30,9 @@ function loadManifest() {
   return readSourceManifest(DEFAULT_SOURCE_MANIFEST_PATH);
 }
 
-test("bundled config/sources.yaml encodes exactly the confirmed and candidate counts", () => {
+test("bundled config/sources.json exemplifies every supported kind, disabled", () => {
   const manifest = loadManifest();
   expect(manifest.schema_version).toBe(1);
-  expect(manifest.sources).toHaveLength(38);
 
   const byKind = new Map<string, SourceDefinition[]>();
   for (const source of manifest.sources) {
@@ -41,16 +40,19 @@ test("bundled config/sources.yaml encodes exactly the confirmed and candidate co
     bucket.push(source);
     byKind.set(source.kind, bucket);
   }
-  expect(byKind.get("blog_source")).toHaveLength(11);
-  expect(byKind.get("x_account")).toHaveLength(14);
-  expect(byKind.get("x_account_candidate")).toHaveLength(13);
-  expect(byKind.size).toBe(3);
+  // One example per kind: the manifest is documentation of the shape, not a
+  // reading list. Anything larger belongs in an operator's own manifest.
+  expect([...byKind.keys()].sort()).toEqual([
+    "blog_source",
+    "x_account",
+    "x_account_candidate",
+  ]);
 
   const ids = manifest.sources.map((source) => source.id);
   expect(new Set(ids).size).toBe(ids.length);
 
-  // Every definition lands disabled; a later, explicit rollout task activates
-  // confirmed sources in controlled cohorts.
+  // Every definition lands disabled. Installing the manifest must never start
+  // fetching anything; activation is a separate, explicit operator act.
   for (const source of manifest.sources) {
     expect(source.enabled).toBe(false);
   }
@@ -110,14 +112,14 @@ test("applying the bundled manifest is a safe, idempotent install and a version-
       actor: "test-install",
       now: new Date("2026-07-21T00:00:00.000Z"),
     });
-    expect(installed).toHaveLength(38);
+    expect(installed).toHaveLength(manifest.sources.length);
     for (const result of installed) {
       expect(result.created).toBe(true);
       expect(result.changed).toBe(true);
     }
     expect(
       store.db.query("SELECT COUNT(*) AS count FROM sources").get(),
-    ).toEqual({ count: 38 });
+    ).toEqual({ count: manifest.sources.length });
 
     // Re-applying identical content changes nothing.
     const reapplied = registry.applySourceManifest(manifest, {
@@ -130,7 +132,7 @@ test("applying the bundled manifest is a safe, idempotent install and a version-
     }
 
     const target = manifest.sources.find(
-      (source) => source.id === "blog.simon-willison",
+      (source) => source.id === "blog.example",
     );
     if (target === undefined) throw new Error("fixture source missing");
 
@@ -224,9 +226,11 @@ test("worker due evaluation admits durable source-run jobs for confirmed sources
     });
 
     const blog = manifest.sources.find(
-      (source) => source.id === "blog.simon-willison",
+      (source) => source.id === "blog.example",
     );
-    const account = manifest.sources.find((source) => source.id === "x.simonw");
+    const account = manifest.sources.find(
+      (source) => source.id === "x.example",
+    );
     if (blog === undefined || account === undefined) {
       throw new Error("fixture confirmed sources missing");
     }
@@ -247,8 +251,8 @@ test("worker due evaluation admits durable source-run jobs for confirmed sources
     });
     const queued = due.filter((admission) => admission.status === "queued");
     expect(queued.map((admission) => admission.source_id).sort()).toEqual([
-      "blog.simon-willison",
-      "x.simonw",
+      "blog.example",
+      "x.example",
     ]);
 
     expect(
@@ -288,6 +292,7 @@ function runCli(dbPath: string, args: string[]) {
 }
 
 test("agentbrain sources apply installs the bundled manifest and is idempotent on replay", () => {
+  const bundled = loadManifest().sources.length;
   const dbPath = tempDb();
   const first = runCli(dbPath, ["sources", "apply", "--json"]);
   expect(first.exitCode).toBe(0);
@@ -298,7 +303,7 @@ test("agentbrain sources apply installs the bundled manifest and is idempotent o
   };
   expect(firstBody.command).toBe("sources apply");
   expect(firstBody.meta.read_only).toBe(false);
-  expect(firstBody.data).toHaveLength(38);
+  expect(firstBody.data).toHaveLength(bundled);
   expect(
     firstBody.data.every((result) => result.created && result.changed),
   ).toBe(true);
@@ -315,5 +320,5 @@ test("agentbrain sources apply installs the bundled manifest and is idempotent o
   const listed = runCli(dbPath, ["sources", "list", "--json"]);
   expect(listed.exitCode).toBe(0);
   const listedBody = JSON.parse(listed.stdout) as { data: unknown[] };
-  expect(listedBody.data).toHaveLength(38);
+  expect(listedBody.data).toHaveLength(bundled);
 });

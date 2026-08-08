@@ -21,7 +21,7 @@ import { normalizedWebUrl, xStatusId } from "../src/url";
 import { type JobMaterializer, runWorker } from "../src/worker";
 
 const REPO = join(import.meta.dir, "..");
-const ACTIVATION_OVERLAY_PATH = join(REPO, "config", "sources.activation.yaml");
+const ACTIVATION_OVERLAY_PATH = join(REPO, "config", "sources.activation.json");
 const CONFIRMED_KINDS = new Set(["blog_source", "x_account"]);
 const DAY_SECONDS = 24 * 60 * 60;
 const HOUR_SECONDS = 60 * 60;
@@ -74,12 +74,12 @@ test("the committed overlay enables exactly the confirmed cohort and no candidat
     base,
     (source) => source.kind === "x_account_candidate",
   );
-  expect(confirmedIds).toHaveLength(25);
-  expect(candidateIds).toHaveLength(13);
+  expect(confirmedIds).toHaveLength(2);
+  expect(candidateIds).toHaveLength(1);
 
   const enabledIds = idsByKind(activated, (source) => source.enabled);
   // Activation is precisely the confirmed set: every confirmed source enabled,
-  // every one of the 13 recommendation candidates left disabled.
+  // every recommendation candidate left disabled.
   expect(enabledIds).toEqual(confirmedIds);
   for (const source of activated.sources) {
     if (CONFIRMED_KINDS.has(source.kind)) {
@@ -150,7 +150,7 @@ test("applying the overlay schedules durable runs for confirmed sources only", (
           "SELECT COUNT(*) AS count FROM runs WHERE run_type='source_sync'",
         )
         .get(),
-    ).toEqual({ count: 25 });
+    ).toEqual({ count: 2 });
     expect(
       store.db.query("SELECT COUNT(*) AS count FROM documents").get(),
     ).toEqual({ count: 0 });
@@ -270,10 +270,10 @@ test("a confirmed blog run is durable and repeated overlap adds no index effects
     // Confirmed blogs carry only a homepage_url; discovery still routes through
     // the feed path. The stub returns the discovered items a live Agentscrape run
     // would, so the durable ledger behaviour is exercised offline.
-    const sourceUrl = "https://simonwillison.net/";
+    const sourceUrl = "https://blog.example.com/";
     const items = [
-      feedItem("post-b", "https://simonwillison.net/2026/two"),
-      feedItem("post-a", "https://simonwillison.net/2026/one"),
+      feedItem("post-b", "https://blog.example.com/2026/two"),
+      feedItem("post-a", "https://blog.example.com/2026/one"),
     ];
     let feedPolls = 0;
     const discovery: SourceDiscoveryProvider = {
@@ -294,13 +294,13 @@ test("a confirmed blog run is durable and repeated overlap adds no index effects
     };
 
     const firstRun = registry.syncSource({
-      sourceId: "blog.simon-willison",
+      sourceId: "blog.example",
       now: T0,
     });
     expect(firstRun.status).toBe("queued");
     await drain(store, discovery, T0);
 
-    expect(registry.sourceCheckpoints("blog.simon-willison")).toHaveLength(1);
+    expect(registry.sourceCheckpoints("blog.example")).toHaveLength(1);
     expect(
       store.db
         .query(
@@ -319,7 +319,7 @@ test("a confirmed blog run is durable and repeated overlap adds no index effects
     // exactly as it was — no duplicate jobs, resources, or documents.
     const t1 = new Date("2026-07-22T00:00:00.000Z");
     const overlapRun = registry.syncSource({
-      sourceId: "blog.simon-willison",
+      sourceId: "blog.example",
       now: t1,
     });
     expect(overlapRun.status).toBe("queued");
@@ -329,7 +329,7 @@ test("a confirmed blog run is durable and repeated overlap adds no index effects
 
     // Absence: an empty window is not deletion. Nothing already indexed is lost.
     const t2 = new Date("2026-07-23T00:00:00.000Z");
-    registry.syncSource({ sourceId: "blog.simon-willison", now: t2 });
+    registry.syncSource({ sourceId: "blog.example", now: t2 });
     await drain(store, discovery, t2);
     expect(count(store, "documents")).toBe(2);
     expect(count(store, "resources", "kind='url'")).toBe(2);
@@ -347,7 +347,7 @@ test("a confirmed X account polls forward within bounded, overlap-safe limits", 
     const tweets = [
       {
         id: "1002",
-        url: "https://x.com/simonw/status/1002",
+        url: "https://x.com/example/status/1002",
         text: "post 1002",
         created_at: "2026-07-20T00:00:00.000Z",
         is_reply: false,
@@ -358,7 +358,7 @@ test("a confirmed X account polls forward within bounded, overlap-safe limits", 
       },
       {
         id: "1001",
-        url: "https://x.com/simonw/status/1001",
+        url: "https://x.com/example/status/1001",
         text: "post 1001",
         created_at: "2026-07-19T00:00:00.000Z",
         is_reply: false,
@@ -370,7 +370,7 @@ test("a confirmed X account polls forward within bounded, overlap-safe limits", 
     ];
     const xRequests: XTimelineDiscoveryRequest[] = [];
     const xEnvelope: XTimelineDiscoveryEnvelope = {
-      handle: "simonw",
+      handle: "example",
       next_cursor: null,
       scraped_at: T0.toISOString(),
       tweets,
@@ -386,7 +386,7 @@ test("a confirmed X account polls forward within bounded, overlap-safe limits", 
       },
     };
 
-    const run = registry.syncSource({ sourceId: "x.simonw", now: T0 });
+    const run = registry.syncSource({ sourceId: "x.example", now: T0 });
     expect(run.status).toBe("queued");
     await drain(store, discovery, T0);
 
@@ -404,7 +404,7 @@ test("a confirmed X account polls forward within bounded, overlap-safe limits", 
 
     // Overlap: re-polling the same timeline window indexes nothing new.
     const t1 = new Date("2026-07-21T01:00:00.000Z");
-    registry.syncSource({ sourceId: "x.simonw", now: t1 });
+    registry.syncSource({ sourceId: "x.example", now: t1 });
     await drain(store, discovery, t1);
     expect(count(store, "jobs", "kind='url'")).toBe(2);
     expect(count(store, "documents")).toBe(2);
