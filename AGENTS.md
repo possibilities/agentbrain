@@ -41,6 +41,21 @@ below is a constraint you cannot recover by reading a single file.
 - Skills call `search "<q>" --json` and `get --document-id N --full --json`, and
   hardcode `~/.local/share/agentbrain/research.db`.
 
+## The brain skill
+
+- `skills/brain/SKILL.md` is the canonical deep runbook for agents. `--agent-help`
+  in `src/help.ts` is the in-binary fallback and names the skill; the two must
+  keep agreeing.
+- Funk's skills scanner installs it globally by running `npx skills add` against
+  this checkout and discovering nested `skills/<name>/SKILL.md`. The installed
+  copy is this file — do not add a second source or a sync path.
+- Every claim in the skill was verified against live CLI output. A change to
+  command behavior, envelope shape, exit codes, or submission statuses is not
+  finished until those claims are re-verified (`agentbrain guide --json`,
+  `--agent-help`, `help <command>`) and the prose corrected.
+- The skill directory is installed away from this repository, so it must stay
+  self-contained: no `../` paths, no links into `docs/`.
+
 ## Working here
 
 - `bun run check` (typecheck, lint, ~40s serial test suite) is the gate. Run it

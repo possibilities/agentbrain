@@ -152,6 +152,7 @@ Contract
   124 wait-observation timeout (the durable Run continues).
   Read commands open the database read-only and never migrate.
 
+Full runbook: the brain agent skill; this text is the in-binary fallback.
 Full machine-readable card: agentbrain guide --json
 Per-command help: agentbrain help <command> or <command> --help
 `;

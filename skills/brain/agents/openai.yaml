@@ -1,0 +1,6 @@
+interface:
+  display_name: "Brain"
+  short_description: "Search and grow the local research index with agentbrain"
+  default_prompt: "Use $brain to search the local research index for this."
+policy:
+  allow_implicit_invocation: true
