@@ -24,6 +24,8 @@ agentbrain doctor --json
 
 ## Develop
 
+Bun ≥ 1.3.14.
+
 ```bash
 bun run check
 ```

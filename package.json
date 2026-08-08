@@ -1,12 +1,16 @@
 {
   "name": "agentbrain",
   "version": "0.2.0",
-  "description": "Own and expose Mike's local research index through an agent-friendly Bun CLI",
+  "description": "Own and expose your local research index through an agent-friendly Bun CLI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/possibilities/agentbrain.git"
+  },
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.14",
   "engines": {
-    "bun": "1.3.14"
+    "bun": ">=1.3.14"
   },
   "bin": {
     "agentbrain": "src/cli.ts"
