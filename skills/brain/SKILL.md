@@ -1,6 +1,13 @@
 ---
 name: brain
-description: Search and grow the local research index with the agentbrain CLI — articles, threads, papers, and notes already collected on this machine, searchable offline with citations. Reach for it before any web search or paid research call, because the answer is often already local. Triggers: "have we researched this?", "didn't we read about X?", "what do we have saved on…"; finding something worth keeping and wanting it durably ingested; and checking whether a submitted link ever landed.
+description: >-
+  Search and grow the local research index with the agentbrain CLI —
+  articles, threads, papers, and notes already collected on this machine,
+  searchable offline with citations. Reach for it before any web search or
+  paid research call, because the answer is often already local. Triggers:
+  "have we researched this?", "didn't we read about X?", "what do we have
+  saved on…"; finding something worth keeping and wanting it durably
+  ingested; and checking whether a submitted link ever landed.
 ---
 
 # Brain — the local research index
