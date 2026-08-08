@@ -189,7 +189,7 @@ export function parseJobState(value: string | undefined): JobState | undefined {
   if (JOB_STATES.includes(value as JobState)) return value as JobState;
   throw new CliError("bad_job_state", `unknown job state '${value}'`, {
     exitCode: 2,
-    hint: `Use one of: ${JOB_STATES.join(", ")}.`,
+    recovery: `Use one of: ${JOB_STATES.join(", ")}.`,
   });
 }
 

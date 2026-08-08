@@ -210,13 +210,13 @@ test("a missing portless is reported rather than silently serving unnamed", () =
   expect(result.exitCode).toBe(1);
   const body = JSON.parse(result.stdout) as {
     ok: boolean;
-    error: { code: string; hint?: string };
+    error: { code: string; recovery?: string };
   };
   expect(body.ok).toBe(false);
   expect(body.error.code).toBe("portless_unavailable");
   // Truthful about what is missing, and about what still works without it.
-  expect(body.error.hint).toContain("npm i -g portless");
-  expect(body.error.hint).toContain("agentbrain share serve");
+  expect(body.error.recovery).toContain("npm i -g portless");
+  expect(body.error.recovery).toContain("agentbrain share serve");
 });
 
 test("--portless refuses the combinations that would serve nothing", () => {

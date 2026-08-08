@@ -106,7 +106,7 @@ Errors use the standard Agentbrain error envelope:
   "schema_version": 1,
   "ok": false,
   "command": "share /v1/share",
-  "error": { "code": "bad_payload", "message": "…", "hint": "…" }
+  "error": { "code": "bad_payload", "message": "…", "recovery": "…" }
 }
 ```
 

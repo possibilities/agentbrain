@@ -60,7 +60,7 @@ export function buildGuide(): unknown {
         ok: "boolean",
         command: "string",
         data: "command-specific payload on success",
-        error: "{code,message,hint?} on failure",
+        error: "{code,message,recovery?} on failure",
         meta: "{db_path,read_only,generated_at} on success",
       },
       read_only_commands: [

@@ -38,7 +38,7 @@ async function report(result) {
   await flashBadge("ERR", "#a32020");
   notify(
     "Agentbrain share failed",
-    result.hint ? `${result.message} ${result.hint}` : result.message,
+    result.recovery ? `${result.message} ${result.recovery}` : result.message,
   );
 }
 

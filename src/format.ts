@@ -29,7 +29,7 @@ export function errorEnvelope(
   command: string,
   code: string,
   message: string,
-  hint?: string,
+  recovery?: string,
 ): ErrorEnvelope {
   return {
     schema_version: SCHEMA_VERSION,
@@ -38,7 +38,7 @@ export function errorEnvelope(
     error: {
       code,
       message,
-      ...(hint !== undefined ? { hint } : {}),
+      ...(recovery !== undefined ? { recovery } : {}),
     },
   };
 }

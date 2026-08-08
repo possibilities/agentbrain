@@ -119,7 +119,7 @@ export interface ErrorEnvelope {
   error: {
     code: string;
     message: string;
-    hint?: string;
+    recovery?: string;
   };
 }
 

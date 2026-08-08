@@ -239,7 +239,7 @@ test("an absent PORT is absent and a malformed PORT is refused", () => {
       resolveSharePort(undefined, { PORT: value });
     } catch (error) {
       expect((error as CliError).code).toBe("bad_port");
-      expect((error as CliError).hint).toContain("--port always wins");
+      expect((error as CliError).recovery).toContain("--port always wins");
     }
   }
 

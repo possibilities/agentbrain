@@ -152,7 +152,8 @@ export async function execPortless(
       }`,
       {
         exitCode: 1,
-        hint: "Portless is a machine prerequisite, not a dependency: install it with `npm i -g portless` (Node >= 24). Without it, run `agentbrain share serve` directly on 127.0.0.1:8787.",
+        recovery:
+          "Portless is a machine prerequisite, not a dependency: install it with `npm i -g portless` (Node >= 24). Without it, run `agentbrain share serve` directly on 127.0.0.1:8787.",
       },
     );
   }

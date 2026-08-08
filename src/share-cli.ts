@@ -40,7 +40,8 @@ function resolveServerToken(path: string): { token: string; source: string } {
         "share_token_invalid",
         "AGENTBRAIN_SHARE_TOKEN is too short to be usable",
         {
-          hint: "Use at least 16 characters, or unset it to use the token file.",
+          recovery:
+            "Use at least 16 characters, or unset it to use the token file.",
         },
       );
     }
@@ -56,7 +57,8 @@ function assertBindableHost(host: string, allowAny: boolean): void {
       `refusing to bind every interface (${host}) without --allow-any-interface`,
       {
         exitCode: 2,
-        hint: "Bind the Tailscale address instead, for example --host 100.x.y.z.",
+        recovery:
+          "Bind the Tailscale address instead, for example --host 100.x.y.z.",
       },
     );
   }
@@ -116,7 +118,8 @@ export async function runShareCommands(
           "--port and --portless are mutually exclusive",
           {
             exitCode: 2,
-            hint: "Portless allocates a free port and passes it in PORT; drop --port.",
+            recovery:
+              "Portless allocates a free port and passes it in PORT; drop --port.",
           },
         );
       }
@@ -126,7 +129,8 @@ export async function runShareCommands(
           `--portless is loopback-only and cannot serve --host ${host}`,
           {
             exitCode: 2,
-            hint: "A .localhost name resolves only on this machine. For phone shares run share serve --host <tailnet-addr> without --portless.",
+            recovery:
+              "A .localhost name resolves only on this machine. For phone shares run share serve --host <tailnet-addr> without --portless.",
           },
         );
       }
@@ -248,7 +252,7 @@ export async function runShareCommands(
           throw new CliError(
             "share_token_exists",
             `a share token already exists at ${path}`,
-            { exitCode: 2, hint: "Pass --force to rotate it." },
+            { exitCode: 2, recovery: "Pass --force to rotate it." },
           );
         } catch (error) {
           if (
@@ -280,7 +284,10 @@ export async function runShareCommands(
         throw new CliError(
           "reveal_required",
           "share token show requires --reveal",
-          { exitCode: 2, hint: "Run: agentbrain share token show --reveal" },
+          {
+            exitCode: 2,
+            recovery: "Run: agentbrain share token show --reveal",
+          },
         );
       }
       const token = readShareToken(path);
@@ -296,13 +303,13 @@ export async function runShareCommands(
     throw new CliError(
       "unknown_subcommand",
       `unknown share token action '${action}'`,
-      { exitCode: 2, hint: "Use init, show, or path." },
+      { exitCode: 2, recovery: "Use init, show, or path." },
     );
   }
 
   throw new CliError(
     "unknown_subcommand",
     `unknown share subcommand '${subcommand}'`,
-    { exitCode: 2, hint: "Use serve or token." },
+    { exitCode: 2, recovery: "Use serve or token." },
   );
 }

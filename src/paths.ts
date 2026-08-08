@@ -52,8 +52,8 @@ function pathState(path: string): PathState {
   }
 }
 
-function locationConflict(message: string, hint: string): never {
-  throw new CliError("db_location_conflict", message, { hint });
+function locationConflict(message: string, recovery: string): never {
+  throw new CliError("db_location_conflict", message, { recovery });
 }
 
 export function isDefaultDatabasePath(path: string, home?: string): boolean {
@@ -102,7 +102,7 @@ export function assertDefaultDatabaseLocationReady(home?: string): void {
       "db_migration_required",
       `legacy Agentbrain database requires migration: ${legacy}`,
       {
-        hint: `Migrate it to ${DEFAULT_DATABASE_DISPLAY}, or pass --db/AGENTBRAIN_DB explicitly for controlled recovery.`,
+        recovery: `Migrate it to ${DEFAULT_DATABASE_DISPLAY}, or pass --db/AGENTBRAIN_DB explicitly for controlled recovery.`,
       },
     );
   }

@@ -229,7 +229,7 @@ async function runParsed(
   if (!COMMAND_NAMES.has(command as (typeof COMMANDS)[number]["name"])) {
     throw new CliError("unknown_command", `unknown command '${command}'`, {
       exitCode: 2,
-      hint: "Run `agentbrain --help` for the command list.",
+      recovery: "Run `agentbrain --help` for the command list.",
     });
   }
 
@@ -349,7 +349,7 @@ async function runParsed(
         throw new CliError(
           "db_not_found",
           `research cache DB not found: ${parsed.globals.dbPath}`,
-          { hint: "Pass --db PATH or set AGENTBRAIN_DB." },
+          { recovery: "Pass --db PATH or set AGENTBRAIN_DB." },
         );
       }
       const store = new ResearchStore(parsed.globals.dbPath);
@@ -367,7 +367,7 @@ async function runParsed(
         throw new CliError(
           "db_not_found",
           `research cache DB not found: ${parsed.globals.dbPath}`,
-          { hint: "Pass --db PATH or set AGENTBRAIN_DB." },
+          { recovery: "Pass --db PATH or set AGENTBRAIN_DB." },
         );
       }
       const store = new ResearchStore(parsed.globals.dbPath);
@@ -783,7 +783,7 @@ function runBackup(
     throw new CliError(
       "bad_backup_command",
       "backup requires a create or verify subcommand",
-      { exitCode: 2, hint: "Run `agentbrain help backup` for usage." },
+      { exitCode: 2, recovery: "Run `agentbrain help backup` for usage." },
     );
   }
   const opts = parseOptions(argv.slice(1), {
@@ -819,7 +819,7 @@ function runBackup(
         "db_not_found",
         `research cache DB not found: ${dbPath}`,
         {
-          hint: "Pass --db PATH or set AGENTBRAIN_DB.",
+          recovery: "Pass --db PATH or set AGENTBRAIN_DB.",
         },
       );
     }
@@ -901,7 +901,7 @@ async function runRecoveryOnline(
     throw new CliError(
       "incomplete_recovery_online_authorization",
       "recovery online requires the generation, linked offline Run, verified snapshot, and all three explicit digests",
-      { exitCode: 2, hint: "Run `agentbrain help recovery` for usage." },
+      { exitCode: 2, recovery: "Run `agentbrain help recovery` for usage." },
     );
   }
   const generation = readRecoveryGeneration(manifestGeneration, {
@@ -978,7 +978,7 @@ async function runRecovery(
     throw new CliError(
       "bad_recovery_command",
       "recovery requires the import or online subcommand",
-      { exitCode: 2, hint: "Run `agentbrain help recovery` for usage." },
+      { exitCode: 2, recovery: "Run `agentbrain help recovery` for usage." },
     );
   }
   const opts = parseOptions(argv.slice(1), {
@@ -1235,7 +1235,7 @@ function parseIngestRequest(
     throw new CliError(
       "bad_source_type",
       `unknown source type '${sourceType}'`,
-      { exitCode: 2, hint: "Use auto, url, file, directory, or text." },
+      { exitCode: 2, recovery: "Use auto, url, file, directory, or text." },
     );
   }
   const source = opts._[0].trim();
@@ -1515,7 +1515,7 @@ function parseSearchMode(value: string): SearchMode {
   if (value === "any" || value === "all" || value === "raw") return value;
   throw new CliError("bad_mode", `unknown search mode '${value}'`, {
     exitCode: 2,
-    hint: "Use one of: any, all, raw.",
+    recovery: "Use one of: any, all, raw.",
   });
 }
 
@@ -1566,10 +1566,11 @@ async function main(argv: string[]): Promise<void> {
     const json = parsed?.globals.format === "json" || requestsJson(argv);
     if (err instanceof CliError) {
       if (json) {
-        writeJson(errorEnvelope(command, err.code, err.message, err.hint));
+        writeJson(errorEnvelope(command, err.code, err.message, err.recovery));
       } else {
         process.stderr.write(`agentbrain: ${err.message}\n`);
-        if (err.hint !== undefined) process.stderr.write(`hint: ${err.hint}\n`);
+        if (err.recovery !== undefined)
+          process.stderr.write(`recovery: ${err.recovery}\n`);
       }
       process.exit(err.exitCode);
     }

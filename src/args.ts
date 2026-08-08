@@ -32,7 +32,7 @@ function normalizeFormat(value: string | undefined): OutputFormat {
   if (value === "human" || value === "json" || value === "jsonl") return value;
   throw new CliError("bad_format", `unknown format '${value}'`, {
     exitCode: 2,
-    hint: "Use one of: human, json, jsonl.",
+    recovery: "Use one of: human, json, jsonl.",
   });
 }
 

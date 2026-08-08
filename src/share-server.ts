@@ -114,7 +114,7 @@ function errorBody(command: string, error: CliError): unknown {
     error: {
       code: error.code,
       message: error.message,
-      ...(error.hint === undefined ? {} : { hint: error.hint }),
+      ...(error.recovery === undefined ? {} : { recovery: error.recovery }),
     },
   };
 }
@@ -197,7 +197,8 @@ export function createShareHandler(
       const presented = bearerToken(request.headers.get("authorization"));
       if (presented === null || !tokenMatches(token, presented)) {
         throw new CliError("unauthorized", "a valid bearer token is required", {
-          hint: "Send Authorization: Bearer <token> from the share token file.",
+          recovery:
+            "Send Authorization: Bearer <token> from the share token file.",
         });
       }
 

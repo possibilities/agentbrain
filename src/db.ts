@@ -53,7 +53,7 @@ export class ResearchCache {
         "db_not_found",
         `research cache DB not found: ${dbPath}`,
         {
-          hint: "Pass --db PATH or set AGENTBRAIN_DB.",
+          recovery: "Pass --db PATH or set AGENTBRAIN_DB.",
         },
       );
     }

@@ -87,6 +87,6 @@ export async function postShare(config, payload) {
     message:
       body?.error?.message ??
       `Agentbrain rejected the share (HTTP ${response.status}).`,
-    hint: body?.error?.hint,
+    recovery: body?.error?.recovery,
   };
 }

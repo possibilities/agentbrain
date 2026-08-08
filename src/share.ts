@@ -61,7 +61,8 @@ export function resolveSharePort(
         `PORT must be an integer between 1 and 65535, got '${fromEnv}'`,
         {
           exitCode: 2,
-          hint: "Unset PORT, or pass --port explicitly; --port always wins.",
+          recovery:
+            "Unset PORT, or pass --port explicitly; --port always wins.",
         },
       );
     }
@@ -104,10 +105,14 @@ export interface ResolvedShare {
   extractedFromText: boolean;
 }
 
-function shareError(code: string, message: string, hint?: string): CliError {
+function shareError(
+  code: string,
+  message: string,
+  recovery?: string,
+): CliError {
   return new CliError(code, message, {
     exitCode: 2,
-    ...(hint ? { hint } : {}),
+    ...(recovery ? { recovery } : {}),
   });
 }
 
@@ -333,7 +338,7 @@ export function readShareToken(path: string): string {
       throw new CliError(
         "share_token_missing",
         `share token not found: ${path}`,
-        { hint: "Run: agentbrain share token init" },
+        { recovery: "Run: agentbrain share token init" },
       );
     }
     throw error;
@@ -343,7 +348,7 @@ export function readShareToken(path: string): string {
     throw new CliError(
       "share_token_invalid",
       `share token in ${path} is too short to be usable`,
-      { hint: "Run: agentbrain share token init --force" },
+      { recovery: "Run: agentbrain share token init --force" },
     );
   }
   return token;
