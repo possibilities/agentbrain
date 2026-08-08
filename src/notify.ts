@@ -24,7 +24,7 @@ export interface NotifySignal {
   terminal?: string;
 }
 
-export const DOCTOR_NOTIFY_GROUP = "agentbrain.doctor";
+const DOCTOR_NOTIFY_GROUP = "agentbrain.doctor";
 
 export function defaultNotifyStatePath(home = homedir()): string {
   return join(home, ".local", "state", "agentbrain", "doctor-notify.json");

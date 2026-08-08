@@ -43,7 +43,7 @@ export function cliEntryPoint(root: string = repositoryRoot()): string {
 }
 
 /** Names come from directory basenames, so they need DNS-label discipline. */
-export function sanitizeLabel(value: string, maxLength = 24): string {
+function sanitizeLabel(value: string, maxLength = 24): string {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
@@ -59,7 +59,7 @@ export function sanitizeLabel(value: string, maxLength = 24): string {
  * git subprocess, and no dependence on what HEAD points at, which is the whole
  * point: an Orca worktree is routinely detached.
  */
-export function isLinkedWorktree(root: string): boolean {
+function isLinkedWorktree(root: string): boolean {
   try {
     return statSync(resolve(root, ".git")).isFile();
   } catch {
@@ -81,7 +81,7 @@ export function worktreeIdentity(root: string): string {
 }
 
 /** `<identity>.agentbrain-share` for a worktree, `agentbrain-share` otherwise. */
-export function shareAppName(identity?: string): string {
+function shareAppName(identity?: string): string {
   const label = identity ? sanitizeLabel(identity, 40) : "";
   return label ? `${label}.${PORTLESS_BASE_NAME}` : PORTLESS_BASE_NAME;
 }

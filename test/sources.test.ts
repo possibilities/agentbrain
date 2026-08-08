@@ -117,7 +117,7 @@ test("source manifests validate versions, stable IDs, payloads, overlays, and cr
       }),
     ),
   );
-  expect(future.sources[0].kind).toBe("future_connector");
+  expect(future.sources[0]?.kind).toBe("future_connector");
 });
 
 test("schedule evaluation admits one catch-up Run and never executes discovery inline", () => {

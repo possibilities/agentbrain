@@ -156,7 +156,7 @@ Full machine-readable card: agentbrain guide --json
 Per-command help: agentbrain help <command> or <command> --help
 `;
 
-export const HELP: Record<string, string> = {
+const HELP: Record<string, string> = {
   stats: `agentbrain stats — database inventory
 
 Usage:

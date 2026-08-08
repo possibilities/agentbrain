@@ -6,8 +6,8 @@ import type { ChunkBlockType } from "./types";
 
 export type { ChunkBlockType } from "./types";
 
-export const DEFAULT_CHUNK_CHARS = 3200;
-export const DEFAULT_CHUNK_OVERLAP = 350;
+const DEFAULT_CHUNK_CHARS = 3200;
+const DEFAULT_CHUNK_OVERLAP = 350;
 export const TEXT_CHUNKER_VERSION = "text-v1";
 export const MARKDOWN_CHUNKER_VERSION = "markdown-block-v1";
 
@@ -148,8 +148,7 @@ export function isMarkdownContent(input: {
   mediaType?: string | null;
   content?: string;
 }): boolean {
-  const mediaType = (input.mediaType ?? "")
-    .split(";", 1)[0]
+  const mediaType = ((input.mediaType ?? "").split(";", 1)[0] ?? "")
     .trim()
     .toLowerCase();
   if (
@@ -159,7 +158,7 @@ export function isMarkdownContent(input: {
   ) {
     return true;
   }
-  const uri = (input.sourceUri ?? "").split(/[?#]/, 1)[0].toLowerCase();
+  const uri = ((input.sourceUri ?? "").split(/[?#]/, 1)[0] ?? "").toLowerCase();
   if (uri.endsWith(".md") || uri.endsWith(".markdown")) return true;
   const sourceType = (input.sourceType ?? "").trim().toLowerCase();
   if (["url", "scraped_url", "tweet", "tweet_article"].includes(sourceType)) {
@@ -493,13 +492,11 @@ function codeFragments(
 ): BlockFragment[] {
   const lines = relativeLineOffsets(block.raw);
   const opening = lines[0]?.text ?? "";
-  const openingMatch = opening.match(/^ {0,3}(`{3,}|~{3,})/);
+  const fence = opening.match(/^ {0,3}(`{3,}|~{3,})/)?.[1];
   const closing = lines.at(-1)?.text ?? "";
   if (
-    openingMatch === null ||
-    !new RegExp(
-      `^ {0,3}${openingMatch[1][0]}{${openingMatch[1].length},}\\s*$`,
-    ).test(closing)
+    fence === undefined ||
+    !new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`).test(closing)
   ) {
     return rawFragments(block, maxBodyChars);
   }
@@ -551,14 +548,17 @@ function codeFragments(
     return {
       type: "code",
       body: `${opening}\n${part.text}\n${closing}`,
-      start: index === 0 ? block.start : block.start + first.start,
-      end: index === parts.length - 1 ? block.end : block.start + last.end,
+      start: index === 0 ? block.start : block.start + (first?.start ?? 0),
+      end:
+        index === parts.length - 1 ? block.end : block.start + (last?.end ?? 0),
       startLine:
-        index === 0 ? block.startLine : block.startLine + first.lineOffset,
+        index === 0
+          ? block.startLine
+          : block.startLine + (first?.lineOffset ?? 0),
       endLine:
         index === parts.length - 1
           ? block.endLine
-          : block.startLine + last.lineOffset,
+          : block.startLine + (last?.lineOffset ?? 0),
     };
   });
 }
@@ -568,8 +568,15 @@ function tableFragments(
   maxBodyChars: number,
 ): BlockFragment[] {
   const lines = relativeLineOffsets(block.raw);
-  if (lines.length < 3) return rawFragments(block, maxBodyChars);
-  const header = `${lines[0].text}\n${lines[1].text}`;
+  const [headerLine, delimiterLine] = lines;
+  if (
+    lines.length < 3 ||
+    headerLine === undefined ||
+    delimiterLine === undefined
+  ) {
+    return rawFragments(block, maxBodyChars);
+  }
+  const header = `${headerLine.text}\n${delimiterLine.text}`;
   const rowLimit = maxBodyChars - codePointLength(header) - 1;
   if (rowLimit < 1) return rawFragments(block, maxBodyChars);
   const rows = lines.slice(2);
@@ -598,11 +605,13 @@ function tableFragments(
     return {
       type: "table",
       body: `${header}\n${part.map((line) => line.text).join("\n")}`,
-      start: index === 0 ? block.start : block.start + first.start,
-      end: block.start + last.end,
+      start: index === 0 ? block.start : block.start + (first?.start ?? 0),
+      end: block.start + (last?.end ?? 0),
       startLine:
-        index === 0 ? block.startLine : block.startLine + first.lineOffset,
-      endLine: block.startLine + last.lineOffset,
+        index === 0
+          ? block.startLine
+          : block.startLine + (first?.lineOffset ?? 0),
+      endLine: block.startLine + (last?.lineOffset ?? 0),
     };
   });
 }
@@ -673,6 +682,7 @@ export function chunkMarkdown(
       const content = [breadcrumb, body].filter(Boolean).join("\n\n");
       const first = selected[0];
       const last = selected.at(-1) ?? first;
+      if (first === undefined || last === undefined) return;
       pending.push({
         start: first.start,
         end: last.end,

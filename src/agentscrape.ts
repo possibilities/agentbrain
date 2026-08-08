@@ -15,22 +15,22 @@ import type {
 } from "./types";
 import { normalizedWebUrl, validateHttpUrl, xStatusId } from "./url";
 
-export const AGENTSCRAPE_DEFAULT_TIMEOUT_MS = 120_000;
-export const AGENTSCRAPE_OUTPUT_MAX_BYTES = 20_000_000;
+const AGENTSCRAPE_DEFAULT_TIMEOUT_MS = 120_000;
+const AGENTSCRAPE_OUTPUT_MAX_BYTES = 20_000_000;
 export const AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_BYTES = 5_000_000;
-export const AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_CODE_POINTS = 5_000_000;
-export const AGENTSCRAPE_RETRY_INITIAL_MS = 1_000;
-export const AGENTSCRAPE_RETRY_MAX_MS = 30_000;
-export const AGENTSCRAPE_RETRY_ENV_MIN_MS = 100;
-export const AGENTSCRAPE_RETRY_CONFIG_MAX_MS = 3_600_000;
-export const AGENTSCRAPE_TIMEOUT_MAX_MS = 600_000;
-export const AGENTSCRAPE_TERMINATION_GRACE_MS = 250;
-export const AGENTSCRAPE_EXTRACTION_SCHEMA_VERSION = "1" as const;
+const AGENTSCRAPE_DEFAULT_MARKDOWN_MAX_CODE_POINTS = 5_000_000;
+const AGENTSCRAPE_RETRY_INITIAL_MS = 1_000;
+const AGENTSCRAPE_RETRY_MAX_MS = 30_000;
+const AGENTSCRAPE_RETRY_ENV_MIN_MS = 100;
+const AGENTSCRAPE_RETRY_CONFIG_MAX_MS = 3_600_000;
+const AGENTSCRAPE_TIMEOUT_MAX_MS = 600_000;
+const AGENTSCRAPE_TERMINATION_GRACE_MS = 250;
+const AGENTSCRAPE_EXTRACTION_SCHEMA_VERSION = "1" as const;
 // A link list is a normal page, not a pathological one: two awesome-list
 // submissions were rejected permanently at 257 relations against a limit of
 // 256. The limit exists to bound one envelope, not to judge how many links a
 // page may legitimately have, so it sits well above real link lists.
-export const AGENTSCRAPE_DEFAULT_MAX_RELATIONS = 2048;
+const AGENTSCRAPE_DEFAULT_MAX_RELATIONS = 2048;
 
 export interface ScrapedLink {
   success: true;

@@ -74,7 +74,8 @@ export async function runSourceCommands(
   }
   if (subcommand === "show") {
     const opts = parseOptions(args, {});
-    if (opts._.length !== 1) {
+    const [sourceId] = opts._;
+    if (opts._.length !== 1 || sourceId === undefined) {
       throw new CliError(
         "bad_source_id",
         "sources show requires exactly one stable source ID",
@@ -83,7 +84,7 @@ export async function runSourceCommands(
     }
     const cache = new ResearchCache(dbPath);
     try {
-      const data = showSource(cache.db, opts._[0]);
+      const data = showSource(cache.db, sourceId);
       writeByFormat(
         "sources show",
         data,
@@ -129,7 +130,11 @@ export async function runSourceCommands(
       "wait-poll-ms": { type: "number", default: 250 },
     });
     const due = optBoolean(opts, "due");
-    if (opts._.length > 1 || (!due && opts._.length !== 1)) {
+    const [namedSource] = opts._;
+    if (
+      opts._.length > 1 ||
+      (!due && (opts._.length !== 1 || namedSource === undefined))
+    ) {
       throw new CliError(
         "bad_source_sync",
         "sources sync requires one stable source ID, optionally with --due, or --due by itself",
@@ -182,7 +187,7 @@ export async function runSourceCommands(
     try {
       const registry = new SourceRegistry(store);
       admissions =
-        due && opts._.length === 0
+        namedSource === undefined
           ? registry.syncDueSources({
               dryRun,
               limit: positiveInteger(
@@ -192,7 +197,7 @@ export async function runSourceCommands(
             })
           : [
               registry.syncSource({
-                sourceId: opts._[0],
+                sourceId: namedSource,
                 dueOnly: due,
                 dryRun,
               }),
@@ -283,7 +288,8 @@ export async function runSourceCommands(
       actor: { type: "string", default: "operator" },
       reason: { type: "string" },
     });
-    if (opts._.length !== 1) {
+    const [sourceId] = opts._;
+    if (opts._.length !== 1 || sourceId === undefined) {
       throw new CliError(
         "bad_source_id",
         `sources ${subcommand} requires exactly one stable source ID`,
@@ -293,7 +299,7 @@ export async function runSourceCommands(
     const store = new ResearchStore(dbPath);
     try {
       const input = {
-        sourceId: opts._[0],
+        sourceId,
         actor: optString(opts, "actor"),
         reason: optString(opts, "reason"),
       };

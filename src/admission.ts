@@ -409,7 +409,7 @@ export function canonicalSubmissionIntent(
   return JSON.stringify(stableValue(intent));
 }
 
-export function submissionIntentHash(intent: DurableSubmissionIntent): string {
+function submissionIntentHash(intent: DurableSubmissionIntent): string {
   return createHash("sha256")
     .update(canonicalSubmissionIntent(intent))
     .digest("hex");
@@ -958,7 +958,8 @@ function ensureCandidateOutcome(
       `candidate ${candidate.candidateId} has duplicate durable outcomes`,
     );
   }
-  if (matching.length === 0) {
+  const [durable] = matching;
+  if (durable === undefined) {
     store.db
       .query(
         `INSERT INTO provenance(
@@ -972,7 +973,7 @@ function ensureCandidateOutcome(
       );
     return true;
   }
-  const previous = matching[0].metadata;
+  const previous = durable.metadata;
   if (previous.disposition !== candidate.disposition) {
     throw recoveryAdmissionError(
       "recovery_identity_conflict",
@@ -989,10 +990,7 @@ function ensureCandidateOutcome(
   ].sort();
   store.db
     .query("UPDATE provenance SET raw_metadata=? WHERE id=?")
-    .run(
-      JSON.stringify({ ...base, generation_ids: generations }),
-      matching[0].id,
-    );
+    .run(JSON.stringify({ ...base, generation_ids: generations }), durable.id);
   return false;
 }
 

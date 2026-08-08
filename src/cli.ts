@@ -294,28 +294,13 @@ async function runParsed(
   }
 
   if (READ_COMMANDS.has(command)) {
+    // Options are parsed before the connection is opened so an argument fault
+    // exits 2 whether or not a database exists. Opening first made every bad
+    // flag on a missing database report db_not_found and exit 1 instead.
+    const run = planReadCommand(command, parsed.commandArgv, parsed.globals);
     const cache = new ResearchCache(parsed.globals.dbPath);
     try {
-      switch (command) {
-        case "stats":
-          runStats(cache, parsed.commandArgv, parsed.globals);
-          break;
-        case "search":
-          runSearch(cache, parsed.commandArgv, parsed.globals);
-          break;
-        case "get":
-          runGet(cache, parsed.commandArgv, parsed.globals);
-          break;
-        case "tags":
-          runTags(cache, parsed.commandArgv, parsed.globals);
-          break;
-        case "context":
-          runContext(cache, parsed.commandArgv, parsed.globals);
-          break;
-        case "doctor":
-          runDoctor(cache, parsed.commandArgv, parsed.globals);
-          break;
-      }
+      run(cache);
     } finally {
       cache.close();
     }
@@ -386,11 +371,35 @@ async function runParsed(
   );
 }
 
-function runStats(
-  cache: ResearchCache,
+type ReadCommand = (cache: ResearchCache) => void;
+
+function planReadCommand(
+  command: string,
   argv: string[],
   globals: GlobalOptions,
-): void {
+): ReadCommand {
+  switch (command) {
+    case "stats":
+      return runStats(argv, globals);
+    case "search":
+      return runSearch(argv, globals);
+    case "get":
+      return runGet(argv, globals);
+    case "tags":
+      return runTags(argv, globals);
+    case "context":
+      return runContext(argv, globals);
+    case "doctor":
+      return runDoctor(argv, globals);
+    default:
+      throw new CliError(
+        "unimplemented_command",
+        `command '${command}' is not implemented`,
+      );
+  }
+}
+
+function runStats(argv: string[], globals: GlobalOptions): ReadCommand {
   const opts = parseOptions(argv, {
     "top-tags": { type: "number", default: 25 },
     recent: { type: "number", default: 5 },
@@ -401,18 +410,16 @@ function runStats(
       `stats does not accept positional args: ${opts._.join(" ")}`,
       { exitCode: 2 },
     );
-  const data = cache.stats({
-    topTags: optNumber(opts, "top-tags") ?? 25,
-    recent: optNumber(opts, "recent") ?? 5,
-  });
-  writeByFormat("stats", data, globals, humanStats);
+  return (cache) => {
+    const data = cache.stats({
+      topTags: optNumber(opts, "top-tags") ?? 25,
+      recent: optNumber(opts, "recent") ?? 5,
+    });
+    writeByFormat("stats", data, globals, humanStats);
+  };
 }
 
-function runSearch(
-  cache: ResearchCache,
-  argv: string[],
-  globals: GlobalOptions,
-): void {
+function runSearch(argv: string[], globals: GlobalOptions): ReadCommand {
   const opts = parseOptions(argv, {
     query: { type: "string" },
     mode: { type: "string", default: "any" },
@@ -432,31 +439,29 @@ function runSearch(
   });
   const query = optString(opts, "query") ?? opts._.join(" ");
   const mode = parseSearchMode(optString(opts, "mode") ?? "any");
-  const data = cache.search({
-    query,
-    mode,
-    limit: optNumber(opts, "limit"),
-    offset: optNumber(opts, "offset"),
-    tag: optString(opts, "tag"),
-    sourceType: optString(opts, "source-type"),
-    contentKind: optString(opts, "content-kind") as ContentKind | undefined,
-    collection: optString(opts, "collection"),
-    source: optString(opts, "source"),
-    resourceKind: optString(opts, "resource-kind"),
-    sensitivity: optString(opts, "sensitivity") as Sensitivity | undefined,
-    date: optString(opts, "date"),
-    dateFrom: optString(opts, "date-from"),
-    dateTo: optString(opts, "date-to"),
-    localPath: optString(opts, "local-path"),
-  });
-  writeByFormat("search", data, globals, humanSearch, { jsonl: searchJsonl });
+  return (cache) => {
+    const data = cache.search({
+      query,
+      mode,
+      limit: optNumber(opts, "limit"),
+      offset: optNumber(opts, "offset"),
+      tag: optString(opts, "tag"),
+      sourceType: optString(opts, "source-type"),
+      contentKind: optString(opts, "content-kind") as ContentKind | undefined,
+      collection: optString(opts, "collection"),
+      source: optString(opts, "source"),
+      resourceKind: optString(opts, "resource-kind"),
+      sensitivity: optString(opts, "sensitivity") as Sensitivity | undefined,
+      date: optString(opts, "date"),
+      dateFrom: optString(opts, "date-from"),
+      dateTo: optString(opts, "date-to"),
+      localPath: optString(opts, "local-path"),
+    });
+    writeByFormat("search", data, globals, humanSearch, { jsonl: searchJsonl });
+  };
 }
 
-function runGet(
-  cache: ResearchCache,
-  argv: string[],
-  globals: GlobalOptions,
-): void {
+function runGet(argv: string[], globals: GlobalOptions): ReadCommand {
   const opts = parseOptions(argv, {
     "document-id": { type: "number" },
     "chunk-id": { type: "number" },
@@ -484,30 +489,29 @@ function runGet(
   }
   const chunkId = optNumber(opts, "chunk-id");
   if (chunkId !== undefined) {
-    const data = cache.getChunk(assertInteger(chunkId, "chunk-id"));
-    writeByFormat("get", data, globals, humanChunk);
-    return;
+    const id = assertInteger(chunkId, "chunk-id");
+    return (cache) => {
+      writeByFormat("get", cache.getChunk(id), globals, humanChunk);
+    };
   }
   const charLimit = optBoolean(opts, "full")
     ? null
     : assertInteger(optNumber(opts, "char-limit") ?? 20000, "char-limit");
   const documentId = optNumber(opts, "document-id");
-  const data = cache.getDocument({
+  const selector = {
     documentId:
       documentId === undefined
         ? undefined
         : assertInteger(documentId, "document-id"),
     sourceUri: optString(opts, "source-uri"),
     charLimit,
-  });
-  writeByFormat("get", data, globals, humanDocument);
+  };
+  return (cache) => {
+    writeByFormat("get", cache.getDocument(selector), globals, humanDocument);
+  };
 }
 
-function runTags(
-  cache: ResearchCache,
-  argv: string[],
-  globals: GlobalOptions,
-): void {
+function runTags(argv: string[], globals: GlobalOptions): ReadCommand {
   const opts = parseOptions(argv, { limit: { type: "number", default: 100 } });
   if (opts._.length > 0)
     throw new CliError(
@@ -515,19 +519,13 @@ function runTags(
       `tags does not accept positional args: ${opts._.join(" ")}`,
       { exitCode: 2 },
     );
-  writeByFormat(
-    "tags",
-    cache.tags(optNumber(opts, "limit")),
-    globals,
-    humanTags,
-  );
+  const limit = optNumber(opts, "limit");
+  return (cache) => {
+    writeByFormat("tags", cache.tags(limit), globals, humanTags);
+  };
 }
 
-function runContext(
-  cache: ResearchCache,
-  argv: string[],
-  globals: GlobalOptions,
-): void {
+function runContext(argv: string[], globals: GlobalOptions): ReadCommand {
   const opts = parseOptions(argv, {
     query: { type: "string" },
     limit: { type: "number", default: 6 },
@@ -545,23 +543,25 @@ function runContext(
     "local-path": { type: "string" },
   });
   const query = optString(opts, "query") ?? opts._.join(" ");
-  const data = cache.context({
-    query,
-    limit: optNumber(opts, "limit"),
-    maxChars: optNumber(opts, "max-chars"),
-    tag: optString(opts, "tag"),
-    sourceType: optString(opts, "source-type"),
-    contentKind: optString(opts, "content-kind") as ContentKind | undefined,
-    collection: optString(opts, "collection"),
-    source: optString(opts, "source"),
-    resourceKind: optString(opts, "resource-kind"),
-    sensitivity: optString(opts, "sensitivity") as Sensitivity | undefined,
-    date: optString(opts, "date"),
-    dateFrom: optString(opts, "date-from"),
-    dateTo: optString(opts, "date-to"),
-    localPath: optString(opts, "local-path"),
-  });
-  writeByFormat("context", data, globals, humanContext);
+  return (cache) => {
+    const data = cache.context({
+      query,
+      limit: optNumber(opts, "limit"),
+      maxChars: optNumber(opts, "max-chars"),
+      tag: optString(opts, "tag"),
+      sourceType: optString(opts, "source-type"),
+      contentKind: optString(opts, "content-kind") as ContentKind | undefined,
+      collection: optString(opts, "collection"),
+      source: optString(opts, "source"),
+      resourceKind: optString(opts, "resource-kind"),
+      sensitivity: optString(opts, "sensitivity") as Sensitivity | undefined,
+      date: optString(opts, "date"),
+      dateFrom: optString(opts, "date-from"),
+      dateTo: optString(opts, "date-to"),
+      localPath: optString(opts, "local-path"),
+    });
+    writeByFormat("context", data, globals, humanContext);
+  };
 }
 
 async function runJobs(
@@ -811,6 +811,13 @@ function runBackup(
     );
   }
   const target = namedTarget ?? opts._[0];
+  if (target === undefined) {
+    throw new CliError(
+      "bad_backup_path",
+      `backup ${subcommand} requires exactly one backup path`,
+      { exitCode: 2 },
+    );
+  }
   const artifactRoot = optString(opts, "artifact-root");
 
   if (subcommand === "create") {
@@ -1008,7 +1015,15 @@ async function runRecovery(
       { exitCode: 2 },
     );
   }
-  const generation = readRecoveryGeneration(named ?? opts._[0], {
+  const descriptor = named ?? opts._[0];
+  if (descriptor === undefined) {
+    throw new CliError(
+      "bad_recovery_manifest",
+      "recovery import requires exactly one frozen generation descriptor",
+      { exitCode: 2 },
+    );
+  }
+  const generation = readRecoveryGeneration(descriptor, {
     artifactRoots: optStrings(opts, "artifact-root"),
   });
   if (dryRun) {
@@ -1069,11 +1084,7 @@ function withStrandedNotice(
   };
 }
 
-function runDoctor(
-  cache: ResearchCache,
-  argv: string[],
-  globals: GlobalOptions,
-): void {
+function runDoctor(argv: string[], globals: GlobalOptions): ReadCommand {
   const opts = parseOptions(argv, {
     notify: { type: "boolean", default: false },
   });
@@ -1083,15 +1094,18 @@ function runDoctor(
       "doctor accepts no positional arguments",
       { exitCode: 2 },
     );
-  const data = doctor(cache);
-  const report = opts.notify === true ? withStrandedNotice(cache, data) : data;
-  writeByFormat(
-    "doctor",
-    report,
-    globals,
-    (value) => `${JSON.stringify(value, null, 2)}\n`,
-  );
-  if (!data.healthy) process.exitCode = 1;
+  const notify = opts.notify === true;
+  return (cache) => {
+    const data = doctor(cache);
+    const report = notify ? withStrandedNotice(cache, data) : data;
+    writeByFormat(
+      "doctor",
+      report,
+      globals,
+      (value) => `${JSON.stringify(value, null, 2)}\n`,
+    );
+    if (!data.healthy) process.exitCode = 1;
+  };
 }
 
 async function runWorkerCommand(
@@ -1238,7 +1252,7 @@ function parseIngestRequest(
       { exitCode: 2, recovery: "Use auto, url, file, directory, or text." },
     );
   }
-  const source = opts._[0].trim();
+  const source = (opts._[0] ?? "").trim();
   if (!source) {
     throw new CliError("bad_source", "ingest source must not be empty", {
       exitCode: 2,

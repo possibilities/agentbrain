@@ -7,7 +7,7 @@ function escapeRegExp(value: string): string {
 }
 
 /** Remove private filesystem locations while retaining a useful error class. */
-export function sanitizePrivatePaths(
+function sanitizePrivatePaths(
   value: unknown,
   privatePaths: readonly string[] = [],
 ): string {

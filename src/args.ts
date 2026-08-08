@@ -52,6 +52,7 @@ export function parseTopLevel(
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === undefined) continue;
     if (arg === "--") {
       rest.push(...argv.slice(i + 1));
       break;
@@ -80,7 +81,12 @@ export function parseTopLevel(
       continue;
     }
     if (arg === "--format") {
-      format = normalizeFormat(argv[++i]);
+      const value = argv[++i];
+      if (value === undefined)
+        throw new CliError("missing_value", "--format requires a value", {
+          exitCode: 2,
+        });
+      format = normalizeFormat(value);
       continue;
     }
     if (arg.startsWith("--format=")) {
@@ -134,6 +140,7 @@ export function parseOptions(
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === undefined) continue;
     if (arg === "--") {
       out._.push(...argv.slice(i + 1));
       break;
@@ -154,12 +161,13 @@ export function parseOptions(
     if (spec.type === "boolean") {
       value = eq === -1 ? true : parseBoolean(arg.slice(eq + 1), name);
     } else {
-      value = eq === -1 ? argv[++i] : arg.slice(eq + 1);
-      if (value === undefined) {
+      const supplied = eq === -1 ? argv[++i] : arg.slice(eq + 1);
+      if (supplied === undefined) {
         throw new CliError("missing_value", `--${name} requires a value`, {
           exitCode: 2,
         });
       }
+      value = supplied;
     }
     const parsed =
       spec.type === "number" ? parseNumber(String(value), name) : value;

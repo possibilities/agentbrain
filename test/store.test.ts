@@ -158,7 +158,7 @@ test("writable store migrates v1 additively and preserves IDs and FTS", () => {
 
   const cache = new ResearchCache(path);
   expect(
-    cache.search({ query: "searchable", mode: "any" }).results[0].document_id,
+    cache.search({ query: "searchable", mode: "any" }).results[0]?.document_id,
   ).toBe(7);
   // Legacy document 7 gains a durable resource whose exact submitted URI is
   // preserved as a first-class alias without inventing a normalized identity.

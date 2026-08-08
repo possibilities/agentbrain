@@ -25,7 +25,7 @@ import type { ResearchStore } from "./store";
 import type { FailureClass, Job, Run } from "./types";
 import { normalizedWebUrl, xStatusId } from "./url";
 
-export const X_SOURCE_OVERLAP_ITEMS = 5;
+const X_SOURCE_OVERLAP_ITEMS = 5;
 const MAX_SOURCE_WARNINGS = 100;
 const DEFAULT_SOURCE_MAX_BYTES = 5_000_000;
 

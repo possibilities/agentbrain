@@ -3,8 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { CliError } from "./errors";
 
-export const DEFAULT_DATABASE_DISPLAY = "~/.local/share/agentbrain/research.db";
-export const LEGACY_DATABASE_DISPLAY = "~/.hermes/research-cache/research.db";
+const DEFAULT_DATABASE_DISPLAY = "~/.local/share/agentbrain/research.db";
 
 interface PathState {
   exists: boolean;

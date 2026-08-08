@@ -23,8 +23,8 @@ import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { sanitizeArtifactError } from "./sanitize";
 import type { PromotedUrlExtraction } from "./types";
 
-export const DEFAULT_MAX_ARTIFACT_BYTES = 50_000_000;
-export const URL_EXTRACTION_RECORD_MAX_BYTES = 2_000_000;
+const DEFAULT_MAX_ARTIFACT_BYTES = 50_000_000;
+const URL_EXTRACTION_RECORD_MAX_BYTES = 2_000_000;
 export const PRIVATE_DIRECTORY_MODE = 0o700;
 export const PRIVATE_FILE_MODE = 0o600;
 export const SHA256_DIGEST_PATTERN = /^[a-f0-9]{64}$/;

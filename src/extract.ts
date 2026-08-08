@@ -8,7 +8,7 @@ import { cleanText } from "./text";
 
 export const DEFAULT_MAX_BYTES = 5_000_000;
 
-export const TEXT_EXTENSIONS = new Set([
+const TEXT_EXTENSIONS = new Set([
   ".txt",
   ".md",
   ".markdown",
@@ -64,7 +64,7 @@ export const TEXT_EXTENSIONS = new Set([
   ".vue",
   ".svelte",
 ]);
-export const DOCUMENT_EXTENSIONS = new Set([".pdf", ".docx", ".epub"]);
+const DOCUMENT_EXTENSIONS = new Set([".pdf", ".docx", ".epub"]);
 export const DEFAULT_EXTENSIONS = new Set([
   ...TEXT_EXTENSIONS,
   ...DOCUMENT_EXTENSIONS,
@@ -101,10 +101,6 @@ export function looksSensitiveComponent(name: string): boolean {
     SENSITIVE_DIRECTORY_NAMES.has(name.toLowerCase()) ||
     SECRET_PATTERNS.some((pattern) => pattern.test(name))
   );
-}
-
-export function looksSecret(path: string): boolean {
-  return looksSensitiveComponent(basename(path));
 }
 
 export function isProbablyBinary(data: Uint8Array): boolean {
@@ -187,7 +183,9 @@ export function extractHtmlText(html: string): {
 } {
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   const title = titleMatch
-    ? cleanText(decodeHtmlEntities(titleMatch[1].replace(/<[^>]+>/g, " ")))
+    ? cleanText(
+        decodeHtmlEntities((titleMatch[1] ?? "").replace(/<[^>]+>/g, " ")),
+      )
     : null;
   const withoutNoise = html.replace(
     /<(script|style|noscript|svg)\b[^>]*>[\s\S]*?<\/\1>/gi,
@@ -269,8 +267,10 @@ export function extractEpubBytes(data: Uint8Array, maxBytes: number): string {
     maxBytes,
   );
   const parts: string[] = [];
-  for (const name of Object.keys(files).sort()) {
-    const extracted = extractHtmlText(decodeBytes(files[name])).content;
+  for (const [, bytes] of Object.entries(files).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  )) {
+    const extracted = extractHtmlText(decodeBytes(bytes)).content;
     if (extracted) parts.push(extracted);
   }
   return cleanText(parts.join("\n\n"));

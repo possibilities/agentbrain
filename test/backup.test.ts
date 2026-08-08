@@ -381,7 +381,7 @@ test("verification detects changed DB bytes, Artifact bytes, and references", ()
   const databasePath = join(backupPath, BACKUP_DATABASE_FILE);
   const originalDatabase = readFileSync(databasePath);
   const changedDatabase = Buffer.from(originalDatabase);
-  changedDatabase[0] = changedDatabase[0] ^ 0xff;
+  changedDatabase[0] = (changedDatabase[0] ?? 0) ^ 0xff;
   writeFileSync(databasePath, changedDatabase);
   const corruptDatabase = verifyBackup(backupPath, { artifactRoot });
   expect(corruptDatabase.verified).toBe(false);
@@ -399,7 +399,10 @@ test("verification detects changed DB bytes, Artifact bytes, and references", ()
   const manifestPath = join(backupPath, BACKUP_MANIFEST_FILE);
   const originalManifest = readFileSync(manifestPath, "utf8");
   const manifest = JSON.parse(originalManifest) as BackupManifest;
-  manifest.artifact_references[0].artifact_role = "wrong_role";
+  const reference = manifest.artifact_references[0];
+  if (reference === undefined)
+    throw new Error("fixture manifest has no artifact reference");
+  reference.artifact_role = "wrong_role";
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   const changedReferences = verifyBackup(backupPath, { artifactRoot });
   expect(changedReferences.verified).toBe(false);

@@ -158,6 +158,7 @@ function makeFixture(options: FixtureOptions = {}): Fixture {
   let observationSequence = 0;
   for (const [secretaryIndex, candidateIndex] of secretaryIndexes.entries()) {
     const row = rows[candidateIndex];
+    if (row === undefined) throw new Error("fixture row missing");
     const count = secretaryIndex < 32 ? 3 : 2;
     const observations = Array.from({ length: count }, () => {
       observationSequence += 1;
@@ -722,8 +723,8 @@ test("disposable rehearsal drives the frozen generation through the installed CL
     Record<string, unknown>
   >;
   expect(searchResults.length).toBeGreaterThan(0);
-  expect(searchResults[0].collections).toContain("legacy-links");
-  const documentId = searchResults[0].document_id as number;
+  expect(searchResults[0]?.collections).toContain("legacy-links");
+  const documentId = searchResults[0]?.document_id as number;
 
   const context = runCli(
     [
@@ -740,7 +741,7 @@ test("disposable rehearsal drives the frozen generation through the installed CL
   expect(context.exitCode, context.stderr).toBe(0);
   const hits = jsonData(context).hits as Array<Record<string, unknown>>;
   expect(hits.length).toBeGreaterThan(0);
-  expect(String(hits[0].citation).length).toBeGreaterThan(0);
+  expect(String(hits[0]?.citation).length).toBeGreaterThan(0);
 
   // Phase 3: verified post-import snapshot restores in isolation, proving
   // database, artifact references, and retained content survive a restore.

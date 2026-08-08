@@ -152,7 +152,7 @@ function makeTempDb(name: string, withLinks: boolean): string {
       chunk_index: 0,
       start_char: 0,
       end_char: 62,
-      content: docs[0].content,
+      content: docs[0]?.content ?? "",
     },
     {
       id: 12,
@@ -160,7 +160,7 @@ function makeTempDb(name: string, withLinks: boolean): string {
       chunk_index: 0,
       start_char: 0,
       end_char: 30,
-      content: docs[1].content,
+      content: docs[1]?.content ?? "",
     },
     {
       id: 13,
@@ -168,7 +168,7 @@ function makeTempDb(name: string, withLinks: boolean): string {
       chunk_index: 0,
       start_char: 0,
       end_char: 46,
-      content: docs[2].content,
+      content: docs[2]?.content ?? "",
     },
   ];
 
@@ -394,6 +394,31 @@ test("json error envelope works with spaced --format json", () => {
   expect(payload.error.code).toBe("db_not_found");
   expect(decode(proc.stderr)).toBe("");
 });
+
+// A read command's options are parsed before its connection is opened, so an
+// argument fault reports itself as one whether or not a database exists.
+// Opening first made every bad flag on a missing database look like
+// db_not_found and exit 1.
+test("read-command argument faults exit 2 with or without a database", () => {
+  const faults: Array<[string[], string]> = [
+    [["search", "anything", "--bogus-flag"], "unknown_option"],
+    [["tags", "unexpected-positional"], "unexpected_args"],
+    [["stats", "extra"], "unexpected_args"],
+    [["get", "--document-id", "1", "--chunk-id", "2"], "bad_selector"],
+    [["doctor", "positional"], "unexpected_args"],
+    [["context", "q", "--nope"], "unknown_option"],
+  ];
+  const present = makeTempDb("argument-fault", false);
+  for (const [args, code] of faults) {
+    for (const db of ["/definitely/missing.db", present]) {
+      const label = `${args.join(" ")} against ${db}`;
+      const proc = runCli([...args, "--db", db, "--json"]);
+      expect(proc.exitCode, label).toBe(2);
+      const payload = JSON.parse(decode(proc.stdout).trim());
+      expect(payload.error.code, label).toBe(code);
+    }
+  }
+}, 30_000);
 
 test("default writes use the private Agentbrain database namespace", () => {
   const dir = mkdtempSync(join(tmpdir(), "agentbrain-default-db-"));
@@ -1148,7 +1173,7 @@ test("delete keeps Artifact bytes another Resource still references", () => {
     [
       "delete",
       "--document-id",
-      String(docs[0].document_id),
+      String(docs[0]?.document_id),
       "--confirm",
       "delete",
       "--json",

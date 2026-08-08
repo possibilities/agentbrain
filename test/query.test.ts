@@ -278,7 +278,7 @@ test("typed retrieval filters, deduplicates resources, and keeps relations separ
       query: "rankingterm",
       mode: "any",
       sensitivity: "sensitive",
-    }).results[0].relations,
+    }).results[0]?.relations,
   ).toEqual([]);
 
   const context = cache.context({
@@ -334,12 +334,12 @@ test("Markdown retrieval includes heading breadcrumbs without changing text toke
   expect(context.hits[0]).toMatchObject({
     document_id: markdown.document_id,
   });
-  expect(context.hits[0].content).toStartWith(
+  expect(context.hits[0]?.content).toStartWith(
     "# Parent Breadcrumb\n## Child Section\n\n",
   );
   expect(
     cache.search({ query: "nonmarkdownexacttoken", mode: "all" }).results[0]
-      .document_id,
+      ?.document_id,
   ).toBe(text.document_id);
   cache.close();
 });

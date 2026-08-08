@@ -164,9 +164,9 @@ function createRecoveryOnlineRun(store: ResearchStore): {
       .run(
         runId,
         String(index).padStart(16, "0"),
-        originalJobs[index],
-        jobs[index],
-        resources[index],
+        originalJobs[index] ?? 0,
+        jobs[index] ?? 0,
+        resources[index] ?? 0,
         T0.toISOString(),
       );
   }
@@ -1096,8 +1096,8 @@ test("shared scoped failures pause sibling claims", async () => {
   expect(
     store.db.query("SELECT id, state FROM jobs ORDER BY id").all(),
   ).toEqual([
-    { id: jobs[0].job.id, state: "blocked" },
-    { id: jobs[1].job.id, state: "queued" },
+    { id: jobs[0]?.job.id, state: "blocked" },
+    { id: jobs[1]?.job.id, state: "queued" },
   ]);
   expect(
     store.db.query("SELECT state FROM runs WHERE id=?").get(runId),
@@ -1210,7 +1210,7 @@ test("recovery online shared failure pauses before the sibling claim", async () 
   });
   expect(blindReplay).toMatchObject({ claimed: 0, completed: 0, failed: 0 });
 
-  store.retryJob({ jobId: recovery.jobs[0], now: T0 });
+  store.retryJob({ jobId: recovery.jobs[0] ?? 0, now: T0 });
   const resumed = await runWorker(store, {
     once: true,
     workerId: "recovery-online-shared-resumed",

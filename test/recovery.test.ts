@@ -168,6 +168,7 @@ function makeFixture(options: FixtureOptions = {}): Fixture {
   let observationSequence = 0;
   for (const [secretaryIndex, candidateIndex] of secretaryIndexes.entries()) {
     const row = rows[candidateIndex];
+    if (row === undefined) throw new Error("fixture row missing");
     const count = secretaryIndex < 32 ? 3 : 2;
     const observations = Array.from({ length: count }, () => {
       observationSequence += 1;
@@ -740,6 +741,7 @@ test("recovery admission fails closed on an exact identity conflict", () => {
   const { store, artifacts } = directAdmissionFixture();
   const generation = directGeneration();
   const candidate = generation.candidates[0];
+  if (candidate === undefined) throw new Error("fixture candidate missing");
   const timestamp = "2026-07-19T00:00:00.000Z";
   const resourceId = Number(
     store.db
@@ -823,6 +825,7 @@ test("recovery admission fails closed on an idempotency conflict", () => {
   const { store, artifacts } = directAdmissionFixture();
   const generation = directGeneration({ disposition: "review_fetch" });
   const candidate = generation.candidates[0];
+  if (candidate === undefined) throw new Error("fixture candidate missing");
   store.enqueueJob({
     idempotencyKey: `${RECOVERY_JOB_PREFIX}${candidate.candidateId}`,
     kind: "url",
@@ -916,9 +919,12 @@ test("recovery admission run-checkpoint guard rejects a mixed generation", () =>
 test("generation validation fails closed for identity, paths, hashes, and private data", () => {
   const duplicate = makeFixture({
     mutateRows(rows) {
-      rows[1].candidate_id = rows[0].candidate_id;
-      rows[1].source_uri = rows[0].source_uri;
-      rows[1].normalized_uri = rows[0].normalized_uri;
+      const [first, second] = rows;
+      if (first === undefined || second === undefined)
+        throw new Error("fixture needs two rows");
+      second.candidate_id = first.candidate_id;
+      second.source_uri = first.source_uri;
+      second.normalized_uri = first.normalized_uri;
     },
   });
   expect(() =>
@@ -928,7 +934,7 @@ test("generation validation fails closed for identity, paths, hashes, and privat
   ).toThrow("duplicate exact outcomes");
 
   const changed = makeFixture();
-  writeFileSync(changed.artifactPaths[0], "changed bytes");
+  writeFileSync(changed.artifactPaths[0] ?? "", "changed bytes");
   expect(() =>
     readRecoveryGeneration(changed.descriptor, {
       artifactRoots: [changed.artifactRoot],
@@ -943,8 +949,14 @@ test("generation validation fails closed for identity, paths, hashes, and privat
   ).toThrow("missing Linkctl frontmatter");
 
   const linked = makeFixture();
-  unlinkSync(linked.artifactPaths[0]);
-  symlinkSync(linked.artifactPaths[1], linked.artifactPaths[0]);
+  const [linkTarget, linkSource] = [
+    linked.artifactPaths[0],
+    linked.artifactPaths[1],
+  ];
+  if (linkTarget === undefined || linkSource === undefined)
+    throw new Error("fixture needs two artifact paths");
+  unlinkSync(linkTarget);
+  symlinkSync(linkSource, linkTarget);
   expect(() =>
     readRecoveryGeneration(linked.descriptor, {
       artifactRoots: [linked.artifactRoot],
@@ -953,7 +965,7 @@ test("generation validation fails closed for identity, paths, hashes, and privat
 
   const unsafe = makeFixture({
     mutateRows(rows, root) {
-      const artifact = (rows[0].reconciliation as Record<string, unknown>)
+      const artifact = (rows[0]?.reconciliation as Record<string, unknown>)
         .artifact as Record<string, unknown>;
       artifact.path = join(root, "outside.md");
     },
@@ -974,7 +986,10 @@ test("generation validation fails closed for identity, paths, hashes, and privat
       const observations = approved.observations as Array<
         Record<string, unknown>
       >;
-      observations[0].sender_kind = "bot";
+      const observation = observations[0];
+      if (observation === undefined)
+        throw new Error("fixture observation missing");
+      observation.sender_kind = "bot";
     },
   });
   expect(() =>
@@ -985,7 +1000,7 @@ test("generation validation fails closed for identity, paths, hashes, and privat
 
   const privateData = makeFixture({
     mutateRows(rows) {
-      const secretary = (rows[0].provenance as Record<string, unknown>)
+      const secretary = (rows[0]?.provenance as Record<string, unknown>)
         .agentbot_secretary as Record<string, unknown>;
       secretary.message_body = "PRIVATE MESSAGE BODY";
     },

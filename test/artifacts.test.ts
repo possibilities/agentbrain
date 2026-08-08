@@ -316,8 +316,8 @@ test("reconciliation reports and safely repairs stale staging, orphans, and mode
     deleteOrphans: true,
     orphanRetentionMs: 1_000,
   });
-  expect(cleaned.staleStaging[0].removed).toBe(true);
-  expect(cleaned.promotedOrphans[0].removed).toBe(true);
+  expect(cleaned.staleStaging[0]?.removed).toBe(true);
+  expect(cleaned.promotedOrphans[0]?.removed).toBe(true);
   expect(lstatSync(artifacts.root).isDirectory()).toBe(true);
   expect(existsSync(stagingPath)).toBe(false);
   expect(existsSync(artifacts.pathFor(orphan.contentDigest))).toBe(false);
@@ -339,7 +339,7 @@ test("reconciliation never deletes an orphan whose bytes mismatch its address", 
       detail: "content-addressed Artifact failed SHA-256 verification",
     },
   ]);
-  expect(report.promotedOrphans[0].removed).toBe(false);
+  expect(report.promotedOrphans[0]?.removed).toBe(false);
   expect(existsSync(artifacts.pathFor(stored.contentDigest))).toBe(true);
 });
 

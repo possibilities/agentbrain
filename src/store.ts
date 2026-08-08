@@ -1012,7 +1012,7 @@ function isExpired(leaseExpiresAt: string, now: Date): boolean {
   return Date.parse(leaseExpiresAt) <= now.getTime();
 }
 
-export function pythonStyleTagJson(tags: string[]): string {
+function pythonStyleTagJson(tags: string[]): string {
   return `[${tags.map((tag) => JSON.stringify(tag)).join(", ")}]`;
 }
 

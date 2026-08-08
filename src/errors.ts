@@ -15,7 +15,3 @@ export class CliError extends Error {
     this.recovery = options.recovery;
   }
 }
-
-export function assertNever(value: never): never {
-  throw new Error(`unreachable value: ${String(value)}`);
-}

@@ -2,7 +2,6 @@ import {
   type Envelope,
   type ErrorEnvelope,
   type GlobalOptions,
-  type OutputFormat,
   SCHEMA_VERSION,
 } from "./types";
 
@@ -81,15 +80,9 @@ export function formatList(
     Math.max(col.length, ...rows.map((row) => String(row[col] ?? "").length)),
   );
   const render = (values: string[]) =>
-    values.map((value, i) => value.padEnd(widths[i])).join("  ");
+    values.map((value, i) => value.padEnd(widths[i] ?? 0)).join("  ");
   const lines = [render(columns), render(widths.map((w) => "─".repeat(w)))];
   for (const row of rows)
     lines.push(render(columns.map((col) => String(row[col] ?? ""))));
   return `${lines.join("\n")}\n`;
-}
-
-export function formatMaybeJsonHint(format: OutputFormat): string {
-  return format === "human"
-    ? "\nTip: add --json for stable machine-readable output.\n"
-    : "";
 }

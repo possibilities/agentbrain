@@ -339,7 +339,7 @@ export function isExecutableSourceKind(kind: string): kind is KnownSourceKind {
   return KNOWN_SOURCE_KIND_SET.has(kind as KnownSourceKind);
 }
 
-export function validateSourceDefinition(value: unknown): SourceDefinition {
+function validateSourceDefinition(value: unknown): SourceDefinition {
   const input = record(value, "source definition");
   const id = requiredString(input.id, "source id", 100);
   if (!SOURCE_ID_PATTERN.test(id)) {
@@ -507,11 +507,13 @@ export function mergeSourceOverlay(
         merged.push(item);
         continue;
       }
-      const combined = deepMerge(merged[position], item);
+      const base = merged[position];
+      if (base === undefined) continue;
+      const combined = deepMerge(base, item);
       if (
         item.kind !== undefined &&
-        merged[position].kind !== undefined &&
-        item.kind !== merged[position].kind
+        base.kind !== undefined &&
+        item.kind !== base.kind
       ) {
         throw sourceError(
           "source_identity_mismatch",
@@ -560,13 +562,13 @@ function stableValue(value: unknown): unknown {
   );
 }
 
-export function sourceDefinitionHash(definition: SourceDefinition): string {
+function sourceDefinitionHash(definition: SourceDefinition): string {
   return createHash("sha256")
     .update(JSON.stringify(stableValue(definition)))
     .digest("hex");
 }
 
-export function sourceCadenceMs(schedule: SourceSchedule): number {
+function sourceCadenceMs(schedule: SourceSchedule): number {
   return schedule.cadence_seconds * 1_000;
 }
 
@@ -690,13 +692,14 @@ export function showSource(db: Database, stableId: string): SourceDetail {
   if (rows.length === 0) {
     throw new CliError("source_not_found", `source '${stableId}' not found`);
   }
-  if (rows.length > 1) {
+  const [row] = rows;
+  if (rows.length > 1 || row === undefined) {
     throw new CliError(
       "duplicate_source_id",
       `stable source id '${stableId}' is not unique in durable state`,
     );
   }
-  return detail(db, rows[0]);
+  return detail(db, row);
 }
 
 function sourceRunCounts(row: RunRow): SourceRunCounts {

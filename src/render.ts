@@ -5,7 +5,6 @@ import type {
   DocumentData,
   DocumentLink,
   SearchData,
-  SourcesData,
   StatsData,
   TagsData,
 } from "./types";
@@ -197,15 +196,4 @@ export function humanMutation(data: unknown): string {
 
 export function humanTags(data: TagsData): string {
   return formatList(data.tags, ["tag", "count"]);
-}
-
-export function humanSources(data: SourcesData): string {
-  return [
-    "Source types:",
-    formatList(data.source_types, ["source_type", "count"]).trimEnd(),
-    "",
-    "Domains:",
-    formatList(data.domains, ["domain", "count"]).trimEnd(),
-    "",
-  ].join("\n");
 }

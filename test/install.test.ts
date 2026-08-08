@@ -144,7 +144,7 @@ function plistProgramArguments(plist: string): string[] {
   )?.[1];
   if (block === undefined) throw new Error("missing ProgramArguments");
   return [...block.matchAll(/<string>(.*?)<\/string>/g)].map(
-    (match) => match[1],
+    (match) => match[1] ?? "",
   );
 }
 

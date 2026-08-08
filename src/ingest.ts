@@ -238,7 +238,7 @@ function* streamCandidates(
   }
 }
 
-export function ingestDirectory(
+function ingestDirectory(
   store: ResearchStore,
   source: string,
   options: Omit<IngestOptions, "source">,

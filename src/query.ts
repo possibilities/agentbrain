@@ -96,7 +96,7 @@ export function normalizeSearchQuery(input: string, mode: SearchMode): string {
   if (mode === "raw") return query;
 
   const phrases = Array.from(query.matchAll(/"([^"]+)"/g), (m) =>
-    m[1].trim(),
+    (m[1] ?? "").trim(),
   ).filter(Boolean);
   const withoutPhrases = query.replace(/"([^"]+)"/g, " ");
   const terms = Array.from(

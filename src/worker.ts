@@ -486,11 +486,7 @@ function urlDocument(
   };
 }
 
-export const defaultMaterializer: JobMaterializer = async (
-  job,
-  intent,
-  context,
-) => {
+const defaultMaterializer: JobMaterializer = async (job, intent, context) => {
   if (context.signal.aborted) throw abortError();
   const options = intent.options;
   const common = {

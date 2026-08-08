@@ -1033,7 +1033,7 @@ function onlineScope(binding: PersistedOnlineBinding): OperatorRunScope {
   };
 }
 
-export function recoveryOnlineReport(
+function recoveryOnlineReport(
   store: ResearchStore,
   offlineRunId: number,
 ): RecoveryOnlineReport {

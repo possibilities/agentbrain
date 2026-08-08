@@ -8,12 +8,12 @@ import { validateHttpUrl } from "./url";
 
 export const SHARE_CONTRACT_VERSION = 1 as const;
 export const SHARE_MAX_BODY_BYTES = 1_048_576;
-export const SHARE_MAX_TEXT_CHARS = 100_000;
-export const SHARE_MAX_TITLE_CHARS = 500;
+const SHARE_MAX_TEXT_CHARS = 100_000;
+const SHARE_MAX_TITLE_CHARS = 500;
 export const SHARE_DEFAULT_COLLECTION = "saved-links";
 export const SHARE_DEFAULT_PORT = 8787;
 export const SHARE_DEFAULT_HOST = "127.0.0.1";
-export const SHARE_TOKEN_BYTES = 32;
+const SHARE_TOKEN_BYTES = 32;
 
 /** Where the port the ingress binds came from, so the choice stays inspectable. */
 export type SharePortSource = "flag" | "env:PORT" | "default";
@@ -77,7 +77,7 @@ export function resolveSharePort(
  * `ingress` stays a bounded enum in durable job intent rather than
  * free-form text supplied by a network peer.
  */
-export const SHARE_CLIENTS = ["chrome-extension", "android-share"] as const;
+const SHARE_CLIENTS = ["chrome-extension", "android-share"] as const;
 export type ShareClient = (typeof SHARE_CLIENTS)[number];
 
 export type ShareResolvedKind = "url" | "text";

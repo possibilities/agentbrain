@@ -66,7 +66,7 @@ const FORBIDDEN_PRIVATE_KEYS = new Set([
   "sender_id",
 ]);
 
-export const LOCKED_RECOVERY_DISPOSITIONS: Readonly<
+const LOCKED_RECOVERY_DISPOSITIONS: Readonly<
   Record<RecoveryDisposition, number>
 > = {
   approved_online_backfill_telegram_human: 2,
@@ -80,7 +80,7 @@ export const LOCKED_RECOVERY_DISPOSITIONS: Readonly<
   review_telegram_bot_generated: 5,
 };
 
-export const LOCKED_RECOVERY_COUNTS: RecoveryImportCounts = {
+const LOCKED_RECOVERY_COUNTS: RecoveryImportCounts = {
   candidate_rows: 1088,
   baseline_candidate_rows: 1075,
   appended_candidate_rows: 13,
@@ -592,19 +592,25 @@ function parseChecksums(value: string): Map<string, string> {
   for (const line of value.split("\n")) {
     if (!line.trim()) continue;
     const match = line.match(/^([a-f0-9]{64}) {2}([A-Za-z0-9.-]+)$/);
-    if (match === null || !CHECKSUM_FILES.includes(match[2] as never)) {
+    const digest = match?.[1];
+    const name = match?.[2];
+    if (
+      digest === undefined ||
+      name === undefined ||
+      !CHECKSUM_FILES.includes(name as never)
+    ) {
       throw recoveryError(
         "invalid_recovery_generation",
         "SHA256SUMS contains an unsafe or unexpected entry",
       );
     }
-    if (entries.has(match[2])) {
+    if (entries.has(name)) {
       throw recoveryError(
         "invalid_recovery_generation",
         "SHA256SUMS contains a duplicate entry",
       );
     }
-    entries.set(match[2], match[1]);
+    entries.set(name, digest);
   }
   if (
     entries.size !== CHECKSUM_FILES.length ||
@@ -1068,7 +1074,7 @@ function parseScalar(value: string, candidateId: string): string {
   return trimmed;
 }
 
-export function parseLinkctlMarkdown(
+function parseLinkctlMarkdown(
   bytes: Uint8Array,
   candidateId = "unknown",
 ): { url: string; summary: string; body: string } {

@@ -29,7 +29,7 @@ import { CliError } from "./errors";
 import { openReadonlyDatabase } from "./sqlite";
 import { RESEARCH_SCHEMA_VERSION, type ResearchStore } from "./store";
 
-export const BACKUP_MANIFEST_VERSION = 1;
+const BACKUP_MANIFEST_VERSION = 1;
 export const BACKUP_DATABASE_FILE = "database.sqlite";
 export const BACKUP_MANIFEST_FILE = "manifest.json";
 

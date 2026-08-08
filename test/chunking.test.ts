@@ -45,25 +45,25 @@ console.log(answer);
   const chunks = chunkMarkdown(markdown, 500);
 
   expect(chunks).toHaveLength(2);
-  expect(chunks[1].content).toStartWith("# Guide\n## Recipes\n\n");
-  expect(chunks[1].content).toContain(
+  expect(chunks[1]?.content).toStartWith("# Guide\n## Recipes\n\n");
+  expect(chunks[1]?.content).toContain(
     "```ts\nconst answer = 42;\nconsole.log(answer);\n```",
   );
-  expect(chunks[1].content).toContain(
+  expect(chunks[1]?.content).toContain(
     "| Name | Value |\n| --- | ---: |\n| alpha | 1 |\n| beta | 2 |",
   );
-  expect(chunks[1].content).toContain("> Quoted guidance\n> continues here");
-  expect(chunks[1].headingPath).toEqual(["Guide", "Recipes"]);
-  expect(chunks[1].blockTypes).toEqual([
+  expect(chunks[1]?.content).toContain("> Quoted guidance\n> continues here");
+  expect(chunks[1]?.headingPath).toEqual(["Guide", "Recipes"]);
+  expect(chunks[1]?.blockTypes).toEqual([
     "heading",
     "list",
     "code",
     "table",
     "blockquote",
   ]);
-  expect(chunks[1].structuralAnchor).toBe("#guide/recipes");
-  expect(chunks[1].startLine).toBe(5);
-  expect(chunks[1].endLine).toBe(22);
+  expect(chunks[1]?.structuralAnchor).toBe("#guide/recipes");
+  expect(chunks[1]?.startLine).toBe(5);
+  expect(chunks[1]?.endLine).toBe(22);
 });
 
 test("oversized code and tables split within bounds with repeated context", () => {
@@ -131,10 +131,10 @@ same paragraph`;
     "#notes/repeat",
     "#notes/repeat~2",
   ]);
-  expect(first[1].chunkDigest).toBe(first[2].chunkDigest);
-  expect(first[1].duplicateOrdinal).toBe(0);
-  expect(first[2].duplicateOrdinal).toBe(1);
-  expect(first[1].chunkIdentity).not.toBe(first[2].chunkIdentity);
+  expect(first[1]?.chunkDigest).toBe(first[2]?.chunkDigest);
+  expect(first[1]?.duplicateOrdinal).toBe(0);
+  expect(first[2]?.duplicateOrdinal).toBe(1);
+  expect(first[1]?.chunkIdentity).not.toBe(first[2]?.chunkIdentity);
 });
 
 test("stored Markdown chunks retain stable provenance across explicit rebuilds", () => {
