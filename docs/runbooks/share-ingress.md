@@ -1,13 +1,11 @@
 # Runbook: share ingress for Chrome and Android
 
-Sets up one-tap link saving from a browser and a phone into the same durable
-ingestion ledger the CLI uses. Decision record:
+One-tap link saving from a browser and a phone into the same durable ingestion
+ledger the CLI uses. Decision record:
 [ADR 0017](../adr/0017-authenticated-share-ingress.md). Wire format:
 [share-ingest-v1](../contracts/share-ingest-v1.md).
 
 ## 1. Create the token
-
-On the machine that owns the database:
 
 ```bash
 agentbrain share token init --json
@@ -18,9 +16,9 @@ agentbrain share token path               # where it lives
 The token is written `0600` under `~/.local/share/agentbrain/share-token`. It is
 a real credential: anyone holding it can queue ingestion jobs from anywhere on
 the tailnet. Rotate with `agentbrain share token init --force`, then update every
-device.
+device — a rotation that misses one device leaves it silently unable to share.
 
-## 2. Find the tailnet address
+## 2. Bind an address
 
 ```bash
 tailscale ip -4          # e.g. 100.101.102.103
@@ -30,34 +28,26 @@ tailscale status --self  # MagicDNS name, e.g. mac-mini.tailnet-name.ts.net
 Prefer the MagicDNS name: the bundled Android network config already permits
 cleartext to `*.ts.net`, and the name survives address changes.
 
-## 3. Start the ingress
-
 ```bash
-# Local only (default) — useful for a first smoke test.
-agentbrain share serve
-
-# Accept shares from your devices.
-agentbrain share serve --host 100.101.102.103 --port 8787
+agentbrain share serve                                    # 127.0.0.1, the default
+agentbrain share serve --host 100.101.102.103 --port 8787 # accept device shares
 ```
 
 The default bind is `127.0.0.1`; you must name the tailnet address to accept
 device shares. Binding `0.0.0.0` additionally requires `--allow-any-interface`,
 which is refused by default on purpose.
 
-Verify:
+Port precedence is `--port`, then `PORT`, then 8787. `PORT` exists so a
+supervisor that allocates a free port can hand one over; 8787 is what every
+device client is configured against. A `PORT` outside 1–65535 is refused rather
+than quietly falling back, because a supervisor that asked for one port and got
+another would forward to a socket nothing is listening on.
 
-```bash
-TOKEN=$(agentbrain share token show --reveal)
-curl -sS -H "Authorization: Bearer $TOKEN" http://100.101.102.103:8787/v1/health
-
-curl -sS -X POST http://100.101.102.103:8787/v1/share \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"client":"chrome-extension","url":"https://example.com/post"}'
-```
-
-The first POST returns `"status":"queued"`; repeating it returns
-`"status":"duplicate"` with the same `job_id`.
+`GET /v1/health` and `POST /v1/share` both require `Authorization: Bearer
+<token>`; the wire format is in
+[share-ingest-v1](../contracts/share-ingest-v1.md). A first POST returns
+`"status":"queued"`, and repeating it returns `"status":"duplicate"` with the
+same `job_id` — re-sharing is safe, not additive.
 
 ### Running it resident
 
@@ -68,15 +58,13 @@ owns a LaunchAgent for it, but only when you name the address to bind:
 AGENTBRAIN_INSTALL_SHARE_HOST=100.101.102.103 ./scripts/install.sh
 ```
 
-That installs and loads `agentbrain.share` alongside `agentbrain.worker`,
-logging to `~/.local/state/agentbrain/share.log`. Naming the address is the
-whole point: ADR 0017 admits no configuration in which the ingress is exposed
-by default, so an unset variable installs no listener at all. An unset variable
-on a later run leaves an ingress you already asked for alone; removing one is
-the explicit `AGENTBRAIN_INSTALL_SHARE_HOST=none`. `0.0.0.0`, `::`, and
-addresses carrying shell or option syntax are refused before anything is
-written, rather than by a service that starts, is refused, and is restarted
-forever by `KeepAlive`.
+Naming the address is the whole point: ADR 0017 admits no configuration in which
+the ingress is exposed by default, so an unset variable installs no listener at
+all. An unset variable on a later run leaves an ingress you already asked for
+alone; removing one is the explicit `AGENTBRAIN_INSTALL_SHARE_HOST=none`.
+`0.0.0.0`, `::`, and addresses carrying shell or option syntax are refused before
+anything is written, rather than by a service that starts, is refused, and is
+restarted forever by `KeepAlive`.
 
 The token is never written into the service description. The ingress reads the
 `0600` token file as usual, so `launchctl print` discloses how to reach the
@@ -85,99 +73,44 @@ listener but not how to authenticate to it.
 A share is durable the moment it is admitted. Materialization still waits for
 the resident Worker, so run both.
 
-### Choosing the port
-
-`--port`, then `PORT`, then 8787. The flag is highest precedence; `PORT` is
-there so a supervisor that allocates a free port can hand one over; 8787 is the
-direct default every device client is configured against, so leave it alone
-unless you have a reason. A `PORT` that is not an integer in 1–65535 is refused
-rather than quietly falling back, because a supervisor that asked for one port
-and got another would forward to a socket nothing is listening on.
-
 ### Named URLs for desktop development
 
-**This section is for working on Agentbrain on the machine itself. It does not
-apply to phones, and it does not replace anything above.** A `.localhost` name
-resolves only on the machine that serves it — RFC 6761 reserves the whole suffix
-for loopback — so it cannot receive a share from a device. Devices continue to
-use the tailnet address from step 2.
+`bun run dev:share` is `agentbrain share serve --portless`: it runs the server
+behind the Portless proxy under a name derived from the checkout's absolute
+path, so two worktrees that both want 8787 each get a stable
+`https://<name>.localhost` instead of one losing. The derived name survives a
+branch rename and a detached HEAD, which Portless's own inferred name does not;
+`AGENTBRAIN_PORTLESS_NAME` overrides it when two *clones* collide.
 
-Two checkouts both want 8787, and the second one loses. To give each checkout a
-stable URL of its own instead:
+Portless is a machine prerequisite, not a package dependency (`npm i -g
+portless`, Node ≥ 24); without it `dev:share` exits `portless_unavailable`
+rather than starting an unnamed server, and Agentbrain never installs it, starts
+its daemon, or touches the trust store. Security is unchanged: every route still
+requires the bearer token, the bind is still `127.0.0.1`, and `--portless` is
+refused alongside `--port` (Portless allocates it and passes it in `PORT`) or a
+non-loopback `--host`. A `.localhost` name is loopback-only by RFC 6761, so it
+can never receive a share from a device — phones use the tailnet address.
 
-```bash
-bun run dev:share            # → https://<name>.localhost
-agentbrain share serve       # the direct path, unchanged, on 127.0.0.1:8787
-```
+## 3. Install the Chrome extension
 
-`dev:share` is `agentbrain share serve --portless`. It re-runs the command
-behind the `portless` CLI in *direct named mode* (`portless --name <name> --
-<command>`), passing a name derived from the checkout's absolute path: the
-directory name plus six hex of that path. That name identifies the worktree and
-only the worktree, so it survives a branch rename and a detached HEAD, and two
-sibling worktrees can never land on the same URL. Portless's own inferred name
-would not: it comes from the branch's last segment and is withheld entirely for
-a detached HEAD, which is the usual state of an Orca worktree. Override the
-derived name with `AGENTBRAIN_PORTLESS_NAME` — two clones of the repository, as
-opposed to two worktrees of one, are both main checkouts and would otherwise
-share a name.
-
-Portless is a **machine prerequisite**, not a dependency of this package:
-`npm i -g portless`, Node ≥ 24. Without it `dev:share` exits with
-`portless_unavailable` and tells you so, rather than starting an unnamed server
-under a command that promised a name. Installing and first running it is the
-operator's decision: serving over HTTPS generates a local CA and offers to add
-it to the trust store, and it runs a resident proxy. Agentbrain neither installs
-it, starts its daemon, nor touches the trust store, and still binds exactly one
-listener of its own — the proxy is separate software in front of it.
-
-Nothing about the ingress's security changes: every route still requires the
-bearer token, the bind is still `127.0.0.1`, and `--portless` is refused
-alongside `--port` (Portless allocates the port and passes it in `PORT`) or a
-non-loopback `--host` (a `.localhost` name cannot front a tailnet address).
-
-## 4. Install the Chrome extension
-
-1. Open `chrome://extensions`, enable **Developer mode**.
-2. **Load unpacked** → select `clients/chrome/`.
-3. Open the extension's **Options**, enter the server URL
-   (`http://100.101.102.103:8787` or the MagicDNS equivalent) and the token,
-   then click **Save & grant access** and accept the host-permission prompt.
-   The extension requests permission for that one origin rather than declaring
-   broad host access up front.
-4. Click **Test connection**.
-
-Three ways to send, all going through the same endpoint:
-
-- **Toolbar button** — sends the current tab.
-- **Right-click** — "Send this page/link/selection to Agentbrain". A selection is
-  sent as text, so the server extracts a URL from it when there is one.
-- **Keyboard** — `Ctrl+Shift+S` (`Command+Shift+S` on macOS).
-
-The badge flashes `OK` for a new save, `DUP` for one Agentbrain already had, and
-`ERR` with a notification carrying the reason.
-
-### Platform limitations
+Load `clients/chrome/` unpacked from `chrome://extensions` with Developer mode
+on, then in its Options enter the server URL and token and click **Save & grant
+access**. The extension requests permission for that one origin rather than
+declaring broad host access up front, so skipping the prompt leaves it unable to
+reach the server. Send from the toolbar button, the right-click menu, or
+`Ctrl+Shift+S`; a selection is sent as text, so the server extracts a URL from
+it when there is one.
 
 - **The shortcut may arrive unassigned.** Chrome does not override an existing
-  browser or extension binding, and a collision leaves the command with no key.
-  Check and rebind at `chrome://extensions/shortcuts`. Chrome also assigns at
-  most four suggested shortcuts per extension; this extension declares one.
-  `Ctrl+Alt` combinations are not permitted by Chrome.
-- **There is no Chrome extension platform on Android.** Chrome for Android does
-  not support extensions at all, which is precisely why the Android share target
-  exists. On desktop the extension works in Chrome and other Chromium browsers
-  that load MV3 unpacked (Edge, Brave, Vivaldi).
-- **`chrome://` pages, the Web Store, and other privileged pages cannot be
-  shared**; the extension refuses them rather than queueing a job that would
-  fail later.
-- The extension is loaded unpacked, so Chrome shows a developer-mode notice on
-  each launch. Packing it into a `.crx` or publishing privately would remove
-  that but is not required.
+  binding, and a collision leaves the command with no key. Rebind at
+  `chrome://extensions/shortcuts`. `Ctrl+Alt` combinations are not permitted.
+- **There is no Chrome extension platform on Android** — which is precisely why
+  the Android share target exists. On desktop the extension works in any
+  Chromium browser that loads MV3 unpacked.
+- **`chrome://` pages and the Web Store cannot be shared**; the extension
+  refuses them rather than queueing a job that would fail later.
 
-## 5. Install the Android share target
-
-Build and install:
+## 4. Install the Android share target
 
 ```bash
 cd clients/android
@@ -185,31 +118,21 @@ cd clients/android
 ```
 
 Use the checked-in `./gradlew`, which pins Gradle 8.7, rather than a system
-`gradle`: AGP 8.5.2 does not accept the Gradle 9 line that Homebrew currently
+`gradle`: AGP 8.5.2 does not accept the Gradle 9 line Homebrew currently
 installs. The build also needs JDK 17 and SDK Platform 34 with Build-Tools
-34.0.0 — `sdkmanager "platforms;android-34" "build-tools;34.0.0"`. See
-[the client README](../../clients/android/README.md) for the full matrix.
+34.0.0. See [the client README](../../clients/android/README.md) for the full
+matrix. A device across the tailnet works as well as a cabled one via
+`adb connect`.
 
-A device on the far side of the tailnet works as well as a cabled one:
-`adb connect <tailnet-ip>:<port>`, taking the port from the phone's
-**Wireless debugging** screen, which reassigns it on each toggle.
-
-Then open **Agentbrain Share**, enter the same server URL and token, and press
-**Test connection**.
-
-Now "Share → Agentbrain" appears in any app that shares `text/plain`, which in
-practice is nearly everything: Chrome, Firefox, Reddit, Mastodon, YouTube,
-podcast apps, and plain notes.
-
-### Platform notes
+Open **Agentbrain Share**, enter the same server URL and token, and press **Test
+connection**. "Share → Agentbrain" then appears in any app that shares
+`text/plain`.
 
 - **Cleartext HTTP** is blocked by Android unless permitted. The bundled
-  `network_security_config.xml` permits it for `*.ts.net` MagicDNS names. If you
-  address the server by a raw tailnet IP, add that literal to that file and
-  rebuild. Serving over HTTPS avoids the issue entirely.
+  `network_security_config.xml` permits it for `*.ts.net` MagicDNS names.
+  Addressing the server by raw tailnet IP means adding that literal and
+  rebuilding; HTTPS avoids the issue entirely.
 - **The token is stored in `EncryptedSharedPreferences`**, not plain prefs.
-- Sharing shows a toast and dismisses immediately; the outcome arrives as a
-  second toast once the server answers.
 
 ## Troubleshooting
 
@@ -222,14 +145,5 @@ podcast apps, and plain notes.
 | Extension errors with a permission message | Host permission not granted | Reopen Options and click **Save & grant access** |
 | Share succeeds but nothing is searchable | Worker not running, or extraction failed | `agentbrain jobs list --state failed --json`; check the Worker and that `agentscrape` is on its `PATH` |
 | Everything returns `duplicate` | Working as intended | The intent is already queued; check `agentbrain jobs show <id> --json` |
-| `EADDRINUSE` on 8787 | Another checkout already holds the port | Use `bun run dev:share` for a named URL of this checkout's own, or pass `--port` |
-| `dev:share` fails with `portless_unavailable` | Portless is not installed | `npm i -g portless` (Node ≥ 24), or use `agentbrain share serve` directly |
-| A phone cannot reach the `.localhost` URL | Working as intended | `.localhost` is loopback-only; devices use the tailnet address from step 2 |
-
-Inspect what arrived:
-
-```bash
-agentbrain jobs list --json
-agentbrain jobs stats --json
-agentbrain search "some phrase" --collection saved-links --json
-```
+| `EADDRINUSE` on 8787 | Another checkout already holds the port | `bun run dev:share`, or pass `--port` |
+| A phone cannot reach the `.localhost` URL | Working as intended | `.localhost` is loopback-only; devices use the tailnet address |

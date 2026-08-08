@@ -15,59 +15,41 @@ sync
 --json
 ```
 
-It emits exactly one JSON document on stdout. The ordinary Agentbrain envelope is schema version 1:
+It emits exactly one JSON document on stdout, in the ordinary schema-version-1 Agentbrain envelope (`agentbrain guide --json` describes that envelope). For a per-Source trigger, `data` always contains exactly one result of this shape:
 
 ```json
 {
-  "schema_version": 1,
-  "ok": true,
-  "command": "sources sync",
-  "data": [
-    {
-      "admission": {
-        "source_id": "x.example",
-        "source_database_id": 42,
-        "status": "queued",
-        "run_id": 91,
-        "job_id": 104,
-        "scheduled_for": "2026-07-23T12:00:00.000Z",
-        "dry_run": false
-      },
-      "execution": {
-        "source_id": "x.example",
-        "run_id": 91,
-        "run_state": "completed",
-        "outcome": "success",
-        "terminal": true,
-        "warnings": 0,
-        "counts": {
-          "discovered": 8,
-          "admitted": 3,
-          "suppressed": 5
-        },
-        "checkpoint_committed": true,
-        "created_at": "2026-07-23T12:00:00.000Z",
-        "started_at": "2026-07-23T12:00:01.000Z",
-        "finished_at": "2026-07-23T12:00:04.000Z",
-        "job": {
-          "id": 104,
-          "state": "completed",
-          "failure_class": null,
-          "failure_summary": null
-        }
-      },
-      "timed_out": false
+  "admission": {
+    "source_id": "x.example",
+    "source_database_id": 42,
+    "status": "queued",
+    "run_id": 91,
+    "job_id": 104,
+    "scheduled_for": "2026-07-23T12:00:00.000Z",
+    "dry_run": false
+  },
+  "execution": {
+    "source_id": "x.example",
+    "run_id": 91,
+    "run_state": "completed",
+    "outcome": "success",
+    "terminal": true,
+    "warnings": 0,
+    "counts": { "discovered": 8, "admitted": 3, "suppressed": 5 },
+    "checkpoint_committed": true,
+    "created_at": "2026-07-23T12:00:00.000Z",
+    "started_at": "2026-07-23T12:00:01.000Z",
+    "finished_at": "2026-07-23T12:00:04.000Z",
+    "job": {
+      "id": 104,
+      "state": "completed",
+      "failure_class": null,
+      "failure_summary": null
     }
-  ],
-  "meta": {
-    "db_path": "/absolute/path/to/research.db",
-    "read_only": false,
-    "generated_at": "2026-07-23T12:00:04.100Z"
-  }
+  },
+  "timed_out": false
 }
 ```
-
-For a per-Source trigger, `data` always contains exactly one result.
 
 ## Admission status
 
