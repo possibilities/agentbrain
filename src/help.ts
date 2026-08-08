@@ -78,7 +78,7 @@ const COMMAND_LINES = COMMANDS.map(
   (c) => `  ${c.name.padEnd(10)} ${c.summary}`,
 ).join("\n");
 
-export const TOP_HELP = `agentbrain — agent-friendly CLI for Mike's local research cache
+export const TOP_HELP = `agentbrain — agent-friendly CLI for your local research cache
 
 Usage:
   agentbrain [global options] <command> [command options]

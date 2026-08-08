@@ -2,7 +2,7 @@ export function buildGuide(): unknown {
   return {
     name: "agentbrain",
     purpose:
-      "Sole durable ingestion authority and reader/writer for Mike's local research index, exposed as an agent-friendly CLI.",
+      "Sole durable ingestion authority and reader/writer for your local research index, exposed as an agent-friendly CLI.",
     default_db: "~/.local/share/agentbrain/research.db",
     architecture: {
       agentbot: "Human-facing saved-link ingress.",
@@ -183,7 +183,7 @@ export function buildGuide(): unknown {
 
 export const HARNESS_DOCS_PROMPT = `You are writing local agent-facing documentation for the \`agentbrain\` CLI.
 
-Goal: produce concise docs that make your harness excellent at searching and explicitly updating Mike's local research index through shell calls. Do not use MCP. Prefer stable JSON.
+Goal: produce concise docs that make your harness excellent at searching and explicitly updating your local research index through shell calls. Do not use MCP. Prefer stable JSON.
 
 Inspect:
 
