@@ -27,4 +27,4 @@ Changing a SQLite path is not only a naming edit. The live database uses WAL mod
 
 ## Related
 
-This decision supersedes only the database-location deferral in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md). The first-cutover history in [superseded ADR 0001](superseded/0001-agentbrain-owns-research-index.md) and the executed recovery evidence under [`docs/recovery`](../recovery/) remain unchanged. Consistent snapshots and restore verification use Agentbrain's existing backup contract; the exact cutover and rollback commands live in the [database namespace migration runbook](../runbooks/database-namespace-migration.md).
+This decision supersedes only the database-location deferral in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md). The first-cutover history in [superseded ADR 0001](superseded/0001-agentbrain-owns-research-index.md) remains unchanged. Consistent snapshots and restore verification use Agentbrain's existing backup contract. The migration this ADR authorized has been executed; its step-by-step runbook and the recovery evidence it produced were one machine's history and have been retired.

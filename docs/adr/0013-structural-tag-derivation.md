@@ -5,11 +5,11 @@
 
 ## Context
 
-Every one of the 581 documents recovered by the legacy corpus import (ADR 0010) carries only the single hardcoded `legacy-recovery` tag. That tag records provenance, not content: it says nothing about whether a document is code, video, a social post, or where it came from, so tag-filtered search and browsing over the recovered corpus are effectively unusable.
+Every document recovered by the legacy corpus import (ADR 0010) carries only the single hardcoded `legacy-recovery` tag. That tag records provenance, not content: it says nothing about whether a document is code, video, a social post, or where it came from, so tag-filtered search and browsing over the recovered corpus are effectively unusable.
 
 The obvious next step — LLM-driven topical tagging — needs a model call per document, a cost and latency budget, and a judgment call about vocabulary that is out of scope here. A narrower, deterministic pass is available first: `source_type`, the document's URL domain, and its collection membership already carry enough signal to assign a small, curated set of structural labels (`code`, `video`, `social`, `github`, …) with no inference and no external call.
 
-This needs a mutation surface, since 581 existing documents already have final `documents.tags` and `chunks_fts.tags` state that must change in place. `chunks_fts` is a regular (non-contentless) fts5 table, so a bare `UPDATE ... SET tags=?` on an indexed column silently corrupts the index — every indexed column must be supplied, which in practice means delete-and-reinsert per chunk.
+This needs a mutation surface, since existing documents already have final `documents.tags` and `chunks_fts.tags` state that must change in place. `chunks_fts` is a regular (non-contentless) fts5 table, so a bare `UPDATE ... SET tags=?` on an indexed column silently corrupts the index — every indexed column must be supplied, which in practice means delete-and-reinsert per chunk.
 
 ## Decision
 

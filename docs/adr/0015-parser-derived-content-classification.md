@@ -1,5 +1,8 @@
 # ADR 0015: Persist parser-derived content classification
 
+- Status: Accepted
+- Date: 2026-07-23
+
 ## Context
 
 A source URL identifies a Resource but does not reliably identify the rendered content form. In particular, an X `/status/` URL may render a single post, a same-author thread, or an X Article. Agentbrain historically canonicalized all status URLs as `source_type=tweet`; Agentscrape preserved its extractor identity in provenance, but post-versus-thread classification was not durable or filterable. Inferring a thread later from Markdown separators is brittle and unsuitable as a UI facet.
