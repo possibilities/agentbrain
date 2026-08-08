@@ -4,6 +4,12 @@ Agentbrain owns your local research index and is its sole durable ingestion auth
 
 An Ingress submits intent at Admission, which durably queues an immutable job before returning — it never materializes content. The Worker leases jobs and delegates URL extraction to Agentscrape, which owns fetching and network policy while Agentbrain remains the only index writer. [docs/adr/](docs/adr/) records the decisions, starting with [Agentbrain owns durable ingestion](docs/adr/0003-agentbrain-owns-durable-ingestion.md); `CONTEXT.md` is the domain glossary.
 
+## Siblings
+
+Agentbrain never fetches, so URL ingestion requires [agentscrape](https://github.com/possibilities/agentscrape) on the worker's `PATH`. Without it, URL submissions are still admitted — admission performs no network work — but every extraction attempt fails as `infra`, retries, and eventually strands. Recurring blog and X sources degrade the same way: source sync admits its Runs, but discovery is Agentscrape's.
+
+Nothing else degrades. Text, file, and directory submissions index normally, and search, retrieval, tagging, and the share ingress are unaffected. The stranding is reported rather than silent: `agentbrain doctor` fails its `stranded_ingestion` check and, when installed, `agentbrain.doctor` notifies ([ADR 0018](docs/adr/0018-stranded-ingestion-is-reported.md)).
+
 ## Use
 
 ```bash
