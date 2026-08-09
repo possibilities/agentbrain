@@ -15,6 +15,8 @@
  *   `.meta()` into the published schema instead.
  * - The manifest root, each definition, `schedule`, and `limits` reject
  *   unknown keys; `payload` is an open passthrough and must stay open.
+ *   `strictObject` alone does not finish that job: zod skips a literal own
+ *   `__proto__` key, so sources.ts scans raw manifests for it separately.
  * - `$schema` appears only in the published-file schema; the loader
  *   tolerates and strips it before validation, whatever its value.
  * - URL validity, the credential sweep, the kind-specific payload rules, the

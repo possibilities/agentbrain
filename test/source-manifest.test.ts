@@ -702,6 +702,101 @@ test("unknown definition keys are rejected", () => {
   expect(priorFault.message).toContain("version");
 });
 
+/**
+ * Splice a literal own `__proto__` into a document. It has to go through
+ * JSON.parse: a `__proto__` key written in a TS object literal is special-cased
+ * by the language and sets the prototype instead of creating the own property
+ * a manifest file actually carries.
+ */
+function withProtoKey<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value).replace(/^\{/, '{"__proto__": {"mystery": true}, '),
+  ) as T;
+}
+
+// zod skips a literal own `__proto__`, so `strictObject` never lists it among
+// its unrecognized keys — it would be the one unknown key the flip above still
+// accepted in silence. It is rejected at the same levels, in the manifest and
+// in the overlay, with the same prose and known-key list.
+test("a __proto__ key is an unknown key at every strict level", () => {
+  const root = cliError(() =>
+    validateSourceManifest(withProtoKey(manifest(blog()))),
+  );
+  expect(root.code).toBe("bad_source_manifest");
+  expect(root.message).toBe(
+    "source manifest has unknown key '__proto__'; known keys: schema_version, sources",
+  );
+
+  const definition = cliError(() =>
+    validateSourceManifest(manifest(withProtoKey(blog()))),
+  );
+  expect(definition.code).toBe("bad_source_manifest");
+  expect(definition.message).toContain(
+    "source blog-one has unknown key '__proto__'",
+  );
+  expect(definition.message).toContain("credential_refs");
+
+  const schedule = cliError(() =>
+    validateSourceManifest(
+      manifest(blog({ schedule: withProtoKey({ cadence: "daily" }) })),
+    ),
+  );
+  expect(schedule.message).toContain(
+    "source blog-one schedule has unknown key '__proto__'",
+  );
+  expect(schedule.message).toContain("cadence_seconds");
+
+  const limits = cliError(() =>
+    validateSourceManifest(
+      manifest(
+        blog({
+          limits: withProtoKey({ max_items_per_run: 9, max_pages_per_run: 3 }),
+        }),
+      ),
+    ),
+  );
+  expect(limits.message).toContain(
+    "source blog-one limits has unknown key '__proto__'",
+  );
+  expect(limits.message).toContain("max_pages_per_run");
+
+  // The overlay is the same file surface, scanned before the merge — the only
+  // point at which the key is still visible.
+  const overlayRoot = cliError(() =>
+    mergeSourceOverlay(manifest(blog()), withProtoKey(manifest())),
+  );
+  expect(overlayRoot.message).toContain(
+    "source overlay has unknown key '__proto__'",
+  );
+  const overlayEntry = cliError(() =>
+    mergeSourceOverlay(
+      manifest(blog()),
+      manifest(withProtoKey({ id: "blog-one", version: 2 })),
+    ),
+  );
+  expect(overlayEntry.message).toContain(
+    "source blog-one has unknown key '__proto__'",
+  );
+
+  expect(Object.hasOwn(Object.prototype, "mystery")).toBe(false);
+});
+
+test("payload keeps a __proto__ entry, staying an open passthrough", () => {
+  const parsed = validateSourceManifest(
+    manifest(
+      blog({
+        payload: withProtoKey({ homepage_url: "https://blog.example/" }),
+      }),
+    ),
+  );
+  const payload = parsed.sources[0]?.payload as Record<string, unknown>;
+  expect(Object.getOwnPropertyNames(payload)).toContain("__proto__");
+  expect(Object.getOwnPropertyDescriptor(payload, "__proto__")?.value).toEqual({
+    mystery: true,
+  });
+  expect(Object.hasOwn(Object.prototype, "mystery")).toBe(false);
+});
+
 test("a definition larger than 128KiB is refused", () => {
   const fault = cliError(() =>
     validateSourceManifest(

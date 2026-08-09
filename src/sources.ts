@@ -247,16 +247,27 @@ function issueAt(
   return issues.find((issue) => issue.path[0] === key);
 }
 
+function unknownKeyNamesError(
+  scope: string,
+  keys: readonly string[],
+  known: readonly string[],
+): CliError {
+  const named = keys.map((key) => `'${key}'`).join(", ");
+  return sourceError(
+    "bad_source_manifest",
+    `${scope} has unknown key${keys.length === 1 ? "" : "s"} ${named}; known keys: ${known.join(", ")}`,
+  );
+}
+
 function unknownKeysError(
   scope: string,
   issue: ManifestIssue,
   known: readonly string[],
 ): CliError {
-  const keys = issue.code === "unrecognized_keys" ? issue.keys : [];
-  const named = keys.map((key) => `'${key}'`).join(", ");
-  return sourceError(
-    "bad_source_manifest",
-    `${scope} has unknown key${keys.length === 1 ? "" : "s"} ${named}; known keys: ${known.join(", ")}`,
+  return unknownKeyNamesError(
+    scope,
+    issue.code === "unrecognized_keys" ? issue.keys : [],
+    known,
   );
 }
 
@@ -584,11 +595,58 @@ function envelopeFault(
   );
 }
 
+/**
+ * zod's object parser deliberately skips a literal own `__proto__` key as an
+ * anti-pollution guard, so `strictObject` never reports it among its
+ * `unrecognized_keys` — it would be the one unknown key the strict levels
+ * still accepted and dropped in silence, which is exactly the mode the
+ * strictness flip exists to end. JSON.parse does define it as an ordinary own
+ * property, so the raw document is scanned for it here instead.
+ *
+ * The scan runs per file and before the overlay merge, which is both where a
+ * manifest's strict levels belong and the only point at which the key is still
+ * visible: `deepMerge` would hand it to the prototype setter, dropping it and
+ * reshaping the merged definition. `payload` is an open passthrough and is not
+ * scanned — a `__proto__` entry rides through it like any other key.
+ */
+function rejectProtoKey(
+  value: unknown,
+  scope: string,
+  known: readonly string[],
+): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return;
+  }
+  if (Object.hasOwn(value, "__proto__")) {
+    throw unknownKeyNamesError(scope, ["__proto__"], known);
+  }
+}
+
+function rejectProtoKeys(
+  manifest: unknown,
+  sources: readonly unknown[],
+  name: string,
+): void {
+  rejectProtoKey(manifest, name, MANIFEST_KEYS);
+  for (const source of sources) {
+    if (source === null || typeof source !== "object") continue;
+    const entry = source as Record<string, unknown>;
+    // "?" is the same stand-in the definition faults use before the id is known.
+    const rawId = entry.id;
+    const id =
+      typeof rawId === "string" && rawId.trim().length > 0 ? rawId.trim() : "?";
+    rejectProtoKey(entry, `source ${id}`, SOURCE_DEFINITION_KEYS);
+    rejectProtoKey(entry.schedule, `source ${id} schedule`, SCHEDULE_KEYS);
+    rejectProtoKey(entry.limits, `source ${id} limits`, LIMITS_KEYS);
+  }
+}
+
 function rawManifest(value: unknown, name: string): Record<string, unknown>[] {
   const stripped = stripEditorSchemaKey(value);
   const parsed = manifestEnvelopeSchema.safeParse(stripped);
   if (!parsed.success) throw envelopeFault(name, parsed.error.issues);
   const sources = (stripped as Record<string, unknown>).sources as unknown[];
+  rejectProtoKeys(stripped, sources, name);
   return sources.map((source) => source as Record<string, unknown>);
 }
 
