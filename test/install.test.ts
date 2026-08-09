@@ -240,20 +240,20 @@ test("installer repairs namespaced database permissions", () => {
   expect(mode(db)).toBe(0o600);
 }, 15_000);
 
-test("installer replaces only the explicitly known legacy Agentbrain link", () => {
+test("an old-checkout Agentbrain link is foreign: refused, never adopted", () => {
   const fixture = setup();
-  const legacySource = join(fixture.dir, "legacy-checkout", "src", "cli.ts");
-  mkdirSync(dirname(legacySource), { recursive: true });
-  writeFileSync(legacySource, "#!/usr/bin/env bun\n");
-  symlinkSync(legacySource, join(fixture.bin, "agentbrain"));
+  const oldSource = join(fixture.dir, "old-checkout", "src", "cli.ts");
+  mkdirSync(dirname(oldSource), { recursive: true });
+  writeFileSync(oldSource, "#!/usr/bin/env bun\n");
+  symlinkSync(oldSource, join(fixture.bin, "agentbrain"));
 
-  const installed = runInstaller(fixture, "--install", {
-    AGENTBRAIN_INSTALL_LEGACY_SOURCE: legacySource,
-  });
-  expect(installed.exitCode, decode(installed.stderr)).toBe(0);
-  expect(readlinkSync(join(fixture.bin, "agentbrain"))).toBe(
-    join(REPO, "src/cli.ts"),
+  const refused = runInstaller(fixture, "--install");
+  expect(refused.exitCode).not.toBe(0);
+  expect(decode(refused.stderr)).toContain(
+    "refusing to overwrite unrelated symlink",
   );
+  expect(readlinkSync(join(fixture.bin, "agentbrain"))).toBe(oldSource);
+  expect(existsSync(fixture.launchAgents)).toBe(false);
 }, 15_000);
 
 test("installer upgrades only a receipt-matched managed checkout link", () => {
@@ -292,35 +292,19 @@ test("installer upgrades only a receipt-matched managed checkout link", () => {
   expect(readlinkSync(destination)).toBe(managed.previousSource);
 }, 30_000);
 
-test("legacy migration allowlist still refuses an unrelated Agentbrain link", () => {
-  const fixture = setup();
-  const legacySource = join(fixture.dir, "legacy-checkout", "src", "cli.ts");
-  const unrelatedSource = join(fixture.dir, "unrelated", "cli.ts");
-  mkdirSync(dirname(legacySource), { recursive: true });
-  mkdirSync(dirname(unrelatedSource), { recursive: true });
-  writeFileSync(legacySource, "legacy");
-  writeFileSync(unrelatedSource, "unrelated");
-  const destination = join(fixture.bin, "agentbrain");
-  symlinkSync(unrelatedSource, destination);
-
-  const refused = runInstaller(fixture, "--install", {
-    AGENTBRAIN_INSTALL_LEGACY_SOURCE: legacySource,
-  });
-  expect(refused.exitCode).not.toBe(0);
-  expect(decode(refused.stderr)).toContain(
-    "refusing to overwrite unrelated symlink",
-  );
-  expect(readlinkSync(destination)).toBe(unrelatedSource);
-  expect(existsSync(fixture.launchAgents)).toBe(false);
-}, 15_000);
-
 test("installer resolves frozen dependencies before switching the runtime link", () => {
   const fixture = setup();
-  const legacySource = join(fixture.dir, "legacy-checkout", "src", "cli.ts");
-  mkdirSync(dirname(legacySource), { recursive: true });
-  writeFileSync(legacySource, "#!/usr/bin/env bun\n");
+  const managed = setupManagedCheckouts(fixture);
+  mkdirSync(fixture.state, { recursive: true });
+  writeFileSync(
+    join(fixture.state, "deployed-sha"),
+    `${managed.previousSha}\n`,
+    {
+      mode: 0o600,
+    },
+  );
   const destination = join(fixture.bin, "agentbrain");
-  symlinkSync(legacySource, destination);
+  symlinkSync(managed.previousSource, destination);
 
   const realBun = Bun.which("bun");
   if (realBun === null) throw new Error("bun is required for installer tests");
@@ -341,20 +325,28 @@ exec "$AGENTBRAIN_TEST_REAL_BUN" "$@"
   );
   chmodSync(wrapper, 0o700);
 
-  const installed = runInstaller(fixture, "--install", {
-    AGENTBRAIN_INSTALL_LEGACY_SOURCE: legacySource,
-    AGENTBRAIN_TEST_COMMAND_LINK: destination,
-    AGENTBRAIN_TEST_INSTALL_LOG: installLog,
-    AGENTBRAIN_TEST_LINK_AT_INSTALL: linkAtInstall,
-    AGENTBRAIN_TEST_REAL_BUN: realBun,
-    PATH: `${wrapperDir}:${process.env.PATH ?? ""}`,
-  });
+  const installed = runInstaller(
+    fixture,
+    "--install",
+    {
+      AGENTBRAIN_TEST_COMMAND_LINK: destination,
+      AGENTBRAIN_TEST_INSTALL_LOG: installLog,
+      AGENTBRAIN_TEST_LINK_AT_INSTALL: linkAtInstall,
+      AGENTBRAIN_TEST_REAL_BUN: realBun,
+      PATH: `${wrapperDir}:${process.env.PATH ?? ""}`,
+    },
+    managed.currentCheckout,
+  );
   expect(installed.exitCode, decode(installed.stderr)).toBe(0);
   expect(readFileSync(installLog, "utf8").trim()).toBe(
     "install --frozen-lockfile",
   );
-  expect(readFileSync(linkAtInstall, "utf8").trim()).toBe(legacySource);
-  expect(readlinkSync(destination)).toBe(join(REPO, "src/cli.ts"));
+  expect(readFileSync(linkAtInstall, "utf8").trim()).toBe(
+    managed.previousSource,
+  );
+  expect(readlinkSync(destination)).toBe(
+    join(realpathSync(managed.currentCheckout), "src", "cli.ts"),
+  );
 }, 15_000);
 
 test("installer waits for stale service removal before load and uninstall is idempotent", () => {
@@ -467,36 +459,20 @@ test("installer stops before mutation when an owned service cannot unload", () =
   expect(existsSync(join(fixture.bin, "research-ingest-link"))).toBe(false);
 }, 15_000);
 
-test("installer removes only known retired links and preserves unrelated binaries", () => {
-  const owned = setup();
-  symlinkSync(
-    relative(owned.bin, join(REPO, "src/research-ingest-link.ts")),
-    join(owned.bin, "research-ingest-link"),
+test("installer never touches a research-ingest-link, owned-looking or foreign", () => {
+  // A link that once pointed at the retired adapter is not the installer's
+  // business anymore: no adoption, no cleanup, no migration path.
+  const linked = setup();
+  const target = relative(
+    linked.bin,
+    join(REPO, "src/research-ingest-link.ts"),
   );
-  expect(runInstaller(owned).exitCode).toBe(0);
-  expect(existsSync(join(owned.bin, "research-ingest-link"))).toBe(false);
-
-  const legacy = setup();
-  const legacyAdapter = join(
-    legacy.dir,
-    "legacy-adapter",
-    "research-ingest-link",
-  );
-  mkdirSync(dirname(legacyAdapter), { recursive: true });
-  writeFileSync(legacyAdapter, "#!/usr/bin/env bash\n");
-  const legacyLink = join(legacy.bin, "research-ingest-link");
-  symlinkSync(legacyAdapter, legacyLink);
-
-  // Unnamed, the adapter is somebody else's file: the installer leaves it.
-  expect(runInstaller(legacy).exitCode).toBe(0);
-  expect(existsSync(legacyLink)).toBe(true);
-
-  expect(
-    runInstaller(legacy, "--install", {
-      AGENTBRAIN_INSTALL_LEGACY_ADAPTER: legacyAdapter,
-    }).exitCode,
-  ).toBe(0);
-  expect(existsSync(legacyLink)).toBe(false);
+  const link = join(linked.bin, "research-ingest-link");
+  symlinkSync(target, link);
+  expect(runInstaller(linked).exitCode).toBe(0);
+  expect(readlinkSync(link)).toBe(target);
+  expect(runInstaller(linked, "--uninstall").exitCode).toBe(0);
+  expect(readlinkSync(link)).toBe(target);
 
   const unrelated = setup();
   const foreign = join(unrelated.bin, "research-ingest-link");
