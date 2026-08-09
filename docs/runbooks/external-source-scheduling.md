@@ -32,7 +32,7 @@ Registration is declarative and versioned. Keep manifests private when their URL
 }
 ```
 
-`config/sources.json` carries one disabled example per kind. Only `payload` differs between them:
+`config/sources.json` carries one disabled example per kind, and names `config/sources.schema.json` in its `$schema` key so an editor can validate a manifest as it is written — the loader ignores the key like any other it does not read. Only `payload` differs between them:
 
 | `kind` | Identity payload | Constraint |
 |---|---|---|

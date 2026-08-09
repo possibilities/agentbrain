@@ -1,0 +1,303 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "agentbrain source manifest",
+  "description": "A versioned, declarative manifest of external Sources for `agentbrain sources apply`, which durably creates or updates matching Source definitions. The repo bundles one at config/sources.json as the documented example — one disabled Source per supported kind — and an operator may pass their own with --manifest. Applying a manifest never fetches anything and never deletes a definition; enabling a Source is a separate, explicit act. Validation is hand-rolled in src/sources.ts and reads only the fields named here: unrecognised keys are neither rejected nor stored, they are simply ignored, which is why additionalProperties stays open throughout. Every validation fault is a bad_source_manifest CliError exiting 2.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["sources"],
+  "anyOf": [
+    {
+      "description": "The canonical spelling of the format version.",
+      "required": ["schema_version"]
+    },
+    {
+      "description": "The accepted alias, read only when schema_version is absent.",
+      "required": ["version"]
+    }
+  ],
+  "properties": {
+    "$schema": {
+      "description": "Path or URL of this schema, for editors that offer completion and validation. The loader never reads it; like any other unrecognised key it is ignored, and it is dropped from the definitions that `sources apply` stores.",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Manifest format version. Must be exactly 1 — any other value is an unsupported_source_manifest_version error exiting 2, rather than a best-effort read of a format this build does not know.",
+      "const": 1
+    },
+    "version": {
+      "description": "Alias for schema_version, read only when schema_version is absent. Must also be exactly 1. Prefer schema_version: it is what the error message names.",
+      "const": 1
+    },
+    "sources": {
+      "description": "Every Source definition the manifest declares, in order. At most 1000 entries. Ids must be unique across the array or the manifest is refused with duplicate_source_id. An overlay passed with --overlay is matched against this array by id and deep-merged over it before validation, so an overlay entry may carry just an id, a raised version, and the fields it changes.",
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "description": "One Source definition: a stable identity plus the policy under which agentbrain is willing to poll it.",
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "version",
+          "kind",
+          "enabled",
+          "sensitivity",
+          "payload",
+          "schedule",
+          "limits",
+          "collections"
+        ],
+        "properties": {
+          "id": {
+            "description": "The stable declarative identity of this Source, unique within the manifest and the key an overlay merges against. Mutable handles and homepages are payload, not identity, so an account rename must not change this. 1-100 characters: lowercase letters, digits, dots, underscores, or hyphens, starting with a letter or digit.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,99}$"
+          },
+          "version": {
+            "description": "Definition version, an integer from 1 to 1000000. `sources apply` is version-gated: re-applying identical content is a no-op, raising this alongside a content change is an accepted update, and changing content without raising it is refused. Flipping `enabled` is a content change and must ride a version bump.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "kind": {
+            "description": "What sort of Source this is, which selects the payload shape and the discovery path. blog_source, blog_feed, and x_account are executable; any other kind — x_account_candidate, for instance — stays listable and showable but Source sync will not admit work for it. 1-64 characters: a lowercase letter followed by lowercase letters, digits, underscores, or hyphens.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "display_name": {
+            "description": "Human-readable label for listings. Defaults to the id when omitted. Trimmed, non-empty, at most 500 characters.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "enabled": {
+            "description": "Whether schedule evaluation may admit Runs for this Source. Required — there is no default, because an omitted flag must never be read as consent to start fetching. The bundled manifest ships every Source disabled; activation is a separate, explicit operator act, normally a version-bumped overlay.",
+            "type": "boolean"
+          },
+          "sensitivity": {
+            "description": "Handling policy for everything this Source yields, ranked public < normal < sensitive < private. It bounds how the resulting Documents may be surfaced and shared.",
+            "type": "string",
+            "enum": ["public", "normal", "sensitive", "private"]
+          },
+          "payload": {
+            "description": "The kind-specific locator: where to poll and how, distinct from the identity in `id`. Unknown members are preserved as given, but no member anywhere in the payload may be credential-shaped — a key or URL query parameter named like a token, api_key, password, cookie, secret, session, signature, or authorization is refused with source_contains_credential. Name the secret in credential_refs instead; the manifest is a committed file and never holds a credential value.",
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "homepage_url": {
+                "description": "Blog kinds: the site's homepage, from which the feed is discovered. An http or https URL, at most 2000 characters. At least one of homepage_url or feed_url is required.",
+                "type": "string",
+                "maxLength": 2000
+              },
+              "feed_url": {
+                "description": "Blog kinds: the feed to poll directly, when it is already known. An http or https URL, at most 2000 characters. At least one of homepage_url or feed_url is required.",
+                "type": "string",
+                "maxLength": 2000
+              },
+              "timeout_ms": {
+                "description": "Blog kinds: optional per-fetch timeout in milliseconds, an integer from 1 to 300000. Omitted leaves the fetcher's own default in place.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 300000
+              },
+              "recorded_input_file": {
+                "description": "Blog kinds: a recorded fixture to read instead of polling the live web, used by offline tests. Its presence is what lifts the 10-page ceiling that live blog Sources are held to.",
+                "type": "string"
+              },
+              "handle": {
+                "description": "X kinds: the account handle, with or without a leading @. 1-20 characters of letters, digits, or underscores. Required for x_account.",
+                "type": "string",
+                "maxLength": 21,
+                "pattern": "^@?[A-Za-z0-9_]{1,20}$"
+              },
+              "account_id": {
+                "description": "X kinds: the account's stable upstream id, when known, which survives a handle rename. At most 100 characters of letters, digits, dots, underscores, colons, or hyphens.",
+                "type": "string",
+                "maxLength": 100,
+                "pattern": "^[A-Za-z0-9._:-]+$"
+              },
+              "profile_url": {
+                "description": "X kinds: the account's profile URL. An http or https URL, at most 2000 characters.",
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          },
+          "schedule": {
+            "description": "How often this Source becomes due. Required. Evaluation admits at most one catch-up Run per overdue Source and advances the next due time from the current evaluation rather than once per missed wall-clock tick, so a stopped worker cannot bank a backlog. Whichever spelling is used, the cadence is normalised to whole seconds, from 1 second to 31 days.",
+            "type": "object",
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "description": "The canonical spelling, already in seconds.",
+                "required": ["cadence_seconds"]
+              },
+              {
+                "description": "Minutes, multiplied by 60.",
+                "required": ["cadence_minutes"]
+              },
+              {
+                "description": "The general spelling, a number of seconds or a duration string.",
+                "required": ["cadence"]
+              },
+              {
+                "description": "The alias for cadence, read last.",
+                "required": ["every"]
+              }
+            ],
+            "properties": {
+              "cadence_seconds": {
+                "description": "Cadence in whole seconds, from 1 to 2678400 (31 days). Read first, ahead of every other spelling.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2678400
+              },
+              "cadence_minutes": {
+                "description": "Cadence in minutes, multiplied by 60 to reach seconds. Read only when cadence_seconds is absent, and the product must land on a whole number of seconds from 1 to 2678400 — so at most 44640 minutes.",
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 44640
+              },
+              "cadence": {
+                "description": "Cadence as a number of whole seconds, or as a duration string: `hourly`, `daily`, a bounded duration like `30s`, `15m`, `6h`, or `2d`, or an ISO 8601 time duration like `PT6H30M`. Strings are trimmed and matched case-insensitively. However it is spelled, the result must fall between 1 second and 2678400 seconds (31 days). Read only when cadence_seconds and cadence_minutes are absent.",
+                "anyOf": [
+                  {
+                    "description": "Whole seconds, stated as a number.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2678400
+                  },
+                  {
+                    "description": "A duration string: hourly, daily, a bounded duration, or an ISO 8601 time duration.",
+                    "type": "string",
+                    "pattern": "^\\s*(?:[Hh][Oo][Uu][Rr][Ll][Yy]|[Dd][Aa][Ii][Ll][Yy]|[0-9]+[SsMmHhDd]|[Pp][Tt](?=[0-9])(?:[0-9]+[Hh])?(?:[0-9]+[Mm])?(?:[0-9]+[Ss])?)\\s*$"
+                  }
+                ]
+              },
+              "every": {
+                "description": "Alias for cadence, accepting exactly the same forms and read last of the four spellings. Prefer cadence_seconds or cadence in new manifests.",
+                "anyOf": [
+                  {
+                    "description": "Whole seconds, stated as a number.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2678400
+                  },
+                  {
+                    "description": "A duration string: hourly, daily, a bounded duration, or an ISO 8601 time duration.",
+                    "type": "string",
+                    "pattern": "^\\s*(?:[Hh][Oo][Uu][Rr][Ll][Yy]|[Dd][Aa][Ii][Ll][Yy]|[0-9]+[SsMmHhDd]|[Pp][Tt](?=[0-9])(?:[0-9]+[Hh])?(?:[0-9]+[Mm])?(?:[0-9]+[Ss])?)\\s*$"
+                  }
+                ]
+              }
+            }
+          },
+          "limits": {
+            "description": "The per-Run ceiling on how much this Source may pull. Required, and both ceilings must be stated — an unbounded Source is not expressible. They are what keeps polling forward-only and bounded rather than a silent historical backfill.",
+            "type": "object",
+            "additionalProperties": true,
+            "allOf": [
+              {
+                "description": "The item ceiling, under either spelling.",
+                "anyOf": [
+                  { "required": ["max_items_per_run"] },
+                  { "required": ["max_items"] }
+                ]
+              },
+              {
+                "description": "The page ceiling, under either spelling.",
+                "anyOf": [
+                  { "required": ["max_pages_per_run"] },
+                  { "required": ["max_pages"] }
+                ]
+              }
+            ],
+            "properties": {
+              "max_items_per_run": {
+                "description": "Most items one Run may admit, an integer from 1 to 10000.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
+              },
+              "max_items": {
+                "description": "Alias for max_items_per_run, read only when that key is absent. Same 1 to 10000 range.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
+              },
+              "max_pages_per_run": {
+                "description": "Most pages or scrolls one Run may request, an integer from 1 to 100. A live blog Source — a blog_feed or blog_source whose payload names no recorded_input_file — is held to at most 10. One page per run is the usual setting for X accounts: it forbids deep pagination, so forward-only polling can never claim resumable historical backfill.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "max_pages": {
+                "description": "Alias for max_pages_per_run, read only when that key is absent. Same 1 to 100 range and the same 10-page ceiling for live blog Sources.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            }
+          },
+          "collections": {
+            "description": "The collections this Source's Documents are filed under. Required, and may be empty. Each entry is a stable lowercase slug of 1-100 characters — letters, digits, dots, underscores, or hyphens, starting with a letter or digit — and duplicates are refused.",
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "description": "One collection slug.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,99}$"
+            }
+          },
+          "credential_refs": {
+            "description": "Opaque names of credentials this Source needs, resolved elsewhere at run time. Defaults to empty. These are references, never values: an entry must start with a letter, run at most 256 characters of letters, digits, plus, dot, underscore, colon, slash, at-sign, or hyphen, and may not contain `=` — the shapes a base64 secret pasted here would take. Duplicates are refused.",
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "description": "One opaque credential reference name.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z][A-Za-z0-9+._:/@-]{0,255}$"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "description": "A blog Source must name something to poll: discovery starts from the homepage or goes straight to a known feed.",
+            "if": {
+              "required": ["kind"],
+              "properties": { "kind": { "enum": ["blog_feed", "blog_source"] } }
+            },
+            "then": {
+              "properties": {
+                "payload": {
+                  "anyOf": [
+                    { "required": ["homepage_url"] },
+                    { "required": ["feed_url"] }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "description": "An x_account is polled by handle, so the handle is not optional.",
+            "if": {
+              "required": ["kind"],
+              "properties": { "kind": { "const": "x_account" } }
+            },
+            "then": {
+              "properties": { "payload": { "required": ["handle"] } }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

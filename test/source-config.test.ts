@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -61,6 +61,29 @@ test("bundled config/sources.json exemplifies every supported kind, disabled", (
   expect(isExecutableSourceKind("blog_source")).toBe(true);
   expect(isExecutableSourceKind("x_account")).toBe(true);
   expect(isExecutableSourceKind("x_account_candidate")).toBe(false);
+});
+
+test("the bundled manifest names its schema and the loader ignores the key", () => {
+  const raw = JSON.parse(
+    readFileSync(DEFAULT_SOURCE_MANIFEST_PATH, "utf8"),
+  ) as Record<string, unknown>;
+  // Editors look for $schema at the top of the file, so it leads.
+  expect(Object.keys(raw)[0]).toBe("$schema");
+  expect(raw.$schema).toBe("./sources.schema.json");
+
+  // The pointer must resolve, or the manifest advertises a schema nobody has.
+  const schema = JSON.parse(
+    readFileSync(join(REPO, "config", "sources.schema.json"), "utf8"),
+  ) as Record<string, unknown>;
+  expect(schema.$schema).toBe("http://json-schema.org/draft-07/schema#");
+
+  // Validation reads only the fields it knows, so $schema rides along without
+  // becoming manifest or Source content — it cannot shift a definition hash.
+  const manifest = loadManifest();
+  expect(Object.keys(manifest).sort()).toEqual(["schema_version", "sources"]);
+  for (const source of manifest.sources) {
+    expect(source).not.toHaveProperty("$schema");
+  }
 });
 
 test("confirmed sources carry locked default cadences and bounded first-activation caps", () => {

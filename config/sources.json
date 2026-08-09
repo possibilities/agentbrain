@@ -1,4 +1,5 @@
 {
+  "$schema": "./sources.schema.json",
   "schema_version": 1,
   "sources": [
     {
