@@ -13,7 +13,6 @@ import {
   assertDefaultDatabaseLocationReady,
   defaultDatabasePath,
   isDefaultDatabasePath,
-  legacyDatabasePath,
 } from "../src/paths";
 
 function fixture(): { home: string; cleanup: () => void } {
@@ -45,11 +44,10 @@ test("database paths live in the Agentbrain namespace", () => {
     expect(defaultDatabasePath(home)).toBe(
       join(home, ".local", "share", "agentbrain", "research.db"),
     );
-    expect(legacyDatabasePath(home)).toBe(
-      join(home, ".hermes", "research-cache", "research.db"),
-    );
     expect(isDefaultDatabasePath(defaultDatabasePath(home), home)).toBeTrue();
-    expect(isDefaultDatabasePath(legacyDatabasePath(home), home)).toBeFalse();
+    expect(
+      isDefaultDatabasePath(join(home, "elsewhere", "research.db"), home),
+    ).toBeFalse();
     expect(
       errorCode(() => assertDefaultDatabaseLocationReady(home)),
     ).toBeNull();
@@ -58,20 +56,15 @@ test("database paths live in the Agentbrain namespace", () => {
   }
 });
 
-test("default database use fails closed around legacy and conflicting state", () => {
+test("a stray pre-namespace database never blocks the default path", () => {
   const { home, cleanup } = fixture();
   try {
-    touch(legacyDatabasePath(home));
-    expect(errorCode(() => assertDefaultDatabaseLocationReady(home))).toBe(
-      "db_migration_required",
-    );
+    touch(join(home, ".hermes", "research-cache", "research.db"));
+    expect(
+      errorCode(() => assertDefaultDatabaseLocationReady(home)),
+    ).toBeNull();
 
     touch(defaultDatabasePath(home));
-    expect(errorCode(() => assertDefaultDatabaseLocationReady(home))).toBe(
-      "db_location_conflict",
-    );
-
-    rmSync(legacyDatabasePath(home));
     expect(
       errorCode(() => assertDefaultDatabaseLocationReady(home)),
     ).toBeNull();

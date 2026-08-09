@@ -4,17 +4,7 @@
   "description": "A versioned, declarative manifest of external Sources for `agentbrain sources apply`, which durably creates or updates matching Source definitions. The repo bundles one at config/sources.json as the documented example — one disabled Source per supported kind — and an operator may pass their own with --manifest. Applying a manifest never fetches anything and never deletes a definition; enabling a Source is a separate, explicit act. Validation is hand-rolled in src/sources.ts and reads only the fields named here: unrecognised keys are neither rejected nor stored, they are simply ignored, which is why additionalProperties stays open throughout. Every validation fault is a bad_source_manifest CliError exiting 2.",
   "type": "object",
   "additionalProperties": true,
-  "required": ["sources"],
-  "anyOf": [
-    {
-      "description": "The canonical spelling of the format version.",
-      "required": ["schema_version"]
-    },
-    {
-      "description": "The accepted alias, read only when schema_version is absent.",
-      "required": ["version"]
-    }
-  ],
+  "required": ["schema_version", "sources"],
   "properties": {
     "$schema": {
       "description": "Path or URL of this schema, for editors that offer completion and validation. The loader never reads it; like any other unrecognised key it is ignored, and it is dropped from the definitions that `sources apply` stores.",
@@ -22,10 +12,6 @@
     },
     "schema_version": {
       "description": "Manifest format version. Must be exactly 1 — any other value is an unsupported_source_manifest_version error exiting 2, rather than a best-effort read of a format this build does not know.",
-      "const": 1
-    },
-    "version": {
-      "description": "Alias for schema_version, read only when schema_version is absent. Must also be exactly 1. Prefer schema_version: it is what the error message names.",
       "const": 1
     },
     "sources": {

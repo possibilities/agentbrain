@@ -444,28 +444,30 @@ test("default writes use the private Agentbrain database namespace", () => {
   expect(JSON.parse(decode(submitted.stdout)).meta.db_path).toBe(db);
 });
 
-test("default use refuses unmigrated legacy state but explicit recovery remains available", () => {
-  const dir = mkdtempSync(join(tmpdir(), "agentbrain-legacy-db-"));
+test("a stray pre-namespace database is invisible to default-path use", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbrain-stray-db-"));
   tempDirs.push(dir);
   const home = join(dir, "home");
-  const legacy = join(home, ".hermes", "research-cache", "research.db");
-  const store = new ResearchStore(legacy);
+  const stray = join(home, ".hermes", "research-cache", "research.db");
+  const store = new ResearchStore(stray);
   store.close();
 
-  const refused = runCli(["stats", "--json"], undefined, { HOME: home });
-  expect(refused.exitCode).toBe(1);
-  expect(JSON.parse(decode(refused.stdout))).toMatchObject({
-    ok: false,
-    command: "stats",
-    error: { code: "db_migration_required" },
+  // Default-path behavior must be byte-for-byte what a clean home gets.
+  const withStray = runCli(["stats", "--json"], undefined, { HOME: home });
+  const clean = runCli(["stats", "--json"], undefined, {
+    HOME: join(dir, "clean-home"),
   });
+  expect(withStray.exitCode).toBe(clean.exitCode);
+  expect(JSON.parse(decode(withStray.stdout)).error?.code).toBe(
+    JSON.parse(decode(clean.stdout)).error?.code,
+  );
 
-  const explicit = runCli(["--db", legacy, "stats", "--json"], undefined, {
+  // --db reads any explicit path; that is a flag, not a fallback.
+  const explicit = runCli(["--db", stray, "stats", "--json"], undefined, {
     HOME: home,
   });
   expect(explicit.exitCode, decode(explicit.stderr)).toBe(0);
-  expect(JSON.parse(decode(explicit.stdout)).meta.db_path).toBe(legacy);
-  expect(runCli(["--help"], undefined, { HOME: home }).exitCode).toBe(0);
+  expect(JSON.parse(decode(explicit.stdout)).meta.db_path).toBe(stray);
 });
 
 test("json parse errors stay machine-readable", () => {

@@ -26,10 +26,6 @@ export function defaultDatabasePath(home?: string): string {
   );
 }
 
-export function legacyDatabasePath(home?: string): string {
-  return join(runtimeHome(home), ".hermes", "research-cache", "research.db");
-}
-
 function pathState(path: string): PathState {
   try {
     const stat = lstatSync(path);
@@ -85,24 +81,5 @@ export function assertDefaultDatabaseTargetSafe(
 }
 
 export function assertDefaultDatabaseLocationReady(home?: string): void {
-  const target = defaultDatabasePath(home);
-  const legacy = legacyDatabasePath(home);
-  assertDefaultDatabaseTargetSafe(target, home);
-  const targetState = pathState(target);
-  const legacyState = pathState(legacy);
-
-  if (legacyState.exists && targetState.exists)
-    locationConflict(
-      `both legacy and Agentbrain default databases exist: ${legacy} and ${target}`,
-      "Stop all workers and resolve the split-brain risk before using the default database path.",
-    );
-  if (legacyState.exists) {
-    throw new CliError(
-      "db_migration_required",
-      `legacy Agentbrain database requires migration: ${legacy}`,
-      {
-        recovery: `Migrate it to ${DEFAULT_DATABASE_DISPLAY}, or pass --db/AGENTBRAIN_DB explicitly for controlled recovery.`,
-      },
-    );
-  }
+  assertDefaultDatabaseTargetSafe(defaultDatabasePath(home), home);
 }

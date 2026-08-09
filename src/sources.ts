@@ -415,7 +415,7 @@ function validateSourceDefinition(value: unknown): SourceDefinition {
 }
 
 function manifestVersion(input: Record<string, unknown>, name: string): number {
-  const version = input.schema_version ?? input.version;
+  const version = input.schema_version;
   if (version !== SOURCE_MANIFEST_VERSION) {
     throw sourceError(
       "unsupported_source_manifest_version",

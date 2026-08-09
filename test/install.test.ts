@@ -199,46 +199,19 @@ test("installer renders one private owned worker service idempotently", () => {
   expect(mode(log)).toBe(0o600);
 }, 15_000);
 
-test("installer refuses unmigrated and conflicting legacy database state", () => {
-  const unmigrated = setup();
-  const unmigratedPath = join(
-    unmigrated.home,
+test("installer ignores pre-namespace files and refuses an unsafe data root", () => {
+  const stray = setup();
+  const strayPath = join(
+    stray.home,
     ".hermes",
     "research-cache",
     "research.db",
   );
-  mkdirSync(dirname(unmigratedPath), { recursive: true });
-  writeFileSync(unmigratedPath, "legacy");
-  const refusedUnmigrated = runInstaller(unmigrated);
-  expect(refusedUnmigrated.exitCode).not.toBe(0);
-  expect(decode(refusedUnmigrated.stderr)).toContain(
-    "legacy Agentbrain database requires migration",
-  );
-  expect(existsSync(join(unmigrated.bin, "agentbrain"))).toBeFalse();
-
-  const conflicting = setup();
-  const legacyPath = join(
-    conflicting.home,
-    ".hermes",
-    "research-cache",
-    "research.db",
-  );
-  const targetPath = join(
-    conflicting.home,
-    ".local",
-    "share",
-    "agentbrain",
-    "research.db",
-  );
-  mkdirSync(dirname(legacyPath), { recursive: true });
-  mkdirSync(dirname(targetPath), { recursive: true });
-  writeFileSync(legacyPath, "legacy");
-  writeFileSync(targetPath, "target");
-  const refusedConflict = runInstaller(conflicting);
-  expect(refusedConflict.exitCode).not.toBe(0);
-  expect(decode(refusedConflict.stderr)).toContain(
-    "refusing conflicting legacy and Agentbrain databases",
-  );
+  mkdirSync(dirname(strayPath), { recursive: true });
+  writeFileSync(strayPath, "stray");
+  const installed = runInstaller(stray);
+  expect(installed.exitCode, decode(installed.stderr)).toBe(0);
+  expect(existsSync(join(stray.bin, "agentbrain"))).toBeTrue();
 
   const symlinked = setup();
   const share = join(symlinked.home, ".local", "share");
@@ -660,7 +633,6 @@ test("installer help states queue ownership and defers recurring sources", () =>
     "does not create or enable recurring remote sources",
   );
   expect(output).toContain("~/.local/share/agentbrain/research.db");
-  expect(output).toContain("refuses unmigrated legacy DB state");
 });
 
 test("installer owns no share ingress until a bind address is named", () => {

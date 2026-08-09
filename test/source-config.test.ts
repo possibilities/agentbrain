@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -29,6 +29,16 @@ afterEach(() => {
 function loadManifest() {
   return readSourceManifest(DEFAULT_SOURCE_MANIFEST_PATH);
 }
+
+test("the retired 'version' alias for schema_version is not read", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentbrain-source-config-"));
+  roots.push(root);
+  const manifest = join(root, "manifest.json");
+  writeFileSync(manifest, JSON.stringify({ version: 1, sources: [] }));
+  expect(() => readSourceManifest(manifest)).toThrow(
+    "schema_version must be 1",
+  );
+});
 
 test("bundled config/sources.json exemplifies every supported kind, disabled", () => {
   const manifest = loadManifest();

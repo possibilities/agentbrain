@@ -10,7 +10,7 @@ Install creates the agentbrain command plus one owned user LaunchAgent for
 `agentbrain worker`. Agentbrain owns the durable SQLite queue and index; the
 worker leases admitted ingestion jobs from that queue.
 The installer does not create or enable recurring remote sources. It uses
-~/.local/share/agentbrain/research.db and refuses unmigrated legacy DB state.
+~/.local/share/agentbrain/research.db.
 
 The share ingress is a second, opt-in service. Set
 
@@ -66,7 +66,6 @@ LAUNCH_AGENTS_DIR="${AGENTBRAIN_INSTALL_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchA
 STATE_DIR="${AGENTBRAIN_INSTALL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agentbrain}"
 DATA_DIR="$HOME/.local/share/agentbrain"
 DEFAULT_DB_PATH="$DATA_DIR/research.db"
-LEGACY_DB_PATH="$HOME/.hermes/research-cache/research.db"
 AGENTBRAIN_SOURCE="$ROOT/src/cli.ts"
 KNOWN_LEGACY_AGENTBRAIN_SOURCE="${AGENTBRAIN_INSTALL_LEGACY_SOURCE:-}"
 RETIRED_ADAPTER_SOURCE="$ROOT/src/research-ingest-link.ts"
@@ -359,9 +358,7 @@ unload_owned_service() {
 
 check_database_location() {
   local target_exists=false
-  local legacy_exists=false
   [[ -e "$DEFAULT_DB_PATH" || -L "$DEFAULT_DB_PATH" ]] && target_exists=true
-  [[ -e "$LEGACY_DB_PATH" || -L "$LEGACY_DB_PATH" ]] && legacy_exists=true
 
   if [[ -e "$DATA_DIR" || -L "$DATA_DIR" ]]; then
     if [[ -L "$DATA_DIR" || ! -d "$DATA_DIR" ]]; then
@@ -371,14 +368,6 @@ check_database_location() {
   fi
   if [[ "$target_exists" == true && ( -L "$DEFAULT_DB_PATH" || ! -f "$DEFAULT_DB_PATH" ) ]]; then
     echo "refusing non-regular or symlinked Agentbrain database: $DEFAULT_DB_PATH" >&2
-    return 1
-  fi
-  if [[ "$legacy_exists" == true && "$target_exists" == true ]]; then
-    echo "refusing conflicting legacy and Agentbrain databases: $LEGACY_DB_PATH and $DEFAULT_DB_PATH" >&2
-    return 1
-  fi
-  if [[ "$legacy_exists" == true ]]; then
-    echo "legacy Agentbrain database requires migration: $LEGACY_DB_PATH -> $DEFAULT_DB_PATH" >&2
     return 1
   fi
 }
