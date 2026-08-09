@@ -114,9 +114,10 @@ test("overlay faults are reported against the overlay by name", () => {
   expect(fault.message).toContain("source overlay");
 });
 
-// To flip in the zod port (the one sanctioned behavior change): unknown keys
-// at the manifest root will be rejected. `$schema` must stay tolerated.
-test("unknown manifest root keys are ignored today; $schema is tolerated", () => {
+// Flipped by the zod port (the one sanctioned behavior change): unknown keys
+// at the manifest root used to be ignored and are now rejected, with the key
+// and the known-key list named. `$schema` stays tolerated, whatever its value.
+test("unknown manifest root keys are rejected; $schema stays tolerated", () => {
   expect(
     validateSourceManifest({
       $schema: "./sources.schema.json",
@@ -124,12 +125,16 @@ test("unknown manifest root keys are ignored today; $schema is tolerated", () =>
       sources: [],
     }).sources,
   ).toEqual([]);
-  const parsed = validateSourceManifest({
-    schema_version: 1,
-    sources: [],
-    mystery: true,
-  });
-  expect(Object.keys(parsed).sort()).toEqual(["schema_version", "sources"]);
+  expect(
+    validateSourceManifest({ $schema: 7, schema_version: 1, sources: [] })
+      .sources,
+  ).toEqual([]);
+  const fault = cliError(() =>
+    validateSourceManifest({ schema_version: 1, sources: [], mystery: true }),
+  );
+  expect(fault.code).toBe("bad_source_manifest");
+  expect(fault.message).toContain("mystery");
+  expect(fault.message).toContain("schema_version");
 });
 
 test("stable ids must be unique across the manifest, compared after trimming", () => {
@@ -557,14 +562,17 @@ test("schedule faults name the cadence and enforce the 1s..31d window", () => {
   }
 });
 
-// To flip in the zod port: unknown schedule keys are ignored today and will
-// be rejected. Either way they never reach the normalized schedule.
-test("unknown schedule keys are ignored today and never stored", () => {
-  expect(
+// Flipped by the zod port: unknown schedule keys used to be ignored and are
+// now rejected with the key named.
+test("unknown schedule keys are rejected", () => {
+  const fault = cliError(() =>
     validateSourceManifest(
       manifest(blog({ schedule: { cadence: "daily", cadenza: 1 } })),
-    ).sources[0]?.schedule,
-  ).toEqual({ cadence_seconds: 86_400 });
+    ),
+  );
+  expect(fault.code).toBe("bad_source_manifest");
+  expect(fault.message).toContain("cadenza");
+  expect(fault.message).toContain("cadence_seconds");
 });
 
 test("limits aliases resolve with null fall-through and both ceilings stated", () => {
@@ -605,18 +613,20 @@ test("limits aliases resolve with null fall-through and both ceilings stated", (
   }
 });
 
-// To flip in the zod port: unknown limits keys are ignored today and will be
-// rejected. Either way they never reach the normalized limits.
-test("unknown limits keys are ignored today and never stored", () => {
-  expect(
+// Flipped by the zod port: unknown limits keys used to be ignored and are
+// now rejected with the key named.
+test("unknown limits keys are rejected", () => {
+  const fault = cliError(() =>
     validateSourceManifest(
       manifest(
         blog({
           limits: { max_items_per_run: 9, max_pages_per_run: 3, max_depth: 4 },
         }),
       ),
-    ).sources[0]?.limits,
-  ).toEqual({ max_items_per_run: 9, max_pages_per_run: 3 });
+    ),
+  );
+  expect(fault.code).toBe("bad_source_manifest");
+  expect(fault.message).toContain("max_depth");
 });
 
 test("collections are slugs, trimmed, deduplicated, and may be empty", () => {
@@ -676,11 +686,20 @@ test("credential_refs default to empty, accept null, and refuse value-shaped ent
   }
 });
 
-// To flip in the zod port: unknown definition keys are ignored and dropped
-// today and will be rejected with the key named.
-test("unknown definition keys are ignored and dropped today", () => {
-  const parsed = validateSourceManifest(manifest(blog({ retries: 3 })));
-  expect(parsed.sources[0]).not.toHaveProperty("retries");
+// Flipped by the zod port: unknown definition keys used to be ignored and
+// dropped, and are now rejected with the key named. The rejection lands
+// after every fault the old validator could report, so an already-invalid
+// definition still names its old first fault.
+test("unknown definition keys are rejected", () => {
+  const fault = cliError(() =>
+    validateSourceManifest(manifest(blog({ retries: 3 }))),
+  );
+  expect(fault.code).toBe("bad_source_manifest");
+  expect(fault.message).toContain("retries");
+  const priorFault = cliError(() =>
+    validateSourceManifest(manifest(blog({ retries: 3, version: 0 }))),
+  );
+  expect(priorFault.message).toContain("version");
 });
 
 test("a definition larger than 128KiB is refused", () => {

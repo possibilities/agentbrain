@@ -1,13 +1,16 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "agentbrain source manifest",
-  "description": "A versioned, declarative manifest of external Sources for `agentbrain sources apply`, which durably creates or updates matching Source definitions. The repo bundles one at config/sources.json as the documented example — one disabled Source per supported kind — and an operator may pass their own with --manifest. Applying a manifest never fetches anything and never deletes a definition; enabling a Source is a separate, explicit act. Validation is hand-rolled in src/sources.ts and reads only the fields named here: unrecognised keys are neither rejected nor stored, they are simply ignored, which is why additionalProperties stays open throughout. Every validation fault is a bad_source_manifest CliError exiting 2.",
+  "description": "A versioned, declarative manifest of external Sources for `agentbrain sources apply`, which durably creates or updates matching Source definitions. The repo bundles one at config/sources.json as the documented example — one disabled Source per supported kind — and an operator may pass their own with --manifest. Applying a manifest never fetches anything and never deletes a definition; enabling a Source is a separate, explicit act. This file is generated from the zod schema in src/source-manifest-schema.ts by `bun run generate:schema` — the same schema the loader validates with — so edit the schema module, never this file. Unrecognised keys are rejected with the key path named, except `$schema` here at the root and the deliberately open payload subtree. Validation faults are bad_source_manifest CliErrors exiting 2, with their own codes for a schema_version mismatch (unsupported_source_manifest_version), a repeated id (duplicate_source_id), and a credential-shaped payload member (source_contains_credential); a malformed URL inside a payload surfaces as an unexpected error exiting 1.",
   "type": "object",
-  "additionalProperties": true,
-  "required": ["schema_version", "sources"],
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sources"
+  ],
   "properties": {
     "$schema": {
-      "description": "Path or URL of this schema, for editors that offer completion and validation. The loader never reads it; like any other unrecognised key it is ignored, and it is dropped from the definitions that `sources apply` stores.",
+      "description": "Path or URL of this schema, for editors that offer completion and validation. The loader never reads it: the key is tolerated whatever its value, stripped before validation, and dropped from the definitions that `sources apply` stores.",
       "type": "string"
     },
     "schema_version": {
@@ -21,7 +24,7 @@
       "items": {
         "description": "One Source definition: a stable identity plus the policy under which agentbrain is willing to poll it.",
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": [
           "id",
           "version",
@@ -32,6 +35,64 @@
           "schedule",
           "limits",
           "collections"
+        ],
+        "allOf": [
+          {
+            "description": "A blog Source must name something to poll: discovery starts from the homepage or goes straight to a known feed.",
+            "if": {
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "blog_feed",
+                    "blog_source"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "payload": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "homepage_url"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "feed_url"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "description": "An x_account is polled by handle, so the handle is not optional.",
+            "if": {
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "x_account"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "payload": {
+                  "required": [
+                    "handle"
+                  ]
+                }
+              }
+            }
+          }
         ],
         "properties": {
           "id": {
@@ -67,7 +128,12 @@
           "sensitivity": {
             "description": "Handling policy for everything this Source yields, ranked public < normal < sensitive < private. It bounds how the resulting Documents may be surfaced and shared.",
             "type": "string",
-            "enum": ["public", "normal", "sensitive", "private"]
+            "enum": [
+              "public",
+              "normal",
+              "sensitive",
+              "private"
+            ]
           },
           "payload": {
             "description": "The kind-specific locator: where to poll and how, distinct from the identity in `id`. Unknown members are preserved as given, but no member anywhere in the payload may be credential-shaped — a key or URL query parameter named like a token, api_key, password, cookie, secret, session, signature, or authorization is refused with source_contains_credential. Name the secret in credential_refs instead; the manifest is a committed file and never holds a credential value.",
@@ -116,23 +182,31 @@
           "schedule": {
             "description": "How often this Source becomes due. Required. Evaluation admits at most one catch-up Run per overdue Source and advances the next due time from the current evaluation rather than once per missed wall-clock tick, so a stopped worker cannot bank a backlog. Whichever spelling is used, the cadence is normalised to whole seconds, from 1 second to 31 days.",
             "type": "object",
-            "additionalProperties": true,
+            "additionalProperties": false,
             "anyOf": [
               {
                 "description": "The canonical spelling, already in seconds.",
-                "required": ["cadence_seconds"]
+                "required": [
+                  "cadence_seconds"
+                ]
               },
               {
                 "description": "Minutes, multiplied by 60.",
-                "required": ["cadence_minutes"]
+                "required": [
+                  "cadence_minutes"
+                ]
               },
               {
                 "description": "The general spelling, a number of seconds or a duration string.",
-                "required": ["cadence"]
+                "required": [
+                  "cadence"
+                ]
               },
               {
                 "description": "The alias for cadence, read last.",
-                "required": ["every"]
+                "required": [
+                  "every"
+                ]
               }
             ],
             "properties": {
@@ -145,8 +219,8 @@
               "cadence_minutes": {
                 "description": "Cadence in minutes, multiplied by 60 to reach seconds. Read only when cadence_seconds is absent, and the product must land on a whole number of seconds from 1 to 2678400 — so at most 44640 minutes.",
                 "type": "number",
-                "exclusiveMinimum": 0,
-                "maximum": 44640
+                "maximum": 44640,
+                "exclusiveMinimum": 0
               },
               "cadence": {
                 "description": "Cadence as a number of whole seconds, or as a duration string: `hourly`, `daily`, a bounded duration like `30s`, `15m`, `6h`, or `2d`, or an ISO 8601 time duration like `PT6H30M`. Strings are trimmed and matched case-insensitively. However it is spelled, the result must fall between 1 second and 2678400 seconds (31 days). Read only when cadence_seconds and cadence_minutes are absent.",
@@ -185,20 +259,36 @@
           "limits": {
             "description": "The per-Run ceiling on how much this Source may pull. Required, and both ceilings must be stated — an unbounded Source is not expressible. They are what keeps polling forward-only and bounded rather than a silent historical backfill.",
             "type": "object",
-            "additionalProperties": true,
+            "additionalProperties": false,
             "allOf": [
               {
                 "description": "The item ceiling, under either spelling.",
                 "anyOf": [
-                  { "required": ["max_items_per_run"] },
-                  { "required": ["max_items"] }
+                  {
+                    "required": [
+                      "max_items_per_run"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "max_items"
+                    ]
+                  }
                 ]
               },
               {
                 "description": "The page ceiling, under either spelling.",
                 "anyOf": [
-                  { "required": ["max_pages_per_run"] },
-                  { "required": ["max_pages"] }
+                  {
+                    "required": [
+                      "max_pages_per_run"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "max_pages"
+                    ]
+                  }
                 ]
               }
             ],
@@ -253,36 +343,7 @@
               "pattern": "^[A-Za-z][A-Za-z0-9+._:/@-]{0,255}$"
             }
           }
-        },
-        "allOf": [
-          {
-            "description": "A blog Source must name something to poll: discovery starts from the homepage or goes straight to a known feed.",
-            "if": {
-              "required": ["kind"],
-              "properties": { "kind": { "enum": ["blog_feed", "blog_source"] } }
-            },
-            "then": {
-              "properties": {
-                "payload": {
-                  "anyOf": [
-                    { "required": ["homepage_url"] },
-                    { "required": ["feed_url"] }
-                  ]
-                }
-              }
-            }
-          },
-          {
-            "description": "An x_account is polled by handle, so the handle is not optional.",
-            "if": {
-              "required": ["kind"],
-              "properties": { "kind": { "const": "x_account" } }
-            },
-            "then": {
-              "properties": { "payload": { "required": ["handle"] } }
-            }
-          }
-        ]
+        }
       }
     }
   }

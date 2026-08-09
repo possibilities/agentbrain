@@ -32,7 +32,7 @@ Registration is declarative and versioned. Keep manifests private when their URL
 }
 ```
 
-`config/sources.json` carries one disabled example per kind, and names `config/sources.schema.json` in its `$schema` key so an editor can validate a manifest as it is written — the loader ignores the key like any other it does not read. Only `payload` differs between them:
+`config/sources.json` carries one disabled example per kind, and names `config/sources.schema.json` in its `$schema` key so an editor can validate a manifest as it is written — the loader tolerates and strips that one key, and rejects any other key it does not know by name (the schema file itself is generated from `src/source-manifest-schema.ts` by `bun run generate:schema`). Only `payload` differs between them:
 
 | `kind` | Identity payload | Constraint |
 |---|---|---|

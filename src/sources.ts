@@ -2,8 +2,18 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { z } from "zod";
 import { CliError } from "./errors";
 import { sanitizeExternalError } from "./sanitize";
+import {
+  LIMITS_KEYS,
+  MANIFEST_KEYS,
+  MAX_SOURCES,
+  manifestEnvelopeSchema,
+  SCHEDULE_KEYS,
+  SOURCE_DEFINITION_KEYS,
+  sourceDefinitionValuesSchema,
+} from "./source-manifest-schema";
 import type {
   KnownSourceKind,
   Source,
@@ -30,20 +40,11 @@ import {
 import type { JobState, Run, RunState, Sensitivity } from "./types";
 import { validateHttpUrl } from "./url";
 
-const SOURCE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,99}$/;
-const SOURCE_KIND_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-const COLLECTION_PATTERN = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 const X_HANDLE_PATTERN = /^@?[A-Za-z0-9_]{1,20}$/;
 const CREDENTIAL_KEY_PATTERN =
   /(?:^|[_-])(access[_-]?token|api[_-]?key|authorization|bearer|cookie|credential|password|private[_-]?key|refresh[_-]?token|secret|session|signature|token)(?:$|[_-])/i;
 const CREDENTIAL_QUERY_PATTERN =
   /^(?:access[_-]?key|api[_-]?key|auth|authorization|cookie|password|secret|session|signature|token)$/i;
-const SENSITIVITIES = new Set<Sensitivity>([
-  "public",
-  "normal",
-  "sensitive",
-  "private",
-]);
 const SOURCE_SENSITIVITY_RANK: Record<Sensitivity, number> = {
   public: 0,
   normal: 1,
@@ -55,7 +56,6 @@ const KNOWN_SOURCE_KIND_SET = new Set<KnownSourceKind>([
   "blog_source",
   "x_account",
 ]);
-const MAX_SOURCES = 1_000;
 const MAX_DEFINITION_BYTES = 128 * 1024;
 
 /**
@@ -238,50 +238,150 @@ function credentialFree(value: unknown, path: string): void {
   }
 }
 
-function parseCredentialRefs(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw sourceError(
-      "bad_source_manifest",
-      "credential_refs must be an array",
-    );
-  }
-  const refs = value.map((item, index) => {
-    const ref = requiredString(item, `credential_refs[${index}]`, 256);
-    if (!/^[A-Za-z][A-Za-z0-9+._:/@-]{0,255}$/.test(ref) || ref.includes("=")) {
-      throw sourceError(
-        "bad_source_manifest",
-        "credential_refs entries must be opaque reference names, never credential values",
-      );
-    }
-    return ref;
-  });
-  if (new Set(refs).size !== refs.length) {
-    throw sourceError(
-      "bad_source_manifest",
-      "credential_refs contains duplicates",
-    );
-  }
-  return refs;
+type ManifestIssue = z.core.$ZodIssue;
+
+function issueAt(
+  issues: readonly ManifestIssue[],
+  key: string,
+): ManifestIssue | undefined {
+  return issues.find((issue) => issue.path[0] === key);
 }
 
-function parseCollections(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw sourceError("bad_source_manifest", "collections must be an array");
+function unknownKeysError(
+  scope: string,
+  issue: ManifestIssue,
+  known: readonly string[],
+): CliError {
+  const keys = issue.code === "unrecognized_keys" ? issue.keys : [];
+  const named = keys.map((key) => `'${key}'`).join(", ");
+  return sourceError(
+    "bad_source_manifest",
+    `${scope} has unknown key${keys.length === 1 ? "" : "s"} ${named}; known keys: ${known.join(", ")}`,
+  );
+}
+
+/**
+ * The dup refinement collapses to its own issue; item faults arrive as a
+ * union against the tolerated-null branch and are unwrapped here.
+ */
+function credentialRefEntryFault(
+  issue: ManifestIssue,
+  index: unknown,
+): CliError {
+  if (issue.code === "too_big") {
+    return sourceError(
+      "bad_source_manifest",
+      `credential_refs[${String(index)}] is too long`,
+    );
   }
-  const collections = value.map((item, index) => {
-    const collection = requiredString(item, `collections[${index}]`, 100);
-    if (!COLLECTION_PATTERN.test(collection)) {
-      throw sourceError(
-        "bad_source_manifest",
-        `collections[${index}] must be a stable lowercase slug`,
-      );
+  if (issue.code === "invalid_format") {
+    return sourceError(
+      "bad_source_manifest",
+      "credential_refs entries must be opaque reference names, never credential values",
+    );
+  }
+  return sourceError(
+    "bad_source_manifest",
+    `credential_refs[${String(index)}] must be a non-empty string`,
+  );
+}
+
+function credentialRefsFault(issue: ManifestIssue): CliError {
+  // When the array branch type-matches, zod collapses the array-or-null
+  // union and reports entry faults directly at credential_refs[i].
+  if (issue.path.length === 2) {
+    return credentialRefEntryFault(issue, issue.path[1]);
+  }
+  if (issue.code === "custom") {
+    return sourceError("bad_source_manifest", issue.message);
+  }
+  if (issue.code === "invalid_union") {
+    for (const branch of issue.errors) {
+      const item = branch.find((candidate) => candidate.path.length > 0);
+      if (item === undefined) continue;
+      return credentialRefEntryFault(item, item.path[item.path.length - 1]);
     }
-    return collection;
-  });
-  if (new Set(collections).size !== collections.length) {
-    throw sourceError("bad_source_manifest", "collections contains duplicates");
   }
-  return collections;
+  return sourceError("bad_source_manifest", "credential_refs must be an array");
+}
+
+/** Renders one schema issue as the loader's own error prose. */
+function definitionFault(issue: ManifestIssue, idLabel: string): CliError {
+  const bad = (message: string) => sourceError("bad_source_manifest", message);
+  switch (issue.path[0]) {
+    case "id":
+      if (issue.code === "too_big") return bad("source id is too long");
+      if (issue.code === "invalid_format") {
+        return bad(
+          "source id must use 1-100 lowercase letters, numbers, dots, underscores, or hyphens",
+        );
+      }
+      return bad("source id must be a non-empty string");
+    case "version":
+      return bad(
+        `source ${idLabel} version must be an integer between 1 and 1000000`,
+      );
+    case "kind":
+      if (issue.code === "too_big")
+        return bad(`source ${idLabel} kind is too long`);
+      if (issue.code === "invalid_format") {
+        return bad(`source ${idLabel} kind is invalid`);
+      }
+      return bad(`source ${idLabel} kind must be a non-empty string`);
+    case "enabled":
+      return bad(`source ${idLabel} enabled must be boolean`);
+    case "sensitivity":
+      if (issue.code === "invalid_type") {
+        return bad(`source ${idLabel} sensitivity must be a non-empty string`);
+      }
+      return bad(
+        `source ${idLabel} sensitivity must be public, normal, sensitive, or private`,
+      );
+    case "payload":
+      return bad(`source ${idLabel} payload must be an object`);
+    case "display_name":
+      if (issue.code === "too_big") {
+        return bad(`source ${idLabel} display_name is too long`);
+      }
+      return bad(`source ${idLabel} display_name must be a non-empty string`);
+    case "schedule":
+      if (issue.code === "unrecognized_keys") {
+        return unknownKeysError(
+          `source ${idLabel} schedule`,
+          issue,
+          SCHEDULE_KEYS,
+        );
+      }
+      return bad("source schedule must be an object");
+    case "limits":
+      if (issue.code === "unrecognized_keys") {
+        return unknownKeysError(`source ${idLabel} limits`, issue, LIMITS_KEYS);
+      }
+      return bad("source limits must be an object");
+    case "collections": {
+      if (issue.path.length === 2) {
+        const slot = `collections[${String(issue.path[1])}]`;
+        if (issue.code === "too_big") return bad(`${slot} is too long`);
+        if (issue.code === "invalid_format") {
+          return bad(`${slot} must be a stable lowercase slug`);
+        }
+        return bad(`${slot} must be a non-empty string`);
+      }
+      if (issue.code === "custom") return bad(issue.message);
+      return bad("collections must be an array");
+    }
+    case "credential_refs":
+      return credentialRefsFault(issue);
+    default:
+      if (issue.code === "unrecognized_keys") {
+        return unknownKeysError(
+          `source ${idLabel}`,
+          issue,
+          SOURCE_DEFINITION_KEYS,
+        );
+      }
+      return bad(`source ${idLabel} definition is invalid`);
+  }
 }
 
 function validateKnownPayload(
@@ -339,59 +439,71 @@ export function isExecutableSourceKind(kind: string): kind is KnownSourceKind {
   return KNOWN_SOURCE_KIND_SET.has(kind as KnownSourceKind);
 }
 
+/**
+ * Validates one merged definition with the zod schema, replaying its issues
+ * in the order the hand-rolled validator read the fields, so a multi-fault
+ * definition still surfaces the same first fault — and the payload sweeps
+ * (whose URL faults are plain Errors, exiting 1 as unexpected errors) still
+ * run between the identity fields and the remaining ones.
+ */
 function validateSourceDefinition(value: unknown): SourceDefinition {
   const input = record(value, "source definition");
-  const id = requiredString(input.id, "source id", 100);
-  if (!SOURCE_ID_PATTERN.test(id)) {
-    throw sourceError(
-      "bad_source_manifest",
-      "source id must use 1-100 lowercase letters, numbers, dots, underscores, or hyphens",
-    );
+  const parsed = sourceDefinitionValuesSchema.safeParse(input);
+  const issues: readonly ManifestIssue[] = parsed.success
+    ? []
+    : parsed.error.issues;
+  const throwAt = (key: string, idLabel: string): void => {
+    const issue = issueAt(issues, key);
+    if (issue !== undefined) throw definitionFault(issue, idLabel);
+  };
+
+  throwAt("id", "?");
+  const id = String(input.id).trim();
+  for (const key of ["version", "kind", "enabled", "sensitivity", "payload"]) {
+    throwAt(key, id);
   }
-  const version = positiveInteger(
-    input.version,
-    `source ${id} version`,
-    1_000_000,
-  );
-  const kind = requiredString(input.kind, `source ${id} kind`, 64);
-  if (!SOURCE_KIND_PATTERN.test(kind)) {
-    throw sourceError("bad_source_manifest", `source ${id} kind is invalid`);
-  }
-  if (typeof input.enabled !== "boolean") {
-    throw sourceError(
-      "bad_source_manifest",
-      `source ${id} enabled must be boolean`,
-    );
-  }
-  const sensitivity = requiredString(
-    input.sensitivity,
-    `source ${id} sensitivity`,
-    20,
-  ) as Sensitivity;
-  if (!SENSITIVITIES.has(sensitivity)) {
-    throw sourceError(
-      "bad_source_manifest",
-      `source ${id} sensitivity must be public, normal, sensitive, or private`,
-    );
-  }
-  const payload = record(input.payload, `source ${id} payload`);
+
+  const payload = input.payload as Record<string, unknown>;
+  const kind = String(input.kind).trim();
   credentialFree(payload, `source ${id} payload`);
   validateKnownPayload(kind, payload);
+
+  throwAt("display_name", id);
+  throwAt("schedule", id);
+  const schedule = parseSchedule(input.schedule);
+  throwAt("limits", id);
+  const limits = parseLimits(input.limits);
+  throwAt("collections", id);
+  throwAt("credential_refs", id);
+  const unknown = issues.find(
+    (issue) => issue.code === "unrecognized_keys" && issue.path.length === 0,
+  );
+  if (unknown !== undefined) {
+    throw unknownKeysError(`source ${id}`, unknown, SOURCE_DEFINITION_KEYS);
+  }
+  if (!parsed.success) {
+    const [first] = issues;
+    throw first !== undefined
+      ? definitionFault(first, id)
+      : sourceError(
+          "bad_source_manifest",
+          `source ${id} definition is invalid`,
+        );
+  }
+
+  const values = parsed.data;
   const definition: SourceDefinition = {
-    id,
-    version,
-    kind,
-    display_name:
-      input.display_name === undefined
-        ? id
-        : requiredString(input.display_name, `source ${id} display_name`),
-    enabled: input.enabled,
+    id: values.id,
+    version: values.version,
+    kind: values.kind,
+    display_name: values.display_name ?? values.id,
+    enabled: values.enabled,
     payload,
-    schedule: parseSchedule(input.schedule),
-    limits: parseLimits(input.limits),
-    collections: parseCollections(input.collections),
-    sensitivity,
-    credential_refs: parseCredentialRefs(input.credential_refs ?? []),
+    schedule,
+    limits,
+    collections: values.collections,
+    sensitivity: values.sensitivity,
+    credential_refs: values.credential_refs ?? [],
   };
   if (
     (kind === "blog_feed" || kind === "blog_source") &&
@@ -414,35 +526,70 @@ function validateSourceDefinition(value: unknown): SourceDefinition {
   return definition;
 }
 
-function manifestVersion(input: Record<string, unknown>, name: string): number {
-  const version = input.schema_version;
-  if (version !== SOURCE_MANIFEST_VERSION) {
-    throw sourceError(
+/** `$schema` is editor tooling, never configuration; drop it pre-validation. */
+function stripEditorSchemaKey(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const { $schema: _editorSchema, ...manifest } = value as Record<
+    string,
+    unknown
+  >;
+  return manifest;
+}
+
+/** Envelope issues, replayed in the order the old checks ran. */
+function envelopeFault(
+  name: string,
+  issues: readonly ManifestIssue[],
+): CliError {
+  if (
+    issues.some(
+      (issue) => issue.path.length === 0 && issue.code === "invalid_type",
+    )
+  ) {
+    return sourceError("bad_source_manifest", `${name} must be an object`);
+  }
+  if (issueAt(issues, "schema_version") !== undefined) {
+    return sourceError(
       "unsupported_source_manifest_version",
       `${name} schema_version must be ${SOURCE_MANIFEST_VERSION}`,
     );
   }
-  return SOURCE_MANIFEST_VERSION;
+  const arrayIssue = issues.find(
+    (issue) => issue.path.length === 1 && issue.path[0] === "sources",
+  );
+  if (arrayIssue !== undefined) {
+    return arrayIssue.code === "too_big"
+      ? sourceError(
+          "bad_source_manifest",
+          `${name}.sources exceeds the ${MAX_SOURCES}-source limit`,
+        )
+      : sourceError("bad_source_manifest", `${name}.sources must be an array`);
+  }
+  const entryIssue = issueAt(issues, "sources");
+  if (entryIssue !== undefined) {
+    return sourceError(
+      "bad_source_manifest",
+      `${name}.sources[${String(entryIssue.path[1])}] must be an object`,
+    );
+  }
+  const unknown = issues.find((issue) => issue.code === "unrecognized_keys");
+  if (unknown !== undefined) {
+    return unknownKeysError(name, unknown, MANIFEST_KEYS);
+  }
+  return sourceError(
+    "bad_source_manifest",
+    `${name} is not a valid source manifest`,
+  );
 }
 
 function rawManifest(value: unknown, name: string): Record<string, unknown>[] {
-  const manifest = record(value, name);
-  manifestVersion(manifest, name);
-  if (!Array.isArray(manifest.sources)) {
-    throw sourceError(
-      "bad_source_manifest",
-      `${name}.sources must be an array`,
-    );
-  }
-  if (manifest.sources.length > MAX_SOURCES) {
-    throw sourceError(
-      "bad_source_manifest",
-      `${name}.sources exceeds the ${MAX_SOURCES}-source limit`,
-    );
-  }
-  return manifest.sources.map((source, index) =>
-    record(source, `${name}.sources[${index}]`),
-  );
+  const stripped = stripEditorSchemaKey(value);
+  const parsed = manifestEnvelopeSchema.safeParse(stripped);
+  if (!parsed.success) throw envelopeFault(name, parsed.error.issues);
+  const sources = (stripped as Record<string, unknown>).sources as unknown[];
+  return sources.map((source) => source as Record<string, unknown>);
 }
 
 function assertUniqueIds(
