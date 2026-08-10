@@ -60,8 +60,8 @@ AGENTDOTS_INSTALL_SHARE_HOST=100.101.102.103 \
   ~/code/agentdots/scripts/install-launchagents --install
 ```
 
-On this machine Funk normally supplies that address itself, from `tailscale ip
--4`, when it runs `install-local-services`.
+On this machine the address is normally discovered for you, from `tailscale ip
+-4`, so naming it explicitly is only needed off the tailnet.
 
 Naming the address is the whole point: ADR 0017 admits no configuration in which
 the ingress is exposed by default, so an unset variable installs no listener at
