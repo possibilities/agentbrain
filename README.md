@@ -1,5 +1,7 @@
 # agentbrain
 
+[![CI](https://github.com/possibilities/agentbrain/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/possibilities/agentbrain/actions/workflows/ci.yml)
+
 Agentbrain owns your local research index and is its sole durable ingestion authority: Admission, the SQLite ingestion queue, Attempts, Artifacts, schema, FTS search, retrieval, and provenance. Read commands open structurally read-only connections. The database lives at `~/.local/share/agentbrain/research.db`; `--db PATH` wins over `AGENTBRAIN_DB`, which wins over that default.
 
 An Ingress submits intent at Admission, which durably queues an immutable job before returning — it never materializes content. The Worker leases jobs and delegates URL extraction to Agentscrape, which owns fetching and network policy while Agentbrain remains the only index writer. [docs/adr/](docs/adr/) records the decisions, starting with [Agentbrain owns durable ingestion](docs/adr/0003-agentbrain-owns-durable-ingestion.md); `CONTEXT.md` is the domain glossary.
