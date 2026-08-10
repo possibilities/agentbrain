@@ -51,17 +51,22 @@ same `job_id` — re-sharing is safe, not additive.
 
 ### Running it resident
 
-The ingress is a separate long-running process from the Worker. The installer
-owns a LaunchAgent for it, but only when you name the address to bind:
+The ingress is a separate long-running process from the Worker. Its LaunchAgent
+belongs to Agentdots, which owns every fleet service, and it is installed only
+when you name the address to bind:
 
 ```bash
-AGENTBRAIN_INSTALL_SHARE_HOST=100.101.102.103 ./scripts/install.sh
+AGENTDOTS_INSTALL_SHARE_HOST=100.101.102.103 \
+  ~/code/agentdots/scripts/install-launchagents --install
 ```
+
+On this machine Funk normally supplies that address itself, from `tailscale ip
+-4`, when it runs `install-local-services`.
 
 Naming the address is the whole point: ADR 0017 admits no configuration in which
 the ingress is exposed by default, so an unset variable installs no listener at
 all. An unset variable on a later run leaves an ingress you already asked for
-alone; removing one is the explicit `AGENTBRAIN_INSTALL_SHARE_HOST=none`.
+alone; removing one is the explicit `AGENTDOTS_INSTALL_SHARE_HOST=none`.
 `0.0.0.0`, `::`, and addresses carrying shell or option syntax are refused before
 anything is written, rather than by a service that starts, is refused, and is
 restarted forever by `KeepAlive`.
