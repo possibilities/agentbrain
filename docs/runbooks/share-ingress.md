@@ -52,12 +52,12 @@ same `job_id` — re-sharing is safe, not additive.
 ### Running it resident
 
 The ingress is a separate long-running process from the Worker. Its LaunchAgent
-belongs to Agentdots, which owns every fleet service, and it is installed only
+belongs to AgentStart, which owns every fleet service, and it is installed only
 when you name the address to bind:
 
 ```bash
-AGENTDOTS_INSTALL_SHARE_HOST=100.101.102.103 \
-  ~/code/agentdots/scripts/install-launchagents --install
+AGENTSTART_INSTALL_SHARE_HOST=100.101.102.103 \
+  ~/code/agentstart/scripts/install-launchagents --install
 ```
 
 On this machine the address is normally discovered for you, from `tailscale ip
@@ -66,7 +66,7 @@ On this machine the address is normally discovered for you, from `tailscale ip
 Naming the address is the whole point: ADR 0017 admits no configuration in which
 the ingress is exposed by default, so an unset variable installs no listener at
 all. An unset variable on a later run leaves an ingress you already asked for
-alone; removing one is the explicit `AGENTDOTS_INSTALL_SHARE_HOST=none`.
+alone; removing one is the explicit `AGENTSTART_INSTALL_SHARE_HOST=none`.
 `0.0.0.0`, `::`, and addresses carrying shell or option syntax are refused before
 anything is written, rather than by a service that starts, is refused, and is
 restarted forever by `KeepAlive`.

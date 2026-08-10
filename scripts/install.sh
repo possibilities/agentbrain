@@ -12,12 +12,12 @@ The installer does not create or enable recurring remote sources. It uses
 ~/.local/share/agentbrain/research.db.
 
 The three services that run this code — agentbrain.worker, agentbrain.doctor,
-and the opt-in agentbrain.share ingress — are installed by Agentdots, which
+and the opt-in agentbrain.share ingress — are installed by AgentStart, which
 owns every fleet launch agent:
 
-  ~/code/agentdots/scripts/install-launchagents --install
+  ~/code/agentstart/scripts/install-launchagents --install
 
-Their configuration moved with them and is now read from AGENTDOTS_INSTALL_*:
+Their configuration moved with them and is now read from AGENTSTART_INSTALL_*:
 SHARE_HOST names the tailnet address that exposes the ingress (ADR 0017 admits
 no configuration in which it is exposed by default, so an unset value installs
 no listener), and CONDUIT_SOCKET and CONDUIT_TOKEN_FILE are passed through to
@@ -26,7 +26,7 @@ interprets none of them and holds no credential of its own.
 
 Uninstall removes only the known command links. It preserves the database,
 Artifacts, and the private worker and share logs, and leaves the services to
-Agentdots.
+AgentStart.
 EOF
 }
 
@@ -56,8 +56,8 @@ DEFAULT_DB_PATH="$DATA_DIR/research.db"
 AGENTBRAIN_SOURCE="$ROOT/src/cli.ts"
 LOG_PATH="$STATE_DIR/worker.log"
 DEPLOYED_SHA_PATH="$STATE_DIR/deployed-sha"
-# The launch agents that supervise this code belong to Agentdots, which
-# owns every fleet service (~/code/agentdots/config/launchd/). This
+# The launch agents that supervise this code belong to AgentStart, which
+# owns every fleet service (~/code/agentstart/config/launchd/). This
 # installer ships the CLI; giving one service two owners would have them
 # race to render it.
 
@@ -260,5 +260,5 @@ chmod +x "$AGENTBRAIN_SOURCE"
 ln -sfn "$AGENTBRAIN_SOURCE" "$BIN_DIR/agentbrain"
 write_deployed_sha
 printf 'installed %s -> %s\n' "$BIN_DIR/agentbrain" "$AGENTBRAIN_SOURCE"
-printf 'the agentbrain services are installed by Agentdots: %s\n' \
-  "$HOME/code/agentdots/scripts/install-launchagents --install"
+printf 'the agentbrain services are installed by AgentStart: %s\n' \
+  "$HOME/code/agentstart/scripts/install-launchagents --install"

@@ -36,10 +36,10 @@ below is a constraint you cannot recover by reading a single file.
   not console output.
 - The three services that run this code — `agentbrain.worker`,
   `agentbrain.doctor`, and the opt-in `agentbrain.share` — are defined and
-  installed by Agentdots (`~/code/agentdots/config/launchd/`), not here. This
+  installed by AgentStart (`~/code/agentstart/config/launchd/`), not here. This
   installer ships the command only. `funk` asserts those labels by name when it
   verifies the machine, and supplies the bind address and conduit paths to
-  Agentdots as `AGENTDOTS_INSTALL_*`; renaming a label breaks provisioning in
+  AgentStart as `AGENTSTART_INSTALL_*`; renaming a label breaks provisioning in
   both places.
 - Skills call `search "<q>" --json` and `get --document-id N --full --json`, and
   hardcode `~/.local/share/agentbrain/research.db`.
@@ -81,13 +81,13 @@ below is a constraint you cannot recover by reading a single file.
 This checkout is one of the agent* fleet under `~/code`. Shared machinery
 lives in two siblings, and some changes here must cascade:
 
-- Skills under `skills/<name>/` ship globally through Agentdots' scan
-  (`~/code/agentdots/scripts/sync-skills`, run six-hourly by Funk's
+- Skills under `skills/<name>/` ship globally through AgentStart's scan
+  (`~/code/agentstart/scripts/sync-skills`, run six-hourly by Funk's
   updater): a SKILL.md edit is live within six hours, or on demand by
   running that script. Whether a new skill earns a TOOLS.md advertisement
   line is a deliberate decision — `agentwiki get tool-advertisement-policy`.
 - Adding or removing a call to another fleet tool changes the fleet map:
-  update `~/code/agentdots/skills/fleet/MAP.md` (served by the `fleet`
+  update `~/code/agentstart/skills/fleet/MAP.md` (served by the `fleet`
   skill, every edge with evidence) in the same change.
 - General agent doctrine — collab, build, story, the resource skills — is
   `~/code/agentguidance`; tool-specific runbooks stay here.
