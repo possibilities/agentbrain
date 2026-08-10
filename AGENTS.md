@@ -72,3 +72,19 @@ below is a constraint you cannot recover by reading a single file.
 - Tests are hermetic: temp directories, a stubbed `agentscrape`, a vendored
   contract fixture. No network, no real database, no installed service.
 - Comments state constraints the code cannot show. No narration.
+
+## The fleet
+
+This checkout is one of the agent* fleet under `~/code`. Shared machinery
+lives in two siblings, and some changes here must cascade:
+
+- Skills under `skills/<name>/` ship globally through Agentdots' scan
+  (`~/code/agentdots/scripts/sync-skills`, run six-hourly by Funk's
+  updater): a SKILL.md edit is live within six hours, or on demand by
+  running that script. Whether a new skill earns a TOOLS.md advertisement
+  line is a deliberate decision — `agentwiki get tool-advertisement-policy`.
+- Adding or removing a call to another fleet tool changes the fleet map:
+  update `~/code/agentdots/skills/fleet/MAP.md` (served by the `fleet`
+  skill, every edge with evidence) in the same change.
+- General agent doctrine — collab, build, story, the resource skills — is
+  `~/code/agentguidance`; tool-specific runbooks stay here.
