@@ -1,4 +1,4 @@
-# agentbrain
+# AgentBrain
 
 [![CI](https://github.com/possibilities/agentbrain/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/possibilities/agentbrain/actions/workflows/ci.yml)
 
