@@ -439,7 +439,7 @@ dispose of a job you do not intend to recover with agentbrain jobs exclude. A jo
 withheld at admission before any attempt is reported separately as admission_review,
 because an undecided question is not a defect.
 
---notify posts an operator notification through funk-notify or terminal-notifier when
+--notify posts an operator notification through terminal-notifier when
 the stranded count rises above the last notified value, and reports what it did under
 "notification". A steady backlog stays silent and a missing notifier is not an error.
 This command never mutates the ledger; triage stays an explicit operator act.

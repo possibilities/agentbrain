@@ -40,9 +40,8 @@ counting the two together would report breakage that does not exist.
 `doctor --notify` posts an operator notification, and an installer-owned
 `agentbrain.doctor` LaunchAgent runs it on an interval. Notification fires only
 when the stranded count rises above the last notified value; a steady backlog is
-silent, and recovery to zero resets the baseline. Delivery prefers `funk-notify`
-and falls back to `terminal-notifier`, and a machine with neither is not an
-error.
+silent, and recovery to zero resets the baseline. Delivery goes through
+`terminal-notifier`, and a machine without it is not an error.
 
 ## Consequences
 

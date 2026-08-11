@@ -31,23 +31,13 @@ export function defaultNotifyStatePath(home = homedir()): string {
 }
 
 /**
- * Post a notification through the operator's notifier.
+ * Post a notification through terminal-notifier.
  *
- * Prefers funk-notify, which already owns bundle re-registration and
- * do-not-disturb handling, and falls back to terminal-notifier directly so a
- * machine without Funk still gets the signal. Returns the notifier used, or
- * null when none is installed.
+ * -ignoreDnD gets the signal through do-not-disturb, and -execute carries the
+ * click-through command so the notification is actionable rather than only
+ * informative. Returns the notifier used, or null when it is not installed.
  */
 export function notifyOperator(signal: NotifySignal): string | null {
-  const funk = findExecutable("funk-notify");
-  if (funk !== null) {
-    const args = ["--title", signal.title, "--message", signal.message];
-    if (signal.group !== undefined) args.push("--group", signal.group);
-    if (signal.terminal !== undefined) args.push("--terminal", signal.terminal);
-    runQuietly(funk, args);
-    return funk;
-  }
-
   const notifier = findExecutable("terminal-notifier");
   if (notifier === null) return null;
   const args = [
@@ -58,6 +48,7 @@ export function notifyOperator(signal: NotifySignal): string | null {
     "-ignoreDnD",
   ];
   if (signal.group !== undefined) args.push("-group", signal.group);
+  if (signal.terminal !== undefined) args.push("-execute", signal.terminal);
   runQuietly(notifier, args);
   return notifier;
 }

@@ -37,8 +37,8 @@ below is a constraint you cannot recover by reading a single file.
 - The three services that run this code — `agentbrain.worker`,
   `agentbrain.doctor`, and the opt-in `agentbrain.share` — are defined and
   installed by AgentStart (`~/code/agentstart/config/launchd/`), not here. This
-  installer ships the command only. `funk` asserts those labels by name when it
-  verifies the machine, and supplies the bind address and conduit paths to
+  installer ships the command only. the machine's service verification asserts those labels by
+  name, and supplies the bind address and conduit paths to
   AgentStart as `AGENTSTART_INSTALL_*`; renaming a label breaks provisioning in
   both places.
 - Skills call `search "<q>" --json` and `get --document-id N --full --json`, and
@@ -49,7 +49,7 @@ below is a constraint you cannot recover by reading a single file.
 - `skills/brain/SKILL.md` is the canonical deep runbook for agents. `--agent-help`
   in `src/help.ts` is the in-binary fallback and names the skill; the two must
   keep agreeing.
-- Funk's skills scanner installs it globally by running `npx skills add` against
+- AgentStart's skills scan installs it globally by running `npx skills add` against
   this checkout and discovering nested `skills/<name>/SKILL.md`. The installed
   copy is this file — do not add a second source or a sync path.
 - Every claim in the skill was verified against live CLI output. A change to
@@ -82,7 +82,7 @@ This checkout is one of the agent* fleet under `~/code`. Shared machinery
 lives in two siblings, and some changes here must cascade:
 
 - Skills under `skills/<name>/` ship globally through AgentStart's scan
-  (`~/code/agentstart/scripts/sync-skills`, run six-hourly by Funk's
+  (`~/code/agentstart/scripts/sync-skills`, run six-hourly by the scheduled
   updater): a SKILL.md edit is live within six hours, or on demand by
   running that script. Whether a new skill earns a TOOLS.md advertisement
   line is a deliberate decision — `agentwiki get tool-advertisement-policy`.

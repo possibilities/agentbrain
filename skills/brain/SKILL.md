@@ -275,7 +275,7 @@ directory ingestion is unaffected; only URL extraction degrades.
 
 **Nothing is being drained at all.** `jobs stats` showing a rising `queued`
 with `active_leases: 0` means the resident worker isn't running. That is
-Funk-managed service state (`agentbrain.worker`), not something to fix by
+installer-managed service state (`agentbrain.worker`), not something to fix by
 launching a second worker beside the installed one — say so and let the human
 decide.
 
@@ -370,7 +370,7 @@ you from misreading the ledger:
 - **The worker** (`agentbrain.worker`) — leases jobs, delegates extraction,
   commits fenced outcomes.
 
-All three are Funk-managed services. Agents read them; service problems route
+All three are installer-managed services. Agents read them; problems route
 to the human.
 
 ## Anti-patterns

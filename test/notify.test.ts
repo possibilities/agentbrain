@@ -58,10 +58,9 @@ test("a missing notifier is not an error", () => {
   expect(notifyOperator({ title: "t", message: "m" })).toBeNull();
 });
 
-test("funk-notify is preferred and receives the click-through command", () => {
+test("terminal-notifier receives the group and click-through command", () => {
   const root = makeRoot();
-  const funkLog = stubNotifier(root, "funk-notify");
-  stubNotifier(root, "terminal-notifier");
+  const log = stubNotifier(root, "terminal-notifier");
   process.env.PATH = join(root, "bin");
 
   const used = notifyOperator({
@@ -72,24 +71,17 @@ test("funk-notify is preferred and receives the click-through command", () => {
   });
 
   expect(used).not.toBeNull();
-  const args = readFileSync(funkLog, "utf8");
-  expect(args).toContain("--title");
-  expect(args).toContain("--group");
+  const args = readFileSync(log, "utf8");
+  expect(args).toContain("-title");
+  expect(args).toContain("-group");
+  expect(args).toContain("-ignoreDnD");
+  expect(args).toContain("-execute");
   expect(args).toContain("agentbrain jobs list --state blocked");
-});
-
-test("terminal-notifier is used when funk-notify is absent", () => {
-  const root = makeRoot();
-  const log = stubNotifier(root, "terminal-notifier");
-  process.env.PATH = join(root, "bin");
-
-  expect(notifyOperator({ title: "t", message: "m" })).not.toBeNull();
-  expect(readFileSync(log, "utf8")).toContain("-ignoreDnD");
 });
 
 test("a first stranded job notifies and records the count", () => {
   const root = makeRoot();
-  stubNotifier(root, "funk-notify");
+  stubNotifier(root, "terminal-notifier");
   process.env.PATH = join(root, "bin");
   const statePath = join(root, "state.json");
 
@@ -102,7 +94,7 @@ test("a first stranded job notifies and records the count", () => {
 
 test("an unchanged backlog does not notify again", () => {
   const root = makeRoot();
-  stubNotifier(root, "funk-notify");
+  stubNotifier(root, "terminal-notifier");
   process.env.PATH = join(root, "bin");
   const statePath = join(root, "state.json");
 
@@ -114,7 +106,7 @@ test("an unchanged backlog does not notify again", () => {
 
 test("growth past the recorded count notifies again", () => {
   const root = makeRoot();
-  stubNotifier(root, "funk-notify");
+  stubNotifier(root, "terminal-notifier");
   process.env.PATH = join(root, "bin");
   const statePath = join(root, "state.json");
 
@@ -126,7 +118,7 @@ test("growth past the recorded count notifies again", () => {
 
 test("clearing the backlog resets the baseline silently", () => {
   const root = makeRoot();
-  stubNotifier(root, "funk-notify");
+  stubNotifier(root, "terminal-notifier");
   process.env.PATH = join(root, "bin");
   const statePath = join(root, "state.json");
 
