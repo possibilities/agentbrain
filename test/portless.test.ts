@@ -51,7 +51,7 @@ function git(cwd: string, ...args: string[]): void {
   }
 }
 
-/** A main checkout with two linked worktrees, as Orca lays them out. */
+/** A main checkout with two linked worktrees, as an ADE may lay them out. */
 function checkoutWithWorktrees(): {
   main: string;
   first: string;
@@ -102,8 +102,8 @@ test("a worktree's name survives branch renames and a detached HEAD", () => {
   git(first, "checkout", "-b", "renamed-entirely");
   expect(shareNameFor(first, {})).toBe(onTopicBranch);
 
-  // The case Portless's own `run --name` prefix cannot serve: Orca worktrees
-  // are routinely detached, and a branch-derived name is withheld entirely.
+  // The case Portless's own `run --name` prefix cannot serve: managed
+  // worktrees may be detached, and a branch-derived name is withheld entirely.
   git(first, "checkout", "--detach");
   expect(shareNameFor(first, {})).toBe(onTopicBranch);
 });

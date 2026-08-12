@@ -57,7 +57,7 @@ function sanitizeLabel(value: string, maxLength = 24): string {
  * A linked worktree has a `.git` *file* pointing at the main checkout's
  * metadata; a main checkout has a `.git` directory. Reading it is enough — no
  * git subprocess, and no dependence on what HEAD points at, which is the whole
- * point: an Orca worktree is routinely detached.
+ * point: an ADE-managed worktree may routinely be detached.
  */
 function isLinkedWorktree(root: string): boolean {
   try {
@@ -111,10 +111,10 @@ export function alreadyInsidePortless(
  *
  * `run` prepends a prefix derived from the branch's last segment, so the URL
  * would follow whichever branch is checked out rather than the worktree, and it
- * is withheld entirely for a detached HEAD — which is the usual state of an
- * Orca worktree, so several would collapse onto one name and the second would
- * take the first's. Direct named mode serves the name verbatim and consults no
- * branch at all.
+ * is withheld entirely for a detached HEAD — a normal state for managed
+ * worktrees, so several would collapse onto one name and the second would take
+ * the first's. Direct named mode serves the name verbatim and consults no branch
+ * at all.
  */
 export function portlessArgv(
   name: string,
