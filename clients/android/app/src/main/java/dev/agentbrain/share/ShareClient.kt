@@ -5,11 +5,17 @@ import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
 
-/** Normalized outcome of one share attempt. */
+/**
+ * Normalized outcome of one share attempt.
+ *
+ * [Rejected] carries the HTTP status, not just the error code: whether a
+ * rejection may be sent again unchanged is defined by the status in
+ * share-ingest-v1, and the outbox needs it to decide.
+ */
 sealed class ShareResult {
     data class Queued(val jobId: Int) : ShareResult()
     data class Duplicate(val jobId: Int) : ShareResult()
-    data class Rejected(val code: String, val message: String) : ShareResult()
+    data class Rejected(val status: Int, val code: String, val message: String) : ShareResult()
     data class Unreachable(val message: String) : ShareResult()
 }
 
@@ -69,8 +75,8 @@ class ShareClient(
             }
             when (val status = connection.responseCode) {
                 in 200..299 -> ShareResult.Queued(0)
-                401 -> ShareResult.Rejected("unauthorized", "The share token was rejected.")
-                else -> ShareResult.Rejected("http_$status", "Server answered HTTP $status.")
+                401 -> ShareResult.Rejected(401, "unauthorized", "The share token was rejected.")
+                else -> ShareResult.Rejected(status, "http_$status", "Server answered HTTP $status.")
             }
         } catch (error: IOException) {
             ShareResult.Unreachable(error.message ?: "Could not reach $serverUrl")
@@ -98,6 +104,7 @@ class ShareClient(
 
         val error = json?.optJSONObject("error")
         return ShareResult.Rejected(
+            status,
             error?.optString("code") ?: "http_$status",
             error?.optString("message") ?: "Agentbrain rejected the share (HTTP $status).",
         )

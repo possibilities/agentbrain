@@ -24,4 +24,27 @@
     <string name="duplicate">Already saved (job %1$d).</string>
     <string name="rejected">Agentbrain rejected it: %1$s</string>
     <string name="unreachable">Could not reach Agentbrain. Is the tailnet up?</string>
+
+    <!--
+      Held is deliberately not "saved": nothing exists in Agentbrain until the
+      ingress admits the share, so the wording must not imply a job exists.
+    -->
+    <string name="held">Could not reach Agentbrain. Held to send later (%1$d waiting).</string>
+    <string name="held_detail">%1$s Held to send later (%2$d waiting).</string>
+    <string name="held_unconfigured">Held until the server URL and token are set (%1$d waiting).</string>
+
+    <string name="outbox_heading">Waiting to be sent</string>
+    <string name="outbox_hint">Shares taken while the ingress is unreachable are held here and delivered when it answers. Nothing held is in Agentbrain yet.</string>
+    <string name="outbox_none">Nothing is waiting.</string>
+    <string name="outbox_pending">%1$d share(s) waiting to be sent.</string>
+    <string name="outbox_send_now">Send now</string>
+    <string name="outbox_discard">Discard held</string>
+    <string name="outbox_sending">Sending held shares…</string>
+    <string name="outbox_flushed">Agentbrain admitted %1$d of %2$d; %3$d still waiting.</string>
+    <string name="outbox_nothing_waiting">Nothing was waiting to be sent.</string>
+    <string name="outbox_cleared">Discarded %1$d held share(s). They were never sent to Agentbrain.</string>
+    <string name="outbox_dropped_heading">Not delivered</string>
+    <string name="outbox_dropped_expired">Abandoned after 7 days: %1$s</string>
+    <string name="outbox_dropped_overflow">Dropped (outbox full or discarded): %1$s</string>
+    <string name="outbox_dropped_rejected">Rejected by Agentbrain: %1$s</string>
 </resources>

@@ -12,15 +12,38 @@ Install and configure: [`docs/runbooks/share-ingress.md`](../../docs/runbooks/sh
 | `SharePayload.kt` | Wire payload plus `ShareIntentParser` — pure, JVM-testable |
 | `ShareActivity.kt` | The share target; no UI, finishes immediately |
 | `ShareClient.kt` | `HttpURLConnection` transport, no third-party dependency |
+| `ShareOutbox.kt` | Durable hold and delivery policy for undelivered shares — takes a `File`, so JVM-testable |
+| `ShareScheduler.kt` / `ShareUploadWorker.kt` | WorkManager wake-up and one delivery round |
 | `Settings.kt` | Server URL and token in `EncryptedSharedPreferences` |
-| `SettingsActivity.kt` | Setup screen and connection test |
+| `SettingsActivity.kt` | Setup screen, connection test, and the outbox |
 | `res/xml/network_security_config.xml` | Cleartext policy for tailnet hosts |
+
+## Offline shares
+
+A share the ingress cannot accept is written to `share-outbox.json` in
+app-private storage **before** it is attempted — the process can be killed the
+moment the share sheet dismisses — and redelivered on a backoff until the server
+admits it. WorkManager carries the wake-up: it persists across reboot and
+constrains the round to `NetworkType.CONNECTED`, so a device with no
+connectivity is not woken merely to fail.
+
+Held is not saved: no Agentbrain job exists until the ingress admits the
+payload, so the toast says held and names the count. Bounded at 200 shares and 7
+days; anything abandoned is named under "Not delivered" in the settings screen,
+because this app holds no notification permission to report it any other way.
+
+[ADR 0020](../../docs/adr/0020-client-share-outbox.md) is the decision;
+`ShareOutboxTest` covers the policy.
+
+The token stays in `EncryptedSharedPreferences` and is never written to the
+outbox, which holds only what the user chose to send to their own index.
 
 ## What the client decides
 
-Only one thing: whether `EXTRA_TEXT` is a bare URL (sent as `url`) or anything
-else (sent as `text`). Recovering a URL from prose is the server's job, so the
-rules live in one place and are tested once. See
+Two things: whether `EXTRA_TEXT` is a bare URL (sent as `url`) or anything else
+(sent as `text`), and when to try again a share the server has not accepted.
+Recovering a URL from prose is the server's job, so the rules live in one place
+and are tested once. See
 [`docs/contracts/share-ingest-v1.md`](../../docs/contracts/share-ingest-v1.md).
 
 `EXTRA_SUBJECT` becomes the title when it is present and differs from the body.

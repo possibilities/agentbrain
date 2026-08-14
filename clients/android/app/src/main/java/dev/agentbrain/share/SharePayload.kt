@@ -29,9 +29,26 @@ data class SharePayload(
         return json.toString()
     }
 
+    /**
+     * The payload as the outbox stores it: what the user shared, and nothing
+     * about the wire. Version, client, and tags are re-derived at send time, so
+     * a held share picks up the current contract rather than the one in force
+     * when it was taken.
+     */
+    fun toStorageJson(): JSONObject = JSONObject()
+        .putOpt("url", url)
+        .putOpt("text", text)
+        .putOpt("title", title)
+
     companion object {
         const val SHARE_VERSION = 1
         const val SHARE_CLIENT = "android-share"
+
+        fun fromStorage(json: JSONObject): SharePayload = SharePayload(
+            url = json.optString("url").takeIf { it.isNotEmpty() },
+            text = json.optString("text").takeIf { it.isNotEmpty() },
+            title = json.optString("title").takeIf { it.isNotEmpty() },
+        )
     }
 }
 

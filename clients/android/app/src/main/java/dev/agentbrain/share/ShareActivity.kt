@@ -1,7 +1,10 @@
 package dev.agentbrain.share
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import kotlin.concurrent.thread
@@ -16,28 +19,53 @@ class ShareActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val app = applicationContext
         val settings = Settings(this)
-        if (!settings.isConfigured) {
-            toast(getString(R.string.not_configured))
-            startActivity(Intent(this, SettingsActivity::class.java))
+        val outbox = ShareOutbox.at(this)
+
+        val payload = payloadFrom(intent)
+        if (payload == null) {
+            toast(app, getString(R.string.nothing_to_share))
             finish()
             return
         }
 
-        val payload = payloadFrom(intent)
-        if (payload == null) {
-            toast(getString(R.string.nothing_to_share))
+        // An unconfigured app cannot send, but the share is still worth
+        // keeping: naming a server drains what was held meanwhile.
+        if (!settings.isConfigured) {
+            outbox.enqueue(payload)
+            toast(app, getString(R.string.held_unconfigured, outbox.pending()))
+            startActivity(Intent(this, SettingsActivity::class.java))
             finish()
             return
         }
 
         // Finish before the network call so the share sheet dismisses at once;
         // the outcome arrives as a toast from the background thread.
-        toast(getString(R.string.sending))
+        toast(app, getString(R.string.sending))
         val client = ShareClient(settings.serverUrl, settings.token)
         thread {
+            // Held before it is attempted: this process can be killed the
+            // moment the share sheet dismisses, and a share that exists only in
+            // this thread's memory would go with it.
+            val entry = outbox.enqueue(payload)
+            ShareScheduler.scheduleNext(app, outbox)
+
             val result = client.share(payload)
-            runOnUiThread { toast(describe(result)) }
+            when {
+                result is ShareResult.Queued || result is ShareResult.Duplicate -> {
+                    outbox.remove(entry.id)
+                    // The server just answered, so anything held from an
+                    // earlier outage can go now.
+                    if (outbox.pending() > 0) ShareScheduler.flushNow(app)
+                }
+                ShareOutbox.isRetryable(result) -> {
+                    outbox.defer(entry.id, result)
+                    ShareScheduler.scheduleNext(app, outbox)
+                }
+                else -> outbox.remove(entry.id)
+            }
+            toast(app, describe(result, outbox))
         }
         finish()
     }
@@ -50,14 +78,30 @@ class ShareActivity : AppCompatActivity() {
         )
     }
 
-    private fun describe(result: ShareResult): String = when (result) {
+    /**
+     * A held share is reported as held, never as saved: nothing exists in
+     * Agentbrain until the ingress admits it.
+     */
+    private fun describe(result: ShareResult, outbox: ShareOutbox): String = when (result) {
         is ShareResult.Queued -> getString(R.string.queued, result.jobId)
         is ShareResult.Duplicate -> getString(R.string.duplicate, result.jobId)
-        is ShareResult.Rejected -> getString(R.string.rejected, result.message)
-        is ShareResult.Unreachable -> getString(R.string.unreachable)
+        is ShareResult.Unreachable -> getString(R.string.held, outbox.pending())
+        is ShareResult.Rejected ->
+            if (ShareOutbox.isRetryable(result)) {
+                getString(R.string.held_detail, result.message, outbox.pending())
+            } else {
+                getString(R.string.rejected, result.message)
+            }
     }
 
-    private fun toast(message: String) {
-        Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
+    /**
+     * Posted to the main looper against the application context rather than
+     * through `runOnUiThread`: by the time a result arrives this Activity has
+     * finished, and the toast must outlive it.
+     */
+    private fun toast(context: Context, message: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
     }
 }

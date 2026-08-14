@@ -11,8 +11,8 @@ android {
         applicationId = "dev.agentbrain.share"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
     }
 
     buildTypes {
@@ -39,6 +39,9 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     // Keeps the share token out of plain SharedPreferences.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // Redelivery of held shares: a persisted queue that survives process death
+    // and reboot, and waits for a network rather than waking without one.
+    implementation("androidx.work:work-runtime:2.9.1")
 
     // org.json ships with Android but is stubbed on the JVM, so unit tests need
     // a real implementation to exercise payload serialization.

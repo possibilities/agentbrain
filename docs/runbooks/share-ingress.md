@@ -135,8 +135,7 @@ with a notification, as is a payload the ingress rejects outright — a 4xx othe
 than 401 means the payload is wrong and resending it unchanged cannot help. A
 401 keeps retrying, so fixing the token drains what accumulated meanwhile.
 
-The Android share target has no outbox; an unreachable share there is still
-reported as failed and lost.
+The Android share target holds shares the same way; see below.
 
 ## 4. Install the Android share target
 
@@ -162,6 +161,24 @@ connection**. "Share → Agentbrain" then appears in any app that shares
   rebuilding; HTTPS avoids the issue entirely.
 - **The token is stored in `EncryptedSharedPreferences`**, not plain prefs.
 
+### Sharing from Android while the ingress is down
+
+Same policy as Chrome — held on the device, redelivered on the same backoff,
+bounded at 200 shares and 7 days — carried by WorkManager, which persists its
+queue across a reboot and waits for a network rather than waking without one. A
+share is written to the outbox *before* it is attempted, so killing the app the
+instant the share sheet dismisses cannot lose it.
+
+The toast says **held**, not saved, and names how many are waiting. Open
+**Agentbrain Share** to see the count, force a round with **Send now**, or drop
+what is held. Anything the app gives up on — expired, evicted, or rejected
+outright — is listed by name under "Not delivered" there. Android has no
+notification permission in this app, so that screen is where a loss is
+disclosed; nothing is dropped silently.
+
+**Held is not saved.** A held share has no job id and will not appear in
+`agentbrain jobs list` until the ingress admits it.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -176,4 +193,5 @@ connection**. "Share → Agentbrain" then appears in any app that shares
 | Share succeeds but nothing is searchable | Worker not running, or extraction failed | `agentbrain jobs list --state failed --json`; check the Worker and that `agentscrape` is on its `PATH` |
 | Everything returns `duplicate` | Working as intended | The intent is already queued; check `agentbrain jobs show <id> --json` |
 | `EADDRINUSE` on 8787 | Another checkout already holds the port | `bun run dev:share`, or pass `--port` |
+| A phone shows "Held to send later" | Ingress unreachable when shared | It is not lost; open Agentbrain Share and press **Send now** once the ingress is up |
 | A phone cannot reach the `.localhost` URL | Working as intended | `.localhost` is loopback-only; devices use the tailnet address |

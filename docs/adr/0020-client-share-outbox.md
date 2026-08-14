@@ -52,5 +52,19 @@ page rather than invisible.
 
 The extension requires the `alarms` permission.
 
-The Android share target still discards an unreachable share. It has the same
-defect and wants the same treatment; this ADR does not pretend it was fixed.
+**Both clients implement this**, with the same policy — the same backoff, the
+same bounds, the same reading of which failures may be retried — and each
+platform's own durable mechanism: `chrome.storage.local` plus `chrome.alarms`
+in Chrome, a JSON file in app-private storage plus WorkManager on Android.
+WorkManager carries its own persistence across reboot and a network constraint,
+so an Android device with no connectivity is not woken merely to fail; Chrome
+has no equivalent and wakes on the schedule regardless.
+
+The one deliberate divergence is how a drop is disclosed. Chrome notifies.
+Android has no notification permission and asking for one to report a failure
+is disproportionate, so every abandoned share is recorded and named in the app's
+settings screen instead. Neither drops silently.
+
+*Amended the same day this ADR was accepted: as first written, this section
+said the Android target still discarded an unreachable share, which it did for
+the few hours between the two changes.*
