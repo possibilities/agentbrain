@@ -41,4 +41,5 @@ necessarily what is true now. Read the chains below before trusting an old one.
 | [0017](0017-authenticated-share-ingress.md) | Authenticated share ingress for personal devices |
 | [0018](0018-stranded-ingestion-is-reported.md) | Stranded ingestion is unhealthy and notifies the operator |
 | [0019](0019-deletion-purges-the-resource.md) | Deletion purges the resource and redacts its locator |
+| [0020](0020-client-share-outbox.md) | Device clients hold undelivered shares in a client outbox |
 | [0001](superseded/0001-agentbrain-owns-research-index.md) | Agentbrain owns the research index — superseded |

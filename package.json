@@ -18,8 +18,8 @@
   "scripts": {
     "dev:share": "bun run src/cli.ts share serve --portless",
     "generate:schema": "bun run scripts/generate-sources-schema.ts",
-    "lint": "biome check src test scripts/generate-sources-schema.ts",
-    "format": "biome check --write src test scripts/generate-sources-schema.ts",
+    "lint": "biome check src test clients/chrome scripts/generate-sources-schema.ts",
+    "format": "biome check --write src test clients/chrome scripts/generate-sources-schema.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test --parallel=1 --max-concurrency=1 --timeout=30000",
     "check": "bun run typecheck && bun run lint && bun run test",

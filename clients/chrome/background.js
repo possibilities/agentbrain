@@ -1,4 +1,17 @@
-import { hasHostPermission, loadConfig, postShare } from "./shared.js";
+import {
+  clearOutbox,
+  enqueue,
+  flushOutbox,
+  OUTBOX_ALARM,
+  outboxCount,
+  scheduleFlush,
+} from "./outbox.js";
+import {
+  hasHostPermission,
+  isRetryable,
+  loadConfig,
+  postShare,
+} from "./shared.js";
 
 const MENU_PAGE = "agentbrain-share-page";
 const MENU_LINK = "agentbrain-share-link";
@@ -13,17 +26,99 @@ function notify(title, message) {
   });
 }
 
+/** A pending outbox is standing state, so it owns the badge until it drains. */
+async function refreshBadge() {
+  const pending = await outboxCount();
+  if (pending === 0) {
+    await chrome.action.setBadgeText({ text: "" });
+    return;
+  }
+  await chrome.action.setBadgeBackgroundColor({ color: "#b45309" });
+  await chrome.action.setBadgeText({ text: String(pending) });
+}
+
 /**
  * Badges the toolbar button briefly so the common case needs no notification
- * click-through, while still surfacing the detail for failures.
+ * click-through, while still surfacing the detail for failures. The pending
+ * count is restored afterwards rather than cleared.
  */
 async function flashBadge(text, color) {
   await chrome.action.setBadgeBackgroundColor({ color });
   await chrome.action.setBadgeText({ text });
-  setTimeout(() => chrome.action.setBadgeText({ text: "" }), 4000);
+  setTimeout(() => void refreshBadge(), 4000);
 }
 
-async function report(result) {
+function describe(payload) {
+  return payload.url ?? payload.title ?? "the shared selection";
+}
+
+const DROP_TITLE = {
+  expired: "Share abandoned",
+  overflow: "Share discarded",
+  rejected: "Share rejected",
+};
+
+const DROP_DETAIL = {
+  expired: (entry) =>
+    `Agentbrain never became reachable for ${describe(entry.payload)}.`,
+  overflow: (entry) =>
+    `The outbox is full, so ${describe(entry.payload)} was dropped as the oldest waiting share.`,
+  rejected: (entry, result) =>
+    `${describe(entry.payload)}: ${result?.message ?? "the ingress refused it."}`,
+};
+
+async function reportDropped(dropped) {
+  for (const { entry, reason, result } of dropped) {
+    notify(DROP_TITLE[reason], DROP_DETAIL[reason](entry, result));
+  }
+}
+
+/**
+ * Delivers what the outbox holds. Serialized within this worker instance: two
+ * concurrent rounds would attempt the same entries, and while the ingress
+ * deduplicates that, the second round's commit could resurrect an entry the
+ * first had just delivered.
+ */
+let flushing = null;
+
+async function drainOutbox({ force = false } = {}) {
+  const config = await loadConfig();
+  // Unconfigured is not undeliverable. Entries wait for a server to be named
+  // and for the permission that lets a background fetch reach it.
+  if (config === null || !(await hasHostPermission(config.serverUrl))) {
+    return { pending: await outboxCount(), unconfigured: true };
+  }
+
+  const run = async () => {
+    const summary = await flushOutbox((payload) => postShare(config, payload), {
+      force,
+    });
+    await reportDropped(summary.dropped);
+    await scheduleFlush();
+    await refreshBadge();
+    return summary;
+  };
+
+  flushing = flushing ? flushing.then(run, run) : run();
+  return flushing;
+}
+
+/**
+ * Holds a share the ingress has not accepted and tells the user it is kept, not
+ * saved: nothing is durable in Agentbrain until Admission answers.
+ */
+async function hold(payload, reason) {
+  const { dropped, pending } = await enqueue(payload);
+  await reportDropped(dropped.map((entry) => ({ entry, reason: "overflow" })));
+  await scheduleFlush();
+  await refreshBadge();
+  notify(
+    "Held for later",
+    `${reason} It will be sent when Agentbrain answers (${pending} waiting).`,
+  );
+}
+
+async function report(result, payload) {
   if (result.ok) {
     const queued = result.data.status === "queued";
     await flashBadge(queued ? "OK" : "DUP", queued ? "#1b7f4b" : "#6b6b6b");
@@ -33,6 +128,12 @@ async function report(result) {
         `Agentbrain already has this as job ${result.data.job_id}.`,
       );
     }
+    // The server just answered, so anything held from an earlier outage can go.
+    void drainOutbox({ force: true });
+    return;
+  }
+  if (isRetryable(result)) {
+    await hold(payload, result.message);
     return;
   }
   await flashBadge("ERR", "#a32020");
@@ -44,23 +145,22 @@ async function report(result) {
 
 async function send(payload) {
   const config = await loadConfig();
+  // An unconfigured or ungranted extension cannot send, but the share is still
+  // worth keeping: configuring one drains what was held meanwhile.
   if (config === null) {
-    notify(
-      "Agentbrain is not configured",
-      "Open the extension options and set the server URL and token.",
-    );
+    await hold(payload, "Agentbrain has no server URL or token yet.");
     await chrome.runtime.openOptionsPage();
     return;
   }
   if (!(await hasHostPermission(config.serverUrl))) {
-    notify(
-      "Permission needed",
-      "Open the extension options and grant access to the Agentbrain server.",
+    await hold(
+      payload,
+      "The extension has no permission to reach that server.",
     );
     await chrome.runtime.openOptionsPage();
     return;
   }
-  await report(await postShare(config, payload));
+  await report(await postShare(config, payload), payload);
 }
 
 async function activeTab() {
@@ -107,6 +207,17 @@ chrome.runtime.onInstalled.addListener(() => {
       contexts: ["selection"],
     });
   });
+  void drainOutbox();
+});
+
+// A browser restart is the likeliest moment for a machine that was asleep to
+// find the ingress up again, and the alarm may not survive it.
+chrome.runtime.onStartup.addListener(() => {
+  void drainOutbox();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === OUTBOX_ALARM) void drainOutbox();
 });
 
 chrome.action.onClicked.addListener(() => {
@@ -133,3 +244,26 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
   if (info.menuItemId === MENU_PAGE) void shareCurrentPage();
 });
+
+/** The Options page inspects and drives the outbox through these messages. */
+chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+  if (message?.type === "outbox-status") {
+    void outboxCount().then((pending) => respond({ pending }));
+    return true;
+  }
+  if (message?.type === "outbox-flush") {
+    void drainOutbox({ force: true }).then((summary) => respond(summary));
+    return true;
+  }
+  if (message?.type === "outbox-clear") {
+    void clearOutbox().then(async (discarded) => {
+      await scheduleFlush();
+      await refreshBadge();
+      respond({ discarded });
+    });
+    return true;
+  }
+  return false;
+});
+
+void refreshBadge();

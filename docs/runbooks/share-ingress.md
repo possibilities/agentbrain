@@ -115,6 +115,29 @@ it when there is one.
 - **`chrome://` pages and the Web Store cannot be shared**; the extension
   refuses them rather than queueing a job that would fail later.
 
+### Sharing while the ingress is down
+
+A share taken when the server is unreachable is **held on the device**, not
+lost, and redelivered on a backoff (one minute, then two, five, fifteen, thirty,
+then hourly) until the ingress admits it. The toolbar badge shows an amber count
+of what is waiting, and the Options page lists it with **Send now** and
+**Discard held shares**. Delivery also retries when Chrome restarts, after any
+successful share, and after a successful **Test connection**. Decision record:
+[ADR 0020](../adr/0020-client-share-outbox.md).
+
+Held is not saved: nothing exists in Agentbrain until the ingress admits it, so
+a held share has no job id and will not appear in `agentbrain jobs list`.
+Redelivery needs no idempotency key — a share the server did receive before the
+connection dropped comes back as `duplicate` with the same job.
+
+The outbox holds 200 shares for 7 days. Past either bound the oldest are dropped
+with a notification, as is a payload the ingress rejects outright — a 4xx other
+than 401 means the payload is wrong and resending it unchanged cannot help. A
+401 keeps retrying, so fixing the token drains what accumulated meanwhile.
+
+The Android share target has no outbox; an unreachable share there is still
+reported as failed and lost.
+
 ## 4. Install the Android share target
 
 ```bash
@@ -145,6 +168,8 @@ connection**. "Share → Agentbrain" then appears in any app that shares
 | --- | --- | --- |
 | `unauthorized` / 401 | Token mismatch | Re-copy from `share token show --reveal`; confirm you rotated every device |
 | Client says "cannot reach" | Ingress not running, wrong host, or tailnet down | `tailscale status`; confirm `share serve` is bound to the tailnet address, not `127.0.0.1` |
+| Chrome badge shows an amber number | Shares are held, undelivered | Bring the ingress up; press **Send now** in Options to stop waiting for the backoff |
+| A held Chrome share never arrives | Token rejected, or the ingress stayed down | Options → **Test connection**; a held share is abandoned after 7 days |
 | Android reaches nothing but curl works | Cleartext blocked | Add the host to `network_security_config.xml`, or use the MagicDNS name |
 | Chrome shortcut does nothing | Unassigned due to a conflict | Rebind at `chrome://extensions/shortcuts` |
 | Extension errors with a permission message | Host permission not granted | Reopen Options and click **Save & grant access** |

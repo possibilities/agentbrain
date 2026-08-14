@@ -363,7 +363,10 @@ you from misreading the ledger:
 - **Share ingress** (`agentbrain.share`) — an authenticated local HTTP listener
   that a Chrome extension and an Android share target post to. Every share
   resolves to exactly one Admission through the same `submit` path, so a
-  re-share returns `duplicate` with the same `job_id`.
+  re-share returns `duplicate` with the same `job_id`. The Chrome client holds
+  shares it could not deliver and retries them, so a link the human is certain
+  they saved may legitimately have no job yet: it is waiting on their device,
+  not in the ledger. Its badge shows the count.
 - **Recurring sources** — X accounts and blog feeds registered declaratively
   and synced on a cadence. `sources sync` admits durable Runs and performs no
   HTTP work itself.
@@ -421,6 +424,8 @@ repeated.
 
 Saving is a one-tap act, not a CLI act: the Chrome extension (toolbar button,
 right-click, or `Ctrl+Shift+S`) and the Android share sheet both post into this
-same index. If links stop showing up, `agentbrain doctor` names the failing
-check, and the installed `agentbrain.doctor` LaunchAgent notifies when the
+same index. A share taken while the ingress is down is held by the Chrome
+extension and sent when it comes back — check its toolbar badge and Options page
+before concluding a link was lost. If links stop showing up, `agentbrain doctor`
+names the failing check, and the installed `agentbrain.doctor` LaunchAgent notifies when the
 stranded count rises.

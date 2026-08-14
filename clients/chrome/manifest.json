@@ -1,9 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Agentbrain Share",
-  "version": "1.0.0",
-  "description": "Send the current page, a link, or a selection to your private Agentbrain share ingress.",
-  "permissions": ["contextMenus", "storage", "notifications", "activeTab"],
+  "version": "1.1.0",
+  "description": "Send the current page, a link, or a selection to your private Agentbrain share ingress; holds shares while it is unreachable.",
+  "permissions": [
+    "contextMenus",
+    "storage",
+    "notifications",
+    "activeTab",
+    "alarms"
+  ],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",

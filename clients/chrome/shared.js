@@ -8,6 +8,13 @@
 export const SHARE_CLIENT = "chrome-extension";
 export const SHARE_VERSION = 1;
 
+/**
+ * A share that has not answered in this long is treated as unreachable rather
+ * than left in flight. The outbox will try it again, and the ingress
+ * deduplicates a request that did in fact land.
+ */
+const SHARE_TIMEOUT_MS = 15_000;
+
 /** Reads {serverUrl, token} from sync storage, or null when unconfigured. */
 export async function loadConfig() {
   const stored = await chrome.storage.sync.get(["serverUrl", "token"]);
@@ -51,6 +58,7 @@ export async function postShare(config, payload) {
   try {
     response = await fetch(shareEndpoint(config.serverUrl), {
       method: "POST",
+      signal: AbortSignal.timeout(SHARE_TIMEOUT_MS),
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${config.token}`,
@@ -61,7 +69,7 @@ export async function postShare(config, payload) {
         ...payload,
       }),
     });
-  } catch (error) {
+  } catch {
     return {
       ok: false,
       status: 0,
@@ -89,4 +97,22 @@ export async function postShare(config, payload) {
       `Agentbrain rejected the share (HTTP ${response.status}).`,
     recovery: body?.error?.recovery,
   };
+}
+
+/**
+ * Whether a failed share is worth sending again unchanged, per share-ingest-v1:
+ * a connection failure or a server fault is safely retryable, and a 4xx other
+ * than 401 means the payload itself is wrong and never will be.
+ *
+ * 401 is retryable on purpose. A rejected token is a configuration fault the
+ * user can repair, and discarding what they shared in the meantime is the one
+ * outcome the outbox exists to prevent.
+ */
+export function isRetryable(result) {
+  if (result.ok) return false;
+  if (result.status === 0) return true;
+  if (result.status >= 500) return true;
+  return (
+    result.status === 401 || result.status === 408 || result.status === 429
+  );
 }

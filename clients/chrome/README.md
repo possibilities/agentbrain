@@ -11,8 +11,19 @@ Install and configure: [`docs/runbooks/share-ingress.md`](../../docs/runbooks/sh
 | --- | --- |
 | `manifest.json` | MV3 manifest: action, context menus, one named command |
 | `background.js` | Service worker; the only place that decides what to send |
-| `shared.js` | Config, permission checks, and the POST transport |
-| `options.html` / `options.js` | Server URL, token, host-permission grant, health check |
+| `shared.js` | Config, permission checks, the POST transport, retry classification |
+| `outbox.js` | Durable hold and redelivery of shares the ingress has not accepted |
+| `options.html` / `options.js` | Server URL, token, host-permission grant, health check, outbox |
+
+## Offline shares
+
+A share the ingress cannot accept right now is held in `chrome.storage.local`
+and redelivered on a backoff driven by one `chrome.alarms` wake, plus service
+worker startup, any successful share, and the Options page. Held is not saved:
+no Agentbrain job exists until the ingress admits the payload, so nothing in the
+outbox may be reported as queued. [ADR
+0020](../../docs/adr/0020-client-share-outbox.md) is the decision;
+`test/chrome-outbox.test.js` covers the delivery policy under `bun test`.
 
 ## Permissions
 
@@ -21,8 +32,9 @@ entry: the server address is user-configured, so the extension requests access
 to that one origin from the Options page (a user gesture) instead of asking for
 broad host access at install time.
 
-`contextMenus`, `storage`, `notifications`, and `activeTab` are the only
-declared permissions.
+`contextMenus`, `storage`, `notifications`, `activeTab`, and `alarms` are the
+only declared permissions. `alarms` exists for outbox redelivery: an MV3 service
+worker is torn down between events, so a timer cannot survive to retry.
 
 ## Keyboard shortcut
 
