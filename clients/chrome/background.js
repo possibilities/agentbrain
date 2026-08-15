@@ -26,8 +26,19 @@ function notify(title, message) {
   });
 }
 
+const FLASH_MS = 4000;
+
+/**
+ * While a flash is on screen the badge belongs to it, and its own timer
+ * restores the standing state afterwards. Without this a background drain
+ * lands between the flash and its timer and clears the outcome the user was
+ * meant to read.
+ */
+let flashUntil = 0;
+
 /** A pending outbox is standing state, so it owns the badge until it drains. */
 async function refreshBadge() {
+  if (Date.now() < flashUntil) return;
   const pending = await outboxCount();
   if (pending === 0) {
     await chrome.action.setBadgeText({ text: "" });
@@ -43,9 +54,13 @@ async function refreshBadge() {
  * count is restored afterwards rather than cleared.
  */
 async function flashBadge(text, color) {
+  flashUntil = Date.now() + FLASH_MS;
   await chrome.action.setBadgeBackgroundColor({ color });
   await chrome.action.setBadgeText({ text });
-  setTimeout(() => void refreshBadge(), 4000);
+  setTimeout(() => {
+    flashUntil = 0;
+    void refreshBadge();
+  }, FLASH_MS);
 }
 
 function describe(payload) {
@@ -129,7 +144,9 @@ async function report(result, payload) {
       );
     }
     // The server just answered, so anything held from an earlier outage can go.
-    void drainOutbox({ force: true });
+    // Only when something is actually held: the common share holds nothing, and
+    // a drain that has no work still costs a read and a badge write.
+    if ((await outboxCount()) > 0) void drainOutbox({ force: true });
     return;
   }
   if (isRetryable(result)) {
