@@ -11,6 +11,7 @@ import {
   SHARE_MAX_BODY_BYTES,
   tokenMatches,
 } from "./share";
+import { shareUrlFor } from "./share-liveness";
 import type { ResearchStore } from "./store";
 import type { AdmissionStatus } from "./types";
 
@@ -307,24 +308,39 @@ export function startShareServer(
   const hostname = options.host ?? SHARE_DEFAULT_HOST;
   const port = options.port ?? SHARE_DEFAULT_PORT;
   const handler = createShareHandler(options);
-  const server = Bun.serve({
-    hostname,
-    port,
-    fetch: handler,
-    error: () =>
-      new Response(
-        `${JSON.stringify({
-          schema_version: 1,
-          ok: false,
-          command: "share",
-          error: { code: "share_failed", message: "share ingestion failed" },
-        })}\n`,
-        { status: 500, headers: JSON_HEADERS },
-      ),
-  });
+  let server: ReturnType<typeof Bun.serve>;
+  try {
+    server = Bun.serve({
+      hostname,
+      port,
+      fetch: handler,
+      error: () =>
+        new Response(
+          `${JSON.stringify({
+            schema_version: 1,
+            ok: false,
+            command: "share",
+            error: { code: "share_failed", message: "share ingestion failed" },
+          })}\n`,
+          { status: 500, headers: JSON_HEADERS },
+        ),
+    });
+  } catch (error) {
+    // Bun reports every bind fault as "is the port in use?", which sends the
+    // operator after the wrong thing when the real cause is an address that is
+    // not on any interface yet — a tailnet bind racing Tailscale's start.
+    throw new CliError(
+      "share_bind_failed",
+      `cannot bind ${shareUrlFor(hostname, port)}: ${(error as Error).message}`,
+      {
+        recovery:
+          "Check for an ingress already holding the port (launchctl list | grep agentbrain.share), and that the address exists on an interface (ifconfig | grep <address>).",
+      },
+    );
+  }
   return {
     server,
-    url: `http://${hostname}:${server.port}`,
+    url: shareUrlFor(hostname, server.port ?? port),
     stop: async () => {
       await server.stop(true);
     },

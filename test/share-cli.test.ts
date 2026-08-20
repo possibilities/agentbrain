@@ -1,7 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const REPO = join(import.meta.dir, "..");
 const CLI = join(REPO, "src", "cli.ts");
@@ -12,6 +18,17 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/** Waits for a condition the serving process settles asynchronously. */
+async function until(
+  condition: () => boolean,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await Bun.sleep(20);
+  }
+}
 
 function workspace(): string {
   const dir = mkdtempSync(join(tmpdir(), "agentbrain-share-cli-"));
@@ -210,6 +227,12 @@ async function serveAndStop(
       "--json",
       "share",
       "serve",
+      // Never let a test's ingress publish itself into the operator's real
+      // state directory, and never let it probe the machine's own service.
+      "--registration-file",
+      join(dirname(dbPath), "share-ingress.json"),
+      "--liveness-interval-ms",
+      "0",
       ...args,
     ],
     {
@@ -262,6 +285,73 @@ test("share serve binds PORT when no --port is given, and says where it came fro
   );
   expect(fromFlag.data.port).toBe(45_238);
   expect(fromFlag.data.port_source).toBe("flag");
+});
+
+test("serving registers the ingress and withdraws it on shutdown", async () => {
+  const dir = workspace();
+  const tokenFile = join(dir, "share-token");
+  const dbPath = join(dir, "research.db");
+  const registrationFile = join(dir, "share-ingress.json");
+  runCli(["--json", "share", "token", "init", "--token-file", tokenFile]);
+
+  const proc = Bun.spawn(
+    [
+      process.execPath,
+      "run",
+      CLI,
+      "--db",
+      dbPath,
+      "--json",
+      "share",
+      "serve",
+      "--token-file",
+      tokenFile,
+      "--port",
+      "45239",
+      "--registration-file",
+      registrationFile,
+      "--liveness-interval-ms",
+      "0",
+    ],
+    {
+      cwd: REPO,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, AGENTBRAIN_SHARE_TOKEN: "" },
+    },
+  );
+  try {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const chunk of proc.stdout) {
+      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+      try {
+        JSON.parse(buffer);
+        break;
+      } catch {
+        // Keep reading; the envelope is pretty-printed over several chunks.
+      }
+    }
+    // The registration is what tells a later doctor that an ingress is
+    // supposed to be answering, so it must exist while one is.
+    await until(() => existsSync(registrationFile));
+    const published = JSON.parse(
+      readFileSync(registrationFile, "utf8"),
+    ) as Record<string, unknown>;
+    expect(published).toMatchObject({
+      url: "http://127.0.0.1:45239",
+      port: 45_239,
+      pid: proc.pid,
+    });
+  } finally {
+    proc.kill("SIGTERM");
+    await proc.exited;
+  }
+
+  // A clean shutdown leaves no claim behind; a stale one would make doctor
+  // report a dropped ingress that nobody asked for.
+  await until(() => !existsSync(registrationFile));
+  expect(existsSync(registrationFile)).toBe(false);
 });
 
 test("a malformed PORT is refused rather than quietly binding the default", async () => {

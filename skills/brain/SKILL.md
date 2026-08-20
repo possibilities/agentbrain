@@ -61,10 +61,10 @@ agentbrain doctor --json    # exit 0 healthy, 1 when a required check fails
 agentbrain stats --json     # document_count, chunk_count, tags, recent docs
 ```
 
-`doctor` reports seven checks — `database_integrity`, `schema_version`,
+`doctor` reports eight checks — `database_integrity`, `schema_version`,
 `artifact_references`, `leases`, `stranded_ingestion`, `admission_review`,
-`agentscrape` — plus a top-level `healthy` boolean, and never mutates the
-ledger.
+`agentscrape`, `share_ingress` — plus a top-level `healthy` boolean, and never
+mutates the ledger.
 
 The database lives at `~/.local/share/agentbrain/research.db`. Precedence is
 `--db PATH`, then `AGENTBRAIN_DB`, then that default. A read against a path
@@ -272,6 +272,16 @@ at warning, because an undecided question is not a defect.
 The most common cause of mass stranding is `agentscrape` missing from the
 worker's `PATH` — `doctor`'s `agentscrape` check names it. Text, file, and
 directory ingestion is unaffected; only URL extraction degrades.
+
+**A share never even reached the ledger.** When the human is sure they shared a
+link and no job exists, the ingress is the suspect, not the worker. `doctor`'s
+`share_ingress` check answers it: a registered, running ingress that cannot
+answer its own `/v1/health` is a bind that stopped serving — the shape a
+Tailscale restart leaves behind — and every share is being held on the device
+instead. The ingress now exits on its own after two failed self-probes so the
+service restarts it; when it has not yet, the fix is
+`launchctl kickstart -k gui/$UID/agentbrain.share`, which is the human's call
+on an installer-managed service.
 
 **Nothing is being drained at all.** `jobs stats` showing a rising `queued`
 with `active_leases: 0` means the resident worker isn't running. That is

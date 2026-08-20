@@ -628,7 +628,17 @@ export function jobDispositions(cache: ResearchCache): JobDispositions {
   };
 }
 
-export function doctor(cache: ResearchCache, now = new Date()): DoctorReport {
+/**
+ * `extra` carries checks that cannot be answered from the database alone — the
+ * share ingress probe is one, since only a completed request proves a bound
+ * socket still serves. They are resolved by the caller and folded in here so
+ * `healthy` accounts for every check the report shows.
+ */
+export function doctor(
+  cache: ResearchCache,
+  now = new Date(),
+  extra: DoctorCheck[] = [],
+): DoctorReport {
   const checks: DoctorCheck[] = [];
   try {
     const quick = cache.db.query("PRAGMA quick_check").get() as {
@@ -742,6 +752,7 @@ export function doctor(cache: ResearchCache, now = new Date()): DoctorReport {
         ? "Agentscrape executable not found"
         : "Agentscrape executable found",
   });
+  checks.push(...extra);
   return {
     healthy: checks.every((check) => check.status !== "failed"),
     checks,

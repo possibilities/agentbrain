@@ -429,8 +429,15 @@ Usage:
   agentbrain doctor [--notify] [--json]
 
 Uses a structurally read-only database connection. Reports safe status/count data for
-SQLite integrity, schema, Artifact references, leases, stranded ingestion, and
-Agentscrape availability. Exits 1 when a required check fails.
+SQLite integrity, schema, Artifact references, leases, stranded ingestion,
+Agentscrape availability, and the share ingress. Exits 1 when a required check fails.
+
+share_ingress reads the registration a serving ingress publishes and asks it for
+GET /v1/health on its own address — this machine only, never the open web. No
+registration is ok, because the share service is opt-in. A registration whose
+process is gone warns. A registered, running ingress that cannot answer fails:
+that is a bind that stopped serving, and shares are being dropped while the
+ledger has nothing to show for it.
 
 A stranded ingestion job is one in blocked or failed that carries a failure class: an
 attempt ran, nothing will revive it, and links accepted at admission never became
@@ -528,7 +535,7 @@ keeps timed_out:true in JSON but exits 0 because the durable Run continues indep
   share: `agentbrain share — authenticated share ingress for Chrome and Android
 
 Usage:
-  agentbrain share serve [--host ADDR] [--port N] [--portless] [--token-file PATH] [--allow-any-interface] [--json]
+  agentbrain share serve [--host ADDR] [--port N] [--portless] [--token-file PATH] [--allow-any-interface] [--liveness-interval-ms MS] [--registration-file PATH] [--json]
   agentbrain share token init [--force] [--token-file PATH] [--json]
   agentbrain share token show --reveal [--token-file PATH] [--json]
   agentbrain share token path [--json]
@@ -564,6 +571,15 @@ it the command says so instead of starting an unnamed server. A .localhost name
 resolves only on this machine, so it supplements the tailnet address rather than
 replacing it, and --portless is refused alongside --port or a non-loopback
 --host. Override the derived name with AGENTBRAIN_PORTLESS_NAME.
+
+A bound address can stop serving without the process noticing: when the tailnet
+interface is torn down and re-created, the socket stays in LISTEN and accepts
+every connection without answering it. So the ingress proves it can still serve
+by sending itself GET /v1/health every --liveness-interval-ms (default 60000, 0
+disables), and exits after two consecutive failures so the service definition
+rebinds it. While serving it publishes ~/.local/state/agentbrain/share-ingress.json
+(--registration-file overrides) naming its URL and pid, which is what agentbrain
+doctor reads to check the ingress. See ADR 0021.
 
 See docs/contracts/share-ingest-v1.md and docs/runbooks/share-ingress.md.
 `,

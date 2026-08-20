@@ -78,6 +78,17 @@ listener but not how to authenticate to it.
 A share is durable the moment it is admitted. Materialization still waits for
 the resident Worker, so run both.
 
+While it serves, the ingress publishes
+`~/.local/state/agentbrain/share-ingress.json` naming the URL and pid it claims,
+and withdraws it on shutdown. Every minute it asks itself for `/v1/health` over
+that same address; after two consecutive failures it exits, and `KeepAlive`
+starts a process that binds a working socket. This exists because a bound
+address can stop serving without the process noticing — a Tailscale restart
+re-creates the interface underneath it, leaving a socket that accepts every
+connection and answers none (ADR 0021). `agentbrain doctor` reads the same
+registration, so an ingress in that state is a failed check rather than a
+silence.
+
 ### Named URLs for desktop development
 
 `bun run dev:share` is `agentbrain share serve --portless`: it runs the server
@@ -186,6 +197,7 @@ disclosed; nothing is dropped silently.
 | `unauthorized` / 401 | Token mismatch | Re-copy from `share token show --reveal`; confirm you rotated every device |
 | Client says "cannot reach" | Ingress not running, wrong host, or tailnet down | `tailscale status`; confirm `share serve` is bound to the tailnet address, not `127.0.0.1` |
 | Chrome badge shows an amber number | Shares are held, undelivered | Bring the ingress up; press **Send now** in Options to stop waiting for the backoff |
+| Shares are held while `share serve` is running | The bound address stopped serving, usually after a Tailscale restart | `agentbrain doctor --json` (`share_ingress`); `launchctl kickstart -k gui/$UID/agentbrain.share` |
 | A held Chrome share never arrives | Token rejected, or the ingress stayed down | Options → **Test connection**; a held share is abandoned after 7 days |
 | Android reaches nothing but curl works | Cleartext blocked | Add the host to `network_security_config.xml`, or use the MagicDNS name |
 | Chrome shortcut does nothing | Unassigned due to a conflict | Rebind at `chrome://extensions/shortcuts` |

@@ -14,40 +14,31 @@ import {
   generateShareToken,
   readShareToken,
   resolveSharePort,
+  resolveShareServerToken,
   SHARE_CONTRACT_VERSION,
   SHARE_DEFAULT_HOST,
   type SharePortSource,
   writeShareToken,
 } from "./share";
+import {
+  clearIngressRegistration,
+  DEFAULT_LIVENESS_INTERVAL_MS,
+  defaultIngressRegistrationPath,
+  INGRESS_REGISTRATION_VERSION,
+  type IngressLiveness,
+  probeShareIngress,
+  startIngressLiveness,
+  writeIngressRegistration,
+} from "./share-liveness";
 import { type ShareServerEvent, startShareServer } from "./share-server";
 import { ResearchStore } from "./store";
 import type { GlobalOptions } from "./types";
 
+/** A shutdown that has not finished by now is not going to; exit anyway. */
+const SHUTDOWN_GRACE_MS = 5_000;
+
 function tokenPathFor(opts: Record<string, unknown> & { _: string[] }): string {
   return optString(opts, "token-file") ?? defaultShareTokenPath();
-}
-
-/**
- * Resolves the token the server will require. The environment override exists
- * for supervised/service contexts that inject a secret without a file; the
- * file remains the default so ADR 0012 permission rules apply.
- */
-function resolveServerToken(path: string): { token: string; source: string } {
-  const fromEnv = process.env.AGENTBRAIN_SHARE_TOKEN?.trim();
-  if (fromEnv !== undefined && fromEnv.length > 0) {
-    if (fromEnv.length < 16) {
-      throw new CliError(
-        "share_token_invalid",
-        "AGENTBRAIN_SHARE_TOKEN is too short to be usable",
-        {
-          recovery:
-            "Use at least 16 characters, or unset it to use the token file.",
-        },
-      );
-    }
-    return { token: fromEnv, source: "env:AGENTBRAIN_SHARE_TOKEN" };
-  }
-  return { token: readShareToken(path), source: path };
 }
 
 function assertBindableHost(host: string, allowAny: boolean): void {
@@ -98,6 +89,13 @@ export async function runShareCommands(
       "token-file": { type: "string" },
       "allow-any-interface": { type: "boolean" },
       portless: { type: "boolean" },
+      // 0 disables the self-proof; the loop is the only thing that notices a
+      // bind that stopped serving, so disabling it is a deliberate act.
+      "liveness-interval-ms": {
+        type: "number",
+        default: DEFAULT_LIVENESS_INTERVAL_MS,
+      },
+      "registration-file": { type: "string" },
     });
     if (opts._.length > 0) {
       throw new CliError(
@@ -156,7 +154,7 @@ export async function runShareCommands(
     const { port, source: portSource } = resolveSharePort(portFlag);
     assertBindableHost(host, optBoolean(opts, "allow-any-interface"));
     const tokenPath = tokenPathFor(opts);
-    const { token, source } = resolveServerToken(tokenPath);
+    const { token, source } = resolveShareServerToken(tokenPath);
 
     const store = new ResearchStore(dbPath);
     const onEvent = (event: ShareServerEvent): void => {
@@ -208,20 +206,80 @@ export async function runShareCommands(
       { readOnly: false },
     );
 
-    await new Promise<void>((resolve) => {
-      let stopping = false;
-      const stop = (): void => {
-        if (stopping) return;
-        stopping = true;
-        void running.stop().then(() => {
-          store.close();
-          resolve();
-        });
-      };
-      for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-        process.on(signal, stop);
-      }
+    const registrationPath =
+      optString(opts, "registration-file") ?? defaultIngressRegistrationPath();
+
+    // Shutdown is wired before anything else the process publishes. A signal
+    // that arrives while the ingress is still announcing itself would
+    // otherwise hit the default disposition and leave a registration behind
+    // claiming an ingress that no longer exists.
+    let stopping = false;
+    // Null until the loop is running: a signal can arrive before it starts.
+    let liveness: IngressLiveness | null = null;
+    let releaseExit: () => void = () => {};
+    const exited = new Promise<void>((resolve) => {
+      releaseExit = resolve;
     });
+    const shutdown = (exitCode: number | null): void => {
+      if (stopping) return;
+      stopping = true;
+      liveness?.stop();
+      clearIngressRegistration(registrationPath);
+      // A server that cannot serve may not shut down cleanly either, and a
+      // shutdown that hangs recreates the exact failure the liveness loop
+      // exists to end: a live process holding a socket that answers nothing.
+      const forced = setTimeout(
+        () => process.exit(exitCode ?? 0),
+        SHUTDOWN_GRACE_MS,
+      );
+      void running.stop().then(() => {
+        store.close();
+        clearTimeout(forced);
+        if (exitCode === null) releaseExit();
+        else process.exit(exitCode);
+      });
+    };
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+      process.on(signal, () => shutdown(null));
+    }
+
+    // Published only once the socket is bound, so a registration always means
+    // an ingress claimed this address. `doctor` reads it to know an ingress is
+    // supposed to be answering, and where.
+    writeIngressRegistration(registrationPath, {
+      version: INGRESS_REGISTRATION_VERSION,
+      url: running.url,
+      host,
+      port: payload.port,
+      pid: process.pid,
+      started_at: new Date().toISOString(),
+    });
+
+    liveness = startIngressLiveness({
+      intervalMs: optNumber(opts, "liveness-interval-ms") ?? 0,
+      probe: () => probeShareIngress(running.url, token),
+      onFailure: (probe, consecutive) => {
+        process.stderr.write(
+          `[share] liveness ${probe.code} (${consecutive}): ${probe.detail}\n`,
+        );
+      },
+      onRecovery: (consecutive) => {
+        process.stderr.write(
+          `[share] liveness recovered after ${consecutive} failed probes\n`,
+        );
+      },
+      // A bind that no longer serves cannot be repaired in place: the address
+      // it holds is gone. Exiting hands the problem to the service definition,
+      // whose KeepAlive rebinds a working socket (ADR 0021).
+      onFatal: (probe) => {
+        process.stderr.write(
+          `[share] ingress can no longer serve ${running.url}: ${probe.detail}; exiting so the service restarts\n`,
+        );
+        shutdown(1);
+      },
+    });
+
+    await exited;
     return;
   }
 

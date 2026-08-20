@@ -371,3 +371,30 @@ export function bearerToken(headerValue: string | null): string | null {
   const match = headerValue.match(/^Bearer\s+(\S+)$/i);
   return match?.[1] ?? null;
 }
+
+/**
+ * Resolves the token a server will require. The environment override exists
+ * for supervised/service contexts that inject a secret without a file; the
+ * file remains the default so ADR 0012 permission rules apply. `doctor` reads
+ * it the same way so its probe presents whatever the running ingress expects.
+ */
+export function resolveShareServerToken(path: string): {
+  token: string;
+  source: string;
+} {
+  const fromEnv = process.env.AGENTBRAIN_SHARE_TOKEN?.trim();
+  if (fromEnv !== undefined && fromEnv.length > 0) {
+    if (fromEnv.length < 16) {
+      throw new CliError(
+        "share_token_invalid",
+        "AGENTBRAIN_SHARE_TOKEN is too short to be usable",
+        {
+          recovery:
+            "Use at least 16 characters, or unset it to use the token file.",
+        },
+      );
+    }
+    return { token: fromEnv, source: "env:AGENTBRAIN_SHARE_TOKEN" };
+  }
+  return { token: readShareToken(path), source: path };
+}

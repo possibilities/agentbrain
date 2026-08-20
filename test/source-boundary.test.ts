@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { probeShareIngress } from "../src/share-liveness";
 
 function sourceFiles(root: string): string[] {
   const output: string[] = [];
@@ -18,6 +19,14 @@ function sourceFiles(root: string): string[] {
  * clients remain forbidden everywhere, including here.
  */
 const SHARE_INGRESS_FILE = join("src", "share-server.ts");
+
+/**
+ * The one module authorized to make a request, per ADR 0021, and only to the
+ * ingress this machine registered for itself. It is a liveness proof, not a
+ * content read: no locator from a job, a payload, or the database can reach
+ * it, so Agentscrape remains the only fetcher of anything published (ADR 0002).
+ */
+const SHARE_LIVENESS_FILE = join("src", "share-liveness.ts");
 
 test("production source has no direct DNS/HTTP client boundary", () => {
   const root = join(import.meta.dir, "..", "src");
@@ -41,7 +50,9 @@ test("production source has no direct DNS/HTTP client boundary", () => {
   for (const path of sourceFiles(root)) {
     const text = readFileSync(path, "utf8");
     for (const pattern of forbidden) {
-      if (pattern.test(text)) violations.push(`${path}: ${pattern}`);
+      const exempt =
+        path.endsWith(SHARE_LIVENESS_FILE) && pattern.source.includes("fetch");
+      if (!exempt && pattern.test(text)) violations.push(`${path}: ${pattern}`);
     }
     if (!path.endsWith(SHARE_INGRESS_FILE) && inboundBinding.test(text)) {
       violations.push(`${path}: ${inboundBinding}`);
@@ -71,6 +82,44 @@ test("the share ingress performs no outbound network work", () => {
     /from\s+["']node:(?:dns(?:\/promises)?|http|https|net|tls|dgram)["']/,
   ]) {
     expect(pattern.test(text)).toBe(false);
+  }
+});
+
+test("the liveness probe is one request, to the ingress's own health path", async () => {
+  const text = readFileSync(
+    join(import.meta.dir, "..", SHARE_LIVENESS_FILE),
+    "utf8",
+  );
+  // One call site, and no other egress seam smuggled in beside it.
+  expect(text.match(/\bfetch\s*\(/g)?.length).toBe(1);
+  for (const pattern of [
+    /\bBun\.connect\s*\(/,
+    /\bBun\.serve\s*\(/,
+    /from\s+["']node:(?:dns(?:\/promises)?|http|https|net|tls|dgram)["']/,
+  ]) {
+    expect(pattern.test(text)).toBe(false);
+  }
+
+  // And behaviourally: it asks the address it was handed for /v1/health, with
+  // no redirect following and nothing else requested.
+  const seen: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => {
+      seen.push(new URL(request.url).pathname);
+      return Response.json({ ok: true });
+    },
+  });
+  try {
+    const probe = await probeShareIngress(
+      `http://127.0.0.1:${server.port}`,
+      "0123456789abcdef",
+    );
+    expect(probe.ok).toBe(true);
+    expect(seen).toEqual(["/v1/health"]);
+  } finally {
+    server.stop(true);
   }
 });
 

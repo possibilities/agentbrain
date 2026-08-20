@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { admitSubmission } from "../src/admission";
 import { ArtifactStore } from "../src/artifacts";
 import { ResearchStore } from "../src/store";
@@ -48,6 +48,10 @@ function runCli(
     env: {
       ...process.env,
       XDG_DATA_HOME: join(value.root, "data"),
+      // doctor reads the share ingress registration from HOME. Pointing it at
+      // the fixture keeps the report about this database and never probes the
+      // machine's installed service.
+      HOME: value.root,
       ...env,
     },
     stdout: "pipe",
@@ -449,6 +453,51 @@ test("doctor separates broken ingestion from admission review", () => {
   // warns instead of failing the report.
   expect(review?.status).toBe("warning");
   expect(review?.detail).toContain("1 jobs withheld");
+});
+
+test("doctor fails when a registered share ingress cannot answer", () => {
+  const value = fixture();
+  value.store.close();
+  const registration = join(
+    value.root,
+    ".local",
+    "state",
+    "agentbrain",
+    "share-ingress.json",
+  );
+  mkdirSync(dirname(registration), { recursive: true });
+  // A registration this process owns, pointing at a port nothing serves: the
+  // shape a live-but-wedged ingress leaves behind. Shares are being dropped
+  // and the ledger cannot say so, so the report must not read healthy.
+  writeFileSync(
+    registration,
+    JSON.stringify({
+      version: 1,
+      url: "http://127.0.0.1:1",
+      host: "127.0.0.1",
+      port: 1,
+      pid: process.pid,
+      started_at: "2026-08-20T00:00:00.000Z",
+    }),
+  );
+  mkdirSync(join(value.root, ".local", "share", "agentbrain"), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(value.root, ".local", "share", "agentbrain", "share-token"),
+    "0123456789abcdef0123456789abcdef\n",
+  );
+
+  const doctor = runCli(value, ["doctor", "--json"]);
+  expect(doctor.exitCode).toBe(1);
+  const report = jsonOutput<{
+    healthy: boolean;
+    checks: Array<{ name: string; status: string; detail: string }>;
+  }>(doctor).data;
+  const ingress = report.checks.find((c) => c.name === "share_ingress");
+  expect(report.healthy).toBe(false);
+  expect(ingress?.status).toBe("failed");
+  expect(ingress?.detail).toContain("listening but not serving");
 });
 
 test("jobs stats is content-safe and doctor reports missing provider", () => {

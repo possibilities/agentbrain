@@ -63,6 +63,7 @@ import {
   humanTags,
   searchJsonl,
 } from "./render";
+import { shareIngressCheck } from "./share-liveness";
 import {
   RECOVERY_OFFLINE_SCOPE_KIND,
   RECOVERY_ONLINE_SCOPE_KIND,
@@ -300,7 +301,7 @@ async function runParsed(
     const run = planReadCommand(command, parsed.commandArgv, parsed.globals);
     const cache = new ResearchCache(parsed.globals.dbPath);
     try {
-      run(cache);
+      await run(cache);
     } finally {
       cache.close();
     }
@@ -371,7 +372,7 @@ async function runParsed(
   );
 }
 
-type ReadCommand = (cache: ResearchCache) => void;
+type ReadCommand = (cache: ResearchCache) => void | Promise<void>;
 
 function planReadCommand(
   command: string,
@@ -1095,8 +1096,10 @@ function runDoctor(argv: string[], globals: GlobalOptions): ReadCommand {
       { exitCode: 2 },
     );
   const notify = opts.notify === true;
-  return (cache) => {
-    const data = doctor(cache);
+  return async (cache) => {
+    // The ingress check is a request to this machine's own registered share
+    // address and nowhere else; agentbrain still opens no socket to the web.
+    const data = doctor(cache, new Date(), [await shareIngressCheck()]);
     const report = notify ? withStrandedNotice(cache, data) : data;
     writeByFormat(
       "doctor",
