@@ -49,7 +49,7 @@ below is a constraint you cannot recover by reading a single file.
 - `skills/brain/SKILL.md` is the canonical deep runbook for agents. `--agent-help`
   in `src/help.ts` is the in-binary fallback and names the skill; the two must
   keep agreeing.
-- AgentStart's skills scan copies it into the private core plugin by running
+- AgentStart's skills scan copies it into the default `common` capability pack by running
   `npx skills add --copy` against this checkout and discovering nested
   `skills/<name>/SKILL.md`. The installed
   copy is this file — do not add a second source or a sync path.
@@ -82,15 +82,16 @@ below is a constraint you cannot recover by reading a single file.
 This checkout is one of the agent* fleet under `~/code`. Shared machinery
 lives in two siblings, and some changes here must cascade:
 
-- Skills under `skills/<name>/` ship through AgentStart's private core plugin
-  (`~/code/agentstart/scripts/sync-skills`, run six-hourly by the scheduled
-  updater): Claude Code and Codex expose them under the `agentstart-core`
-  plugin namespace, while Pi uses the plain skill name. A SKILL.md edit is
-  live within six hours, or on demand by running that script. Whether a new
-  skill earns a TOOLS.md advertisement line is a deliberate decision —
+- Skills under `skills/<name>/` ship into AgentStart's default `common`
+  capability pack (`~/code/agentstart/scripts/sync-skills`, run six-hourly
+  by the scheduled updater). AgentLaunch composes the pack into managed
+  sessions: Claude Code exposes `/agent:<name>`, while Codex uses `$<name>`
+  and Pi uses `/<name>`. A SKILL.md edit is live within six hours, or on
+  demand by running that script. Whether a new skill earns a TOOLS.md
+  advertisement line is a deliberate decision —
   `agentwiki get tool-advertisement-policy`.
 - Adding or removing a call to another fleet tool changes the fleet map:
   update `~/code/agentstart/skills/fleet/MAP.md` (served by the `fleet`
   skill, every edge with evidence) in the same change.
-- General agent doctrine — collab, build, story, the resource skills — is
-  `~/code/agentguidance`; tool-specific runbooks stay here.
+- General agent doctrine — collab, build, maintain, story, the resource
+  skills — is `~/code/agentguidance`; tool-specific runbooks stay here.
