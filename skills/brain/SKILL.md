@@ -432,9 +432,11 @@ repeated.
 
 ## For the human
 
-Saving is a one-tap act, not a CLI act: the Chrome extension (toolbar button,
-right-click, or `Ctrl+Shift+S`) and the Android share sheet both post into this
-same index. A share taken while the ingress is down is held by the extension or
+Saving is a one-tap act, not a CLI act: the Chrome extension (its toolbar
+popover, right-click, or `Ctrl+Shift+S`) and the Android share sheet both post
+into this same index. The popover lists the last 20 shares and what became of
+each — held, sent, indexed with a document id, or stranded — so "did that link
+land?" is usually answerable without a terminal. A share taken while the ingress is down is held by the extension or
 the Android app and sent when it comes back — check the toolbar badge, or either
 app's settings screen, before concluding a link was lost. If links stop showing
 up, `agentbrain doctor` names the failing check, and the installed

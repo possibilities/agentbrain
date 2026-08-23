@@ -310,6 +310,49 @@ export function resolveShare(request: ShareRequest): ResolvedShare {
   );
 }
 
+/**
+ * How many share outcomes one status request may ask about. The client shows a
+ * bounded history, so a larger request is a client bug or a probe, not a use.
+ */
+export const SHARE_MAX_STATE_IDS = 50;
+
+/**
+ * Parses `job_ids=1,2,3`. Ids are the client's own acknowledgements, so a
+ * malformed list is refused rather than silently narrowed to what parsed.
+ */
+export function parseShareStateIds(raw: string | null): number[] {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return [];
+  const parts = trimmed.split(",").map((part) => part.trim());
+  const ids: number[] = [];
+  for (const part of parts) {
+    if (!/^[0-9]{1,15}$/.test(part)) {
+      throw shareError(
+        "bad_payload",
+        "job_ids must be a comma-separated list of job ids",
+        "Send job_ids=1,2,3 using the ids returned by /v1/share.",
+      );
+    }
+    const id = Number(part);
+    if (id <= 0) {
+      throw shareError(
+        "bad_payload",
+        "job_ids must be positive job ids",
+        "Send job_ids=1,2,3 using the ids returned by /v1/share.",
+      );
+    }
+    if (!ids.includes(id)) ids.push(id);
+  }
+  if (ids.length > SHARE_MAX_STATE_IDS) {
+    throw shareError(
+      "payload_too_large",
+      `job_ids accepts at most ${SHARE_MAX_STATE_IDS} ids`,
+      "Ask about the ids currently on screen.",
+    );
+  }
+  return ids;
+}
+
 export function defaultShareTokenPath(home?: string): string {
   const base = home?.trim() || process.env.HOME?.trim() || homedir();
   return join(base, ".local", "share", "agentbrain", "share-token");

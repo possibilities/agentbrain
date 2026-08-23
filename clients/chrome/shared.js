@@ -28,6 +28,10 @@ export function shareEndpoint(serverUrl) {
   return `${serverUrl}/v1/share`;
 }
 
+export function statesEndpoint(serverUrl) {
+  return `${serverUrl}/v1/shares`;
+}
+
 export function healthEndpoint(serverUrl) {
   return `${serverUrl}/v1/health`;
 }
@@ -97,6 +101,35 @@ export async function postShare(config, payload) {
       `Agentbrain rejected the share (HTTP ${response.status}).`,
     recovery: body?.error?.recovery,
   };
+}
+
+/**
+ * Asks the ingress what became of jobs it already acknowledged. Read-only and
+ * best effort: an ingress that is down leaves the popover showing what the
+ * client itself knows, which is never wrong, only less complete.
+ */
+export async function fetchShareStates(config, jobIds) {
+  if (jobIds.length === 0) return { ok: true, states: [] };
+  let response;
+  try {
+    response = await fetch(
+      `${statesEndpoint(config.serverUrl)}?job_ids=${jobIds.join(",")}`,
+      {
+        method: "GET",
+        signal: AbortSignal.timeout(SHARE_TIMEOUT_MS),
+        headers: { authorization: `Bearer ${config.token}` },
+      },
+    );
+  } catch {
+    return { ok: false, states: [] };
+  }
+  if (!response.ok) return { ok: false, states: [] };
+  try {
+    const body = await response.json();
+    return { ok: true, states: body?.data?.shares ?? [] };
+  } catch {
+    return { ok: false, states: [] };
+  }
 }
 
 /**

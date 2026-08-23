@@ -1,4 +1,12 @@
 import {
+  applyLedgerStates,
+  clearHistory,
+  OUTCOME,
+  pendingJobIds,
+  readHistory,
+  record,
+} from "./history.js";
+import {
   clearOutbox,
   enqueue,
   flushOutbox,
@@ -7,6 +15,7 @@ import {
   scheduleFlush,
 } from "./outbox.js";
 import {
+  fetchShareStates,
   hasHostPermission,
   isRetryable,
   loadConfig,
@@ -82,10 +91,29 @@ const DROP_DETAIL = {
     `${describe(entry.payload)}: ${result?.message ?? "the ingress refused it."}`,
 };
 
+const DROP_OUTCOME = {
+  expired: OUTCOME.ABANDONED,
+  overflow: OUTCOME.DISCARDED,
+  rejected: OUTCOME.REJECTED,
+};
+
 async function reportDropped(dropped) {
   for (const { entry, reason, result } of dropped) {
     notify(DROP_TITLE[reason], DROP_DETAIL[reason](entry, result));
+    await record({
+      id: entry.id,
+      payload: entry.payload,
+      outcome: DROP_OUTCOME[reason],
+      message: result?.message ?? DROP_DETAIL[reason](entry, result),
+    });
   }
+}
+
+/** The history's word for what the ingress answered. */
+function outcomeFor(status) {
+  if (status === "duplicate") return OUTCOME.DUPLICATE;
+  if (status === "already_indexed") return OUTCOME.INDEXED;
+  return OUTCOME.SENT;
 }
 
 /**
@@ -108,6 +136,14 @@ async function drainOutbox({ force = false } = {}) {
     const summary = await flushOutbox((payload) => postShare(config, payload), {
       force,
     });
+    for (const { entry, result } of summary.settled) {
+      await record({
+        id: entry.id,
+        payload: entry.payload,
+        outcome: outcomeFor(result.data?.status),
+        job: result.data?.job_id ?? null,
+      });
+    }
     await reportDropped(summary.dropped);
     await scheduleFlush();
     await refreshBadge();
@@ -123,7 +159,13 @@ async function drainOutbox({ force = false } = {}) {
  * saved: nothing is durable in Agentbrain until Admission answers.
  */
 async function hold(payload, reason) {
-  const { dropped, pending } = await enqueue(payload);
+  const { entry, dropped, pending } = await enqueue(payload);
+  await record({
+    id: entry.id,
+    payload,
+    outcome: OUTCOME.HELD,
+    message: reason,
+  });
   await reportDropped(dropped.map((entry) => ({ entry, reason: "overflow" })));
   await scheduleFlush();
   await refreshBadge();
@@ -135,6 +177,11 @@ async function hold(payload, reason) {
 
 async function report(result, payload) {
   if (result.ok) {
+    await record({
+      payload,
+      outcome: outcomeFor(result.data.status),
+      job: result.data.job_id ?? null,
+    });
     const queued = result.data.status === "queued";
     await flashBadge(queued ? "OK" : "DUP", queued ? "#1b7f4b" : "#6b6b6b");
     if (!queued) {
@@ -154,6 +201,11 @@ async function report(result, payload) {
     return;
   }
   await flashBadge("ERR", "#a32020");
+  await record({
+    payload,
+    outcome: OUTCOME.REJECTED,
+    message: result.message,
+  });
   notify(
     "Agentbrain share failed",
     result.recovery ? `${result.message} ${result.recovery}` : result.message,
@@ -237,10 +289,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === OUTBOX_ALARM) void drainOutbox();
 });
 
-chrome.action.onClicked.addListener(() => {
-  void shareCurrentPage();
-});
-
+// The toolbar button opens the popover (manifest `action.default_popup`), so
+// there is no onClicked here. Sharing the current page stays one keystroke
+// away on the command, and one click away inside the popover.
 chrome.commands.onCommand.addListener((command) => {
   if (command === "share-current-page") void shareCurrentPage();
 });
@@ -262,7 +313,26 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === MENU_PAGE) void shareCurrentPage();
 });
 
-/** The Options page inspects and drives the outbox through these messages. */
+/**
+ * Refreshes what the ingress says became of the jobs still in flight, and
+ * returns the history either way. The popover calls this on a short cadence
+ * while it is open; nothing here is scheduled in the background, because a
+ * status nobody is looking at is not worth a request.
+ */
+async function refreshHistory() {
+  const entries = await readHistory();
+  const ids = pendingJobIds(entries);
+  const config = await loadConfig();
+  if (config === null || ids.length === 0) return { entries, reachable: null };
+  if (!(await hasHostPermission(config.serverUrl))) {
+    return { entries, reachable: null };
+  }
+  const { ok, states } = await fetchShareStates(config, ids);
+  if (!ok) return { entries, reachable: false };
+  return { entries: await applyLedgerStates(states), reachable: true };
+}
+
+/** The Options page and the popover drive the client through these messages. */
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   if (message?.type === "outbox-status") {
     void outboxCount().then((pending) => respond({ pending }));
@@ -270,6 +340,20 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   }
   if (message?.type === "outbox-flush") {
     void drainOutbox({ force: true }).then((summary) => respond(summary));
+    return true;
+  }
+  if (message?.type === "history-refresh") {
+    void refreshHistory().then(async (result) =>
+      respond({ ...result, pending: await outboxCount() }),
+    );
+    return true;
+  }
+  if (message?.type === "history-clear") {
+    void clearHistory().then((discarded) => respond({ discarded }));
+    return true;
+  }
+  if (message?.type === "share-current-page") {
+    void shareCurrentPage().then(() => respond({ done: true }));
     return true;
   }
   if (message?.type === "outbox-clear") {

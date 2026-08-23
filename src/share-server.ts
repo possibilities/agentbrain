@@ -1,9 +1,11 @@
 import { admitSubmission } from "./admission";
 import { ArtifactStore } from "./artifacts";
 import { CliError } from "./errors";
+import { shareJobStates } from "./jobs";
 import {
   bearerToken,
   parseShareRequest,
+  parseShareStateIds,
   resolveShare,
   SHARE_CONTRACT_VERSION,
   SHARE_DEFAULT_HOST,
@@ -75,7 +77,7 @@ function corsHeaders(origin: string | null): Record<string, string> {
   if (origin === null || !origin.startsWith("chrome-extension://")) return {};
   return {
     "access-control-allow-origin": origin,
-    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-allow-headers": "authorization, content-type",
     "access-control-max-age": "600",
     vary: "origin",
@@ -221,6 +223,31 @@ export function createShareHandler(
             origin,
           ),
           "health",
+        );
+      }
+
+      // What became of the shares this client already sent. Read-only, and
+      // bounded to ids the client received from its own acknowledgements.
+      if (path === "/v1/shares") {
+        if (request.method !== "GET") {
+          throw new CliError(
+            "method_not_allowed",
+            `${request.method} is not allowed on ${path}`,
+          );
+        }
+        const ids = parseShareStateIds(url.searchParams.get("job_ids"));
+        const states = shareJobStates(store, ids);
+        return settle(
+          jsonResponse(
+            okBody(
+              command,
+              { version: SHARE_CONTRACT_VERSION, shares: states },
+              dbPath,
+            ),
+            200,
+            origin,
+          ),
+          "states",
         );
       }
 

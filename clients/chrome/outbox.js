@@ -112,6 +112,9 @@ export async function flushOutbox(
     attempted: 0,
     delivered: 0,
     duplicate: 0,
+    // Which entries the ingress answered for, so the caller can record what
+    // became of each rather than only how many.
+    settled: [],
     dropped: [],
     pending: entries.length,
     offline: false,
@@ -137,6 +140,7 @@ export async function flushOutbox(
     if (result.ok) {
       if (result.data?.status === "duplicate") summary.duplicate += 1;
       else summary.delivered += 1;
+      summary.settled.push({ entry, result });
       continue;
     }
     if (!isRetryable(result)) {

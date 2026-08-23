@@ -339,3 +339,91 @@ test("the bound server accepts a real share over HTTP", async () => {
     await running.stop();
   }
 });
+
+test("share states answer only for the ids asked about, and carry no locator", async () => {
+  const { handler, store } = fixture();
+  const admitted = await json(
+    await handler(
+      shareRequest({
+        client: "chrome-extension",
+        url: "https://example.com/state-probe",
+        title: "State probe",
+      }),
+    ),
+  );
+  const jobId = (admitted.data as { job_id: number }).job_id;
+
+  const response = await handler(
+    new Request(
+      `http://share.test/v1/shares?job_ids=${jobId},${jobId + 5000}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+    ),
+  );
+  expect(response.status).toBe(200);
+  const body = await json(response);
+  const shares = (body.data as { shares: Array<Record<string, unknown>> })
+    .shares;
+  // The unknown id is absent rather than reported as missing: a client cannot
+  // use this to learn whether an id it never received exists.
+  expect(shares).toEqual([
+    { job_id: jobId, state: "queued", failure_class: null, document_id: null },
+  ]);
+  const text = JSON.stringify(body);
+  expect(text).not.toContain("example.com");
+  expect(text).not.toContain("State probe");
+
+  // A completed job reports the Document the share became.
+  store.db.run("UPDATE jobs SET state='completed' WHERE id=?", [jobId]);
+  const after = await json(
+    await handler(
+      new Request(`http://share.test/v1/shares?job_ids=${jobId}`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+    ),
+  );
+  expect(
+    (after.data as { shares: Array<{ state: string }> }).shares[0]?.state,
+  ).toBe("completed");
+});
+
+test("share states require the token, a GET, and a sane id list", async () => {
+  const { handler } = fixture();
+
+  const unauthenticated = await handler(
+    new Request("http://share.test/v1/shares?job_ids=1"),
+  );
+  expect(unauthenticated.status).toBe(401);
+
+  const wrongMethod = await handler(
+    new Request("http://share.test/v1/shares?job_ids=1", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+    }),
+  );
+  expect(wrongMethod.status).toBe(405);
+
+  const malformed = await handler(
+    new Request("http://share.test/v1/shares?job_ids=1,two", {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    }),
+  );
+  expect(malformed.status).toBe(400);
+
+  // Bounded: the client shows a bounded history, so a huge ask is not a use.
+  const tooMany = await handler(
+    new Request(
+      `http://share.test/v1/shares?job_ids=${Array.from({ length: 51 }, (_, i) => i + 1).join(",")}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+    ),
+  );
+  expect(tooMany.status).toBe(413);
+
+  // No ids is an empty answer, not an error: a client with no history asks it.
+  const empty = await handler(
+    new Request("http://share.test/v1/shares", {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    }),
+  );
+  expect(empty.status).toBe(200);
+  expect((await json(empty)).data).toMatchObject({ shares: [] });
+});

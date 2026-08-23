@@ -36,6 +36,20 @@ broad host access at install time.
 only declared permissions. `alarms` exists for outbox redelivery: an MV3 service
 worker is torn down between events, so a timer cannot survive to retry.
 
+## The popover
+
+`action.default_popup` is `popup.html`: the toolbar button opens the share
+history rather than sharing immediately. Chrome gives an action either an
+`onClicked` listener or a popup, never both, so **Send this page** is the
+popover's first control and `Ctrl+Shift+S` still shares without opening it.
+
+`history.js` keeps the last 20 outcomes in `chrome.storage.local`, keyed by
+outbox entry id so a share that was held and later delivered stays one row.
+`status.js` derives what each row reads as; the ledger's word outranks the
+client's memory of delivery, and nothing held is ever called saved. The popover
+refreshes on `storage.onChanged` and polls `GET /v1/shares` every three seconds
+while it is open — never in the background, where nobody is looking.
+
 ## Keyboard shortcut
 
 `Ctrl+Shift+S`, or `Command+Shift+S` on macOS, declared as a named command so it

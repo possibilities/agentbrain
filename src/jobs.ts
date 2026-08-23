@@ -634,6 +634,51 @@ export function jobDispositions(cache: ResearchCache): JobDispositions {
  * socket still serves. They are resolved by the caller and folded in here so
  * `healthy` accounts for every check the report shows.
  */
+/**
+ * What a device client may learn about the shares it submitted.
+ *
+ * Keyed by job id, which the client already holds from its own acknowledgement:
+ * this answers "what became of the thing I sent", never "what is in the
+ * ledger". It carries no locator, title, or body — a client that needs the
+ * content already had it — and an unknown id is simply absent rather than
+ * distinguishable from one belonging to somebody else's share.
+ */
+export interface ShareJobState {
+  job_id: number;
+  state: JobState;
+  failure_class: string | null;
+  document_id: number | null;
+}
+
+export function shareJobStates(
+  store: Pick<ResearchStore, "db">,
+  ids: number[],
+): ShareJobState[] {
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = store.db
+    .query(
+      `SELECT j.id AS job_id, j.state, j.failure_class, r.document_id
+         FROM jobs j
+         LEFT JOIN resources r ON r.id = j.resource_id
+        WHERE j.id IN (${placeholders})
+        ORDER BY j.id`,
+    )
+    .all(...ids) as Array<{
+    job_id: number;
+    state: JobState;
+    failure_class: string | null;
+    document_id: number | null;
+  }>;
+  return rows.map((row) => ({
+    job_id: row.job_id,
+    state: row.state,
+    failure_class:
+      row.failure_class === null ? null : safeClass(row.failure_class),
+    document_id: row.document_id,
+  }));
+}
+
 export function doctor(
   cache: ResearchCache,
   now = new Date(),

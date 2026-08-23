@@ -6,10 +6,11 @@ The share ingress is one endpoint shared by every device client. It is served by
 
 ```text
 POST http://<agentbrain-host>:8787/v1/share
+GET  http://<agentbrain-host>:8787/v1/shares?job_ids=1,2,3
 GET  http://<agentbrain-host>:8787/v1/health
 ```
 
-Both routes require `Authorization: Bearer <token>`. There is no anonymous
+Every route requires `Authorization: Bearer <token>`. There is no anonymous
 route: network reachability is not authorization.
 
 ## Request
@@ -97,6 +98,39 @@ client that retries after a timeout cannot create a second job.
 
 `resolved_url` is `null` for text jobs. A text body is never echoed back.
 
+## Share states
+
+`GET /v1/shares?job_ids=1,2,3` answers what became of jobs the client already
+holds acknowledgements for. It is additive to v1 and read-only: a client written
+against the original contract never calls it and is unaffected.
+
+```json
+{
+  "schema_version": 1,
+  "ok": true,
+  "command": "share /v1/shares",
+  "data": {
+    "version": 1,
+    "shares": [
+      { "job_id": 4321, "state": "completed", "failure_class": null, "document_id": 970 }
+    ]
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `job_id` | The job identity `/v1/share` returned. |
+| `state` | Ledger state: `queued`, `running`, `retry_wait`, `blocked`, `failed`, `completed`, `excluded`, `cancelled`. |
+| `failure_class` | Safe class label when an attempt failed, else `null`. A `blocked` or `failed` job carrying one is stranded ([ADR 0018](../adr/0018-stranded-ingestion-is-reported.md)). |
+| `document_id` | The Document the job produced, once one exists, else `null`. |
+
+At most 50 ids per request, deduplicated, and `job_ids` may be omitted for an
+empty answer. An id with no matching job is absent from `shares` rather than
+reported as missing, so the route cannot be used to probe which ids exist. No
+locator, title, or body is ever returned: a client asking about its own shares
+already has the content it sent.
+
 ## Errors
 
 Errors use the standard Agentbrain error envelope:
@@ -112,14 +146,14 @@ Errors use the standard Agentbrain error envelope:
 
 | HTTP | Code | Cause |
 | --- | --- | --- |
-| 400 | `bad_payload` | Not JSON, not an object, missing/unknown `client`, no `url` or `text`, wrong field type, oversized field. |
+| 400 | `bad_payload` | Not JSON, not an object, missing/unknown `client`, no `url` or `text`, wrong field type, oversized field, malformed `job_ids`. |
 | 400 | `bad_source` | `url` is not a usable http(s) locator. |
 | 400 | `unsupported_version` | `version` is not `1`. |
 | 401 | `unauthorized` | Missing or non-matching bearer token. |
 | 404 | `not_found` | Unknown path. |
 | 405 | `method_not_allowed` | Wrong method for the route. |
 | 409 | `idempotency_conflict` | An explicit `idempotency_key` already names a different intent. |
-| 413 | `payload_too_large` | Body exceeds 1 MiB. |
+| 413 | `payload_too_large` | Body exceeds 1 MiB, or more than 50 `job_ids`. |
 | 415 | `unsupported_media_type` | `Content-Type` is not JSON. |
 | 500 | `share_failed` | Unexpected server fault. Details are logged locally, never returned. |
 

@@ -113,9 +113,9 @@ Load `clients/chrome/` unpacked from `chrome://extensions` with Developer mode
 on, then in its Options enter the server URL and token and click **Save & grant
 access**. The extension requests permission for that one origin rather than
 declaring broad host access up front, so skipping the prompt leaves it unable to
-reach the server. Send from the toolbar button, the right-click menu, or
-`Ctrl+Shift+S`; a selection is sent as text, so the server extracts a URL from
-it when there is one.
+reach the server. Send from the popover's **Send this page**, the right-click
+menu, or `Ctrl+Shift+S`; a selection is sent as text, so the server extracts a
+URL from it when there is one.
 
 - **The shortcut may arrive unassigned.** Chrome does not override an existing
   binding, and a collision leaves the command with no key. Rebind at
@@ -125,6 +125,22 @@ it when there is one.
   Chromium browser that loads MV3 unpacked.
 - **`chrome://` pages and the Web Store cannot be shared**; the extension
   refuses them rather than queueing a job that would fail later.
+
+### The popover
+
+The toolbar button opens a popover listing the last 20 shares and what became of
+each: **Held** with what it is waiting for, **Sent** or **Duplicate** with the
+job id, then **Queued**, **Indexing**, **Indexed** with the document id, or
+**Stranded** with the failure class. The first three come from the client; every
+state past Admission is read from the ingress through
+`GET /v1/shares?job_ids=…` and belongs to the ledger, not the extension.
+
+It updates itself while open — immediately when the extension holds or delivers
+something, and every three seconds for jobs the worker has not finished. Nothing
+polls while the popover is closed; the badge remains the at-a-glance signal.
+
+Because the toolbar button now opens the popover, sharing the current page is
+its first button, or `Ctrl+Shift+S` without opening anything.
 
 ### Sharing while the ingress is down
 
@@ -196,7 +212,8 @@ disclosed; nothing is dropped silently.
 | --- | --- | --- |
 | `unauthorized` / 401 | Token mismatch | Re-copy from `share token show --reveal`; confirm you rotated every device |
 | Client says "cannot reach" | Ingress not running, wrong host, or tailnet down | `tailscale status`; confirm `share serve` is bound to the tailnet address, not `127.0.0.1` |
-| Chrome badge shows an amber number | Shares are held, undelivered | Bring the ingress up; press **Send now** in Options to stop waiting for the backoff |
+| Chrome badge shows an amber number | Shares are held, undelivered | Bring the ingress up; press **Send held** in the popover to stop waiting for the backoff |
+| Popover shows "Sent" but never "Indexed" | The worker is not draining, or the ingress cannot answer status | `agentbrain jobs stats --json`; the footer says "ingress unreachable" when the status read is failing |
 | Shares are held while `share serve` is running | The bound address stopped serving, usually after a Tailscale restart | `agentbrain doctor --json` (`share_ingress`); `launchctl kickstart -k gui/$UID/agentbrain.share` |
 | A held Chrome share never arrives | Token rejected, or the ingress stayed down | Options → **Test connection**; a held share is abandoned after 7 days |
 | Android reaches nothing but curl works | Cleartext blocked | Add the host to `network_security_config.xml`, or use the MagicDNS name |

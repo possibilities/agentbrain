@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Agentbrain Share",
-  "version": "1.1.0",
-  "description": "Send the current page, a link, or a selection to your private Agentbrain share ingress; holds shares while it is unreachable.",
+  "version": "1.2.0",
+  "description": "Send the current page, a link, or a selection to your private Agentbrain share ingress; holds shares while it is unreachable and shows what became of each one.",
   "permissions": [
     "contextMenus",
     "storage",
@@ -17,8 +17,9 @@
   },
   "icons": { "128": "icon128.png" },
   "action": {
-    "default_title": "Send this page to Agentbrain",
-    "default_icon": { "128": "icon128.png" }
+    "default_title": "Agentbrain shares",
+    "default_icon": { "128": "icon128.png" },
+    "default_popup": "popup.html"
   },
   "options_page": "options.html",
   "commands": {

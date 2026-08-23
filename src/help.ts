@@ -540,7 +540,8 @@ Usage:
   agentbrain share token show --reveal [--token-file PATH] [--json]
   agentbrain share token path [--json]
 
-share serve exposes one ingestion contract, POST /v1/share, plus GET /v1/health.
+share serve exposes one ingestion contract, POST /v1/share, plus GET /v1/health and
+GET /v1/shares?job_ids=1,2,3.
 Both require Authorization: Bearer <token>. The server is the authoritative
 ingestion point: it resolves each payload into exactly one Admission intent and
 calls the same durable submit path as the CLI, so a replayed share returns
@@ -550,6 +551,11 @@ A payload carries client (chrome-extension or android-share) plus url or text.
 Free-text shares are scanned server-side for the first valid http(s) URL, so an
 Android payload like "great read https://example.com/post" becomes a URL job.
 Text with no URL becomes a text job. Shares default to the saved-links collection.
+
+/v1/shares answers what became of jobs a client already holds acknowledgements for
+— state, failure class, and document id, at most 50 ids, no locator or body echoed
+back, and an unknown id simply absent. It is additive to share-ingest v1 and reads
+the ledger; it never mutates it.
 
 Network reachability is not authorization. The default bind is 127.0.0.1; pass
 the tailnet address explicitly (--host 100.x.y.z) to accept device shares.
