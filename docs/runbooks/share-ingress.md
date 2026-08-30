@@ -117,6 +117,11 @@ reach the server. Send from the popover's **Send this page**, the right-click
 menu, or `Ctrl+Shift+S`; a selection is sent as text, so the server extracts a
 URL from it when there is one.
 
+Loading unpacked registers the directory once; it does not reliably reload the
+MV3 service worker when those files change. After updating the checkout, return
+to `chrome://extensions` and click the circular **Reload** button on Agentbrain
+Share before testing the new client.
+
 - **The shortcut may arrive unassigned.** Chrome does not override an existing
   binding, and a collision leaves the command with no key. Rebind at
   `chrome://extensions/shortcuts`. `Ctrl+Alt` combinations are not permitted.
@@ -216,6 +221,7 @@ disclosed; nothing is dropped silently.
 | Popover shows "Sent" but never "Indexed" | The worker is not draining, or the ingress cannot answer status | `agentbrain jobs stats --json`; the footer says "ingress unreachable" when the status read is failing |
 | Shares are held while `share serve` is running | The bound address stopped serving, usually after a Tailscale restart | `agentbrain doctor --json` (`share_ingress`); `launchctl kickstart -k gui/$UID/agentbrain.share` |
 | A held Chrome share never arrives | Token rejected, or the ingress stayed down | Options → **Test connection**; a held share is abandoned after 7 days |
+| Popover stays on "Loading…" or its buttons do nothing, but right-click sharing works | Chrome has the new popover files and an older MV3 service worker | At `chrome://extensions`, click **Reload** on Agentbrain Share |
 | Android reaches nothing but curl works | Cleartext blocked | Add the host to `network_security_config.xml`, or use the MagicDNS name |
 | Chrome shortcut does nothing | Unassigned due to a conflict | Rebind at `chrome://extensions/shortcuts` |
 | Extension errors with a permission message | Host permission not granted | Reopen Options and click **Save & grant access** |

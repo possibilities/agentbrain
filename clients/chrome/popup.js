@@ -17,8 +17,18 @@ const list = document.getElementById("list");
 const empty = document.getElementById("empty");
 const statusLine = document.getElementById("status");
 
-function ask(message) {
-  return chrome.runtime.sendMessage(message);
+async function ask(message) {
+  const result = await chrome.runtime.sendMessage(message);
+  if (result === undefined) {
+    throw new Error(`No response to ${message.type}`);
+  }
+  return result;
+}
+
+function reportFailure(action, error) {
+  console.error(`Agentbrain popover could not ${action}`, error);
+  statusLine.textContent =
+    "Extension error · click Reload at chrome://extensions";
 }
 
 function render(entries, { pending, reachable }) {
@@ -70,7 +80,9 @@ async function refresh() {
   refreshing = true;
   try {
     const result = await ask({ type: "history-refresh" });
-    if (result) render(result.entries, result);
+    render(result.entries, result);
+  } catch (error) {
+    reportFailure("refresh", error);
   } finally {
     refreshing = false;
   }
@@ -79,19 +91,40 @@ async function refresh() {
 document.getElementById("share").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
-  await ask({ type: "share-current-page" });
-  button.disabled = false;
-  await refresh();
+  try {
+    await ask({ type: "share-current-page" });
+    await refresh();
+  } catch (error) {
+    reportFailure("share this page", error);
+  } finally {
+    button.disabled = false;
+  }
 });
 
-document.getElementById("flush").addEventListener("click", async () => {
-  await ask({ type: "outbox-flush" });
-  await refresh();
+document.getElementById("flush").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    await ask({ type: "outbox-flush" });
+    await refresh();
+  } catch (error) {
+    reportFailure("send held shares", error);
+  } finally {
+    button.disabled = false;
+  }
 });
 
-document.getElementById("clear").addEventListener("click", async () => {
-  await ask({ type: "history-clear" });
-  await refresh();
+document.getElementById("clear").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    await ask({ type: "history-clear" });
+    await refresh();
+  } catch (error) {
+    reportFailure("clear the list", error);
+  } finally {
+    button.disabled = false;
+  }
 });
 
 document.getElementById("options").addEventListener("click", () => {
