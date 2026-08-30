@@ -69,7 +69,11 @@ function render(entries, { pending, reachable }) {
       ),
     );
 
-    item.append(title, chip, remove, where);
+    const actions = document.createElement("span");
+    actions.className = "actions";
+    actions.append(chip, remove);
+
+    item.append(title, actions, where);
     if (status.detail) {
       const detail = document.createElement("span");
       detail.className = "detail";
