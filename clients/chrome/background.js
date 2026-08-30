@@ -5,6 +5,7 @@ import {
   pendingJobIds,
   readHistory,
   record,
+  removeHistory,
 } from "./history.js";
 import {
   clearOutbox,
@@ -350,6 +351,10 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   }
   if (message?.type === "history-clear") {
     void clearHistory().then((discarded) => respond({ discarded }));
+    return true;
+  }
+  if (message?.type === "history-remove") {
+    void removeHistory(message.id).then((removed) => respond({ removed }));
     return true;
   }
   if (message?.type === "share-current-page") {

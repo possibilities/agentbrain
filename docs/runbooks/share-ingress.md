@@ -144,6 +144,11 @@ It updates itself while open — immediately when the extension holds or deliver
 something, and every three seconds for jobs the worker has not finished. Nothing
 polls while the popover is closed; the badge remains the at-a-glance signal.
 
+Every row has **Remove**, and **Clear list** removes all visible rows. These
+controls clear local recent history only: they do not cancel delivery or delete
+an admitted Agentbrain Resource. A held row removed locally stays hidden if its
+delivery finishes later.
+
 Because the toolbar button now opens the popover, sharing the current page is
 its first button, or `Ctrl+Shift+S` without opening anything.
 
@@ -185,13 +190,27 @@ matrix. A device across the tailnet works as well as a cabled one via
 
 Open **Agentbrain Share**, enter the same server URL and token, and press **Test
 connection**. "Share → Agentbrain" then appears in any app that shares
-`text/plain`.
+`text/plain`. On Android 13+, grant notification permission when saving the
+configuration; the app keeps an **Enable notifications** control if it remains
+off.
 
 - **Cleartext HTTP** is blocked by Android unless permitted. The bundled
   `network_security_config.xml` permits it for `*.ts.net` MagicDNS names.
   Addressing the server by raw tailnet IP means adding that literal and
   rebuilding; HTTPS avoids the issue entirely.
 - **The token is stored in `EncryptedSharedPreferences`**, not plain prefs.
+
+### Recent link notifications
+
+The newest 20 bare URLs shared with the app stay in its local **Recent links**
+list. With notifications enabled, each gets an ongoing native notification with
+**Open** and **Remove**. Opening does not dismiss it, so the URL remains easy to
+revisit; **Remove** clears that one notification and local row. The settings
+screen also supports per-link removal and clearing all recent links.
+
+These reminders describe what was shared from the phone, not what the ingestion
+ledger contains. Removing one does not cancel a held share or delete anything
+Agentbrain has admitted. They are reconstructed after a reboot or app update.
 
 ### Sharing from Android while the ingress is down
 
@@ -223,6 +242,7 @@ disclosed; nothing is dropped silently.
 | A held Chrome share never arrives | Token rejected, or the ingress stayed down | Options → **Test connection**; a held share is abandoned after 7 days |
 | Popover stays on "Loading…" or its buttons do nothing, but right-click sharing works | Chrome has the new popover files and an older MV3 service worker | At `chrome://extensions`, click **Reload** on Agentbrain Share |
 | Android reaches nothing but curl works | Cleartext blocked | Add the host to `network_security_config.xml`, or use the MagicDNS name |
+| Android recent-link notifications do not appear | Notification permission or the Recent links channel is off | Open Agentbrain Share and press **Enable notifications** |
 | Chrome shortcut does nothing | Unassigned due to a conflict | Rebind at `chrome://extensions/shortcuts` |
 | Extension errors with a permission message | Host permission not granted | Reopen Options and click **Save & grant access** |
 | Share succeeds but nothing is searchable | Worker not running, or extraction failed | `agentbrain jobs list --state failed --json`; check the Worker and that `agentscrape` is on its `PATH` |

@@ -11,8 +11,8 @@ android {
         applicationId = "dev.agentbrain.share"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     buildTypes {
@@ -37,6 +37,7 @@ android {
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.core:core-ktx:1.13.1")
     // Keeps the share token out of plain SharedPreferences.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     // Redelivery of held shares: a persisted queue that survives process death

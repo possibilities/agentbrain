@@ -13,6 +13,8 @@ Install and configure: [`docs/runbooks/share-ingress.md`](../../docs/runbooks/sh
 | `background.js` | Service worker; the only place that decides what to send |
 | `shared.js` | Config, permission checks, the POST transport, retry classification |
 | `outbox.js` | Durable hold and redelivery of shares the ingress has not accepted |
+| `history.js` / `status.js` | Bounded local recent history and its display states |
+| `popup.html` / `popup.js` | Recent-share popover and its send/remove controls |
 | `options.html` / `options.js` | Server URL, token, host-permission grant, health check, outbox |
 
 ## Offline shares
@@ -49,6 +51,11 @@ outbox entry id so a share that was held and later delivered stays one row.
 client's memory of delivery, and nothing held is ever called saved. The popover
 refreshes on `storage.onChanged` and polls `GET /v1/shares` every three seconds
 while it is open — never in the background, where nobody is looking.
+
+Each row can be removed from the local recent list, and **Clear list** removes
+all visible rows. This does not cancel a held share or delete an admitted
+Agentbrain Resource. A manually removed held row stays hidden when that share
+is later delivered instead of reappearing.
 
 ## Keyboard shortcut
 

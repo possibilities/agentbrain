@@ -1,11 +1,21 @@
 package dev.agentbrain.share
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings as AndroidSettings
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import kotlin.concurrent.thread
 
 /** Server address and token entry, a reachability check, and the Share outbox. */
@@ -14,6 +24,19 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var outbox: ShareOutbox
     private lateinit var outboxStatus: TextView
     private lateinit var outboxDropped: TextView
+    private lateinit var status: TextView
+    private lateinit var recentLinks: RecentLinks
+    private lateinit var recentList: LinearLayout
+    private lateinit var recentNotificationStatus: TextView
+    private lateinit var enableNotifications: Button
+    private lateinit var clearRecent: Button
+
+    private val requestNotificationPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) RecentLinkNotifications.restore(applicationContext)
+        refreshRecentLinks()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -21,11 +44,16 @@ class SettingsActivity : AppCompatActivity() {
 
         val settings = Settings(this)
         outbox = ShareOutbox.at(this)
+        recentLinks = RecentLinks.at(this)
         val serverField = findViewById<EditText>(R.id.server_url)
         val tokenField = findViewById<EditText>(R.id.token)
-        val status = findViewById<TextView>(R.id.status)
+        status = findViewById(R.id.status)
         outboxStatus = findViewById(R.id.outbox_status)
         outboxDropped = findViewById(R.id.outbox_dropped)
+        recentList = findViewById(R.id.recent_links)
+        recentNotificationStatus = findViewById(R.id.recent_notification_status)
+        enableNotifications = findViewById(R.id.recent_enable_notifications)
+        clearRecent = findViewById(R.id.recent_clear)
 
         serverField.setText(settings.serverUrl)
         tokenField.setText(settings.token)
@@ -45,6 +73,7 @@ class SettingsActivity : AppCompatActivity() {
             settings.token = token
             status.text = getString(R.string.saved)
             Toast.makeText(this, R.string.saved, Toast.LENGTH_SHORT).show()
+            requestNotificationPermissionIfNeeded()
             // A server that was only just named may be the one held shares are
             // waiting on.
             if (outbox.pending() > 0) ShareScheduler.flushNow(applicationContext)
@@ -101,12 +130,105 @@ class SettingsActivity : AppCompatActivity() {
             status.text = getString(R.string.outbox_cleared, discarded)
             refreshOutbox()
         }
+
+        enableNotifications.setOnClickListener {
+            if (needsNotificationPermission()) {
+                requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                startActivity(
+                    Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(AndroidSettings.EXTRA_APP_PACKAGE, packageName),
+                )
+            }
+        }
+
+        clearRecent.setOnClickListener {
+            val removed = RecentLinkNotifications.clear(applicationContext)
+            status.text = resources.getQuantityString(
+                R.plurals.recent_cleared,
+                removed,
+                removed,
+            )
+            refreshRecentLinks()
+        }
     }
 
     override fun onResume() {
         super.onResume()
+        RecentLinkNotifications.restore(applicationContext)
+        refreshRecentLinks()
         refreshOutbox()
     }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (needsNotificationPermission()) {
+            requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            RecentLinkNotifications.restore(applicationContext)
+            refreshRecentLinks()
+        }
+    }
+
+    private fun needsNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+
+    private fun refreshRecentLinks() {
+        val notificationsOn = RecentLinkNotifications.canNotify(this)
+        recentNotificationStatus.text = getString(
+            if (notificationsOn) {
+                R.string.recent_notifications_on
+            } else {
+                R.string.recent_notifications_off
+            },
+        )
+        enableNotifications.visibility = if (notificationsOn) View.GONE else View.VISIBLE
+
+        val entries = recentLinks.entries()
+        recentList.removeAllViews()
+        if (entries.isEmpty()) {
+            recentList.addView(TextView(this).apply { setText(R.string.recent_none) })
+        } else {
+            for (entry in entries) recentList.addView(recentRow(entry))
+        }
+        clearRecent.isEnabled = entries.isNotEmpty()
+    }
+
+    private fun recentRow(entry: RecentLink): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+
+            addView(
+                TextView(this@SettingsActivity).apply {
+                    text = if (entry.title == null) {
+                        entry.url
+                    } else {
+                        "${entry.title}\n${entry.url}"
+                    }
+                    setOnClickListener {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(entry.url)))
+                    }
+                },
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            addView(
+                Button(this@SettingsActivity).apply {
+                    setText(R.string.recent_remove)
+                    setOnClickListener {
+                        RecentLinkNotifications.remove(applicationContext, entry.id)
+                        refreshRecentLinks()
+                    }
+                },
+            )
+        }
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
 
     private fun refreshOutbox() {
         val pending = outbox.pending()
@@ -116,8 +238,8 @@ class SettingsActivity : AppCompatActivity() {
             getString(R.string.outbox_pending, pending)
         }
 
-        // Every abandoned share is named. Silent loss is what the outbox exists
-        // to prevent, and this app has no notification permission to lean on.
+        // Every abandoned share is named here even when notifications are
+        // disabled. Silent loss is what the outbox exists to prevent.
         val dropped = outbox.dropped()
         outboxDropped.text = if (dropped.isEmpty()) {
             ""

@@ -14,8 +14,10 @@ Install and configure: [`docs/runbooks/share-ingress.md`](../../docs/runbooks/sh
 | `ShareClient.kt` | `HttpURLConnection` transport, no third-party dependency |
 | `ShareOutbox.kt` | Durable hold and delivery policy for undelivered shares — takes a `File`, so JVM-testable |
 | `ShareScheduler.kt` / `ShareUploadWorker.kt` | WorkManager wake-up and one delivery round |
+| `RecentLinks.kt` | Bounded app-private history for link reminders — takes a `File`, so JVM-testable |
+| `RecentLinkNotifications.kt` | Ongoing notifications, Open/Remove actions, and reboot restoration |
 | `Settings.kt` | Server URL and token in `EncryptedSharedPreferences` |
-| `SettingsActivity.kt` | Setup screen, connection test, and the outbox |
+| `SettingsActivity.kt` | Setup screen, connection test, recent links, and the outbox |
 | `res/xml/network_security_config.xml` | Cleartext policy for tailnet hosts |
 
 ## Offline shares
@@ -30,13 +32,29 @@ connectivity is not woken merely to fail.
 Held is not saved: no Agentbrain job exists until the ingress admits the
 payload, so the toast says held and names the count. Bounded at 200 shares and 7
 days; anything abandoned is named under "Not delivered" in the settings screen,
-because this app holds no notification permission to report it any other way.
+independently of whether recent-link notifications are enabled.
 
 [ADR 0020](../../docs/adr/0020-client-share-outbox.md) is the decision;
 `ShareOutboxTest` covers the policy.
 
 The token stays in `EncryptedSharedPreferences` and is never written to the
 outbox, which holds only what the user chose to send to their own index.
+
+## Recent link reminders
+
+Each bare URL shared with the app is also retained in a separate, app-private
+list of the newest 20 links. When notifications are enabled, each has its own
+ongoing notification with **Open** and **Remove** actions. Opening the URL does
+not dismiss the notification; removing it clears the local reminder and recent
+row only. It does not cancel an outbox delivery or delete anything already
+admitted by Agentbrain.
+
+The store is written before the network result is known, because a reminder is
+about what the user chose to share rather than what Admission later did.
+Notifications are reconstructed after reboot and app replacement. Android 13+
+requires `POST_NOTIFICATIONS`; saving configuration asks for it, and the
+settings screen keeps an **Enable notifications** control if it is denied or
+disabled.
 
 ## What the client decides
 

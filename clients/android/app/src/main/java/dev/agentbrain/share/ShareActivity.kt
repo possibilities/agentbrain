@@ -30,6 +30,10 @@ class ShareActivity : AppCompatActivity() {
             return
         }
 
+        // Recent reminders are client state, independent of whether Admission
+        // has happened or the outbox still holds this share.
+        RecentLinkNotifications.remember(app, payload)
+
         // An unconfigured app cannot send, but the share is still worth
         // keeping: naming a server drains what was held meanwhile.
         if (!settings.isConfigured) {

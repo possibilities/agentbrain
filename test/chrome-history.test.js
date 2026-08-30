@@ -38,6 +38,7 @@ const {
   pendingJobIds,
   readHistory,
   record,
+  removeHistory,
 } = await import("../clients/chrome/history.js");
 const { hostFor, labelFor, statusFor } = await import(
   "../clients/chrome/status.js"
@@ -90,6 +91,28 @@ test("history is newest first and bounded", async () => {
   expect(entries).toHaveLength(HISTORY_MAX_ENTRIES);
   expect(entries[0].job).toBe(HISTORY_MAX_ENTRIES + 4);
   expect(await clearHistory()).toBe(HISTORY_MAX_ENTRIES);
+  expect(await readHistory()).toEqual([]);
+});
+
+test("a removed row stays gone when a held share is later delivered", async () => {
+  await record({
+    id: "held",
+    payload: { url: "https://example.com/held" },
+    outcome: OUTCOME.HELD,
+  });
+
+  expect(await removeHistory("held")).toBe(true);
+  expect(await removeHistory("held")).toBe(false);
+  expect(await readHistory()).toEqual([]);
+
+  expect(
+    await record({
+      id: "held",
+      payload: { url: "https://example.com/held" },
+      outcome: OUTCOME.SENT,
+      job: 42,
+    }),
+  ).toBeNull();
   expect(await readHistory()).toEqual([]);
 });
 

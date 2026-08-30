@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agentbrain Share",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Send the current page, a link, or a selection to your private Agentbrain share ingress; holds shares while it is unreachable and shows what became of each one.",
   "permissions": [
     "contextMenus",

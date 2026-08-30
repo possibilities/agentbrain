@@ -52,7 +52,24 @@ function render(entries, { pending, reachable }) {
     where.className = "where";
     where.textContent = hostFor(entry);
 
-    item.append(title, chip, where);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "remove";
+    remove.textContent = "Remove";
+    remove.title = "Remove from recent shares";
+    remove.setAttribute(
+      "aria-label",
+      `Remove ${labelFor(entry)} from recent shares`,
+    );
+    remove.addEventListener("click", (event) =>
+      runAction(
+        event.currentTarget,
+        { type: "history-remove", id: entry.id },
+        "remove the item",
+      ),
+    );
+
+    item.append(title, chip, remove, where);
     if (status.detail) {
       const detail = document.createElement("span");
       detail.className = "detail";
@@ -73,6 +90,18 @@ function render(entries, { pending, reachable }) {
         : "Up to date";
 }
 
+async function runAction(button, message, action) {
+  button.disabled = true;
+  try {
+    await ask(message);
+    await refresh();
+  } catch (error) {
+    reportFailure(action, error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 let refreshing = false;
 
 async function refresh() {
@@ -89,42 +118,27 @@ async function refresh() {
 }
 
 document.getElementById("share").addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  try {
-    await ask({ type: "share-current-page" });
-    await refresh();
-  } catch (error) {
-    reportFailure("share this page", error);
-  } finally {
-    button.disabled = false;
-  }
+  await runAction(
+    event.currentTarget,
+    { type: "share-current-page" },
+    "share this page",
+  );
 });
 
 document.getElementById("flush").addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  try {
-    await ask({ type: "outbox-flush" });
-    await refresh();
-  } catch (error) {
-    reportFailure("send held shares", error);
-  } finally {
-    button.disabled = false;
-  }
+  await runAction(
+    event.currentTarget,
+    { type: "outbox-flush" },
+    "send held shares",
+  );
 });
 
 document.getElementById("clear").addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  try {
-    await ask({ type: "history-clear" });
-    await refresh();
-  } catch (error) {
-    reportFailure("clear the list", error);
-  } finally {
-    button.disabled = false;
-  }
+  await runAction(
+    event.currentTarget,
+    { type: "history-clear" },
+    "clear the list",
+  );
 });
 
 document.getElementById("options").addEventListener("click", () => {

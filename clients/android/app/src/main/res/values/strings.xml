@@ -33,6 +33,23 @@
     <string name="held_detail">%1$s Held to send later (%2$d waiting).</string>
     <string name="held_unconfigured">Held until the server URL and token are set (%1$d waiting).</string>
 
+    <string name="recent_heading">Recent links</string>
+    <string name="recent_link">Recent link</string>
+    <string name="recent_hint">The newest 20 links stay on this device. Removing one clears its local reminder only; it does not delete anything from Agentbrain or cancel delivery.</string>
+    <string name="recent_notifications_on">Notifications are on. Each shared link stays available with Open and Remove actions.</string>
+    <string name="recent_notifications_off">Notifications are off. Recent links are still kept here.</string>
+    <string name="recent_enable_notifications">Enable notifications</string>
+    <string name="recent_notification_channel">Recent links</string>
+    <string name="recent_notification_channel_description">Ongoing reminders for links shared with Agentbrain</string>
+    <string name="recent_open">Open</string>
+    <string name="recent_remove">Remove</string>
+    <string name="recent_clear">Clear recent links</string>
+    <string name="recent_none">No recent links.</string>
+    <plurals name="recent_cleared">
+        <item quantity="one">Removed %1$d recent link reminder.</item>
+        <item quantity="other">Removed %1$d recent link reminders.</item>
+    </plurals>
+
     <string name="outbox_heading">Waiting to be sent</string>
     <string name="outbox_hint">Shares taken while the ingress is unreachable are held here and delivered when it answers. Nothing held is in Agentbrain yet.</string>
     <string name="outbox_none">Nothing is waiting.</string>

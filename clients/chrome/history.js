@@ -15,14 +15,29 @@
  */
 
 const HISTORY_KEY = "history";
+const REMOVED_HISTORY_KEY = "history-removed";
 
 /** The popover shows a reading run, not an archive. */
 export const HISTORY_MAX_ENTRIES = 20;
 
+/** Enough removals to cover every share the outbox can hold. */
+const REMOVED_HISTORY_MAX_ENTRIES = 200;
+
+async function readHistoryState() {
+  const stored = await chrome.storage.local.get({
+    [HISTORY_KEY]: [],
+    [REMOVED_HISTORY_KEY]: [],
+  });
+  return {
+    entries: Array.isArray(stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [],
+    removed: Array.isArray(stored[REMOVED_HISTORY_KEY])
+      ? stored[REMOVED_HISTORY_KEY]
+      : [],
+  };
+}
+
 export async function readHistory() {
-  const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
-  const entries = stored[HISTORY_KEY];
-  return Array.isArray(entries) ? entries : [];
+  return (await readHistoryState()).entries;
 }
 
 async function writeHistory(entries) {
@@ -59,8 +74,9 @@ export async function record(
   { id, payload, outcome, job, message },
   now = Date.now(),
 ) {
-  const entries = await readHistory();
+  const { entries, removed } = await readHistoryState();
   const key = id ?? crypto.randomUUID();
+  if (removed.includes(key)) return null;
   const existing = entries.find((entry) => entry.id === key);
   const updated = {
     id: key,
@@ -113,7 +129,31 @@ export function pendingJobIds(entries) {
 }
 
 export async function clearHistory() {
-  const entries = await readHistory();
-  await chrome.storage.local.set({ [HISTORY_KEY]: [] });
+  const { entries, removed } = await readHistoryState();
+  await chrome.storage.local.set({
+    [HISTORY_KEY]: [],
+    [REMOVED_HISTORY_KEY]: removedIds(
+      entries.map((entry) => entry.id),
+      removed,
+    ),
+  });
   return entries.length;
+}
+
+/** Removes one local row without cancelling delivery or deleting a Resource. */
+export async function removeHistory(id) {
+  const { entries, removed } = await readHistoryState();
+  if (!entries.some((entry) => entry.id === id)) return false;
+  await chrome.storage.local.set({
+    [HISTORY_KEY]: entries.filter((entry) => entry.id !== id),
+    [REMOVED_HISTORY_KEY]: removedIds([id], removed),
+  });
+  return true;
+}
+
+function removedIds(newIds, existing) {
+  return [...new Set([...newIds, ...existing])].slice(
+    0,
+    REMOVED_HISTORY_MAX_ENTRIES,
+  );
 }
