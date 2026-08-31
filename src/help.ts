@@ -1,611 +1,412 @@
-export const VERSION = "0.2.0";
-
-export const COMMANDS = [
-  {
-    name: "stats",
-    summary:
-      "Summarize DB size, counts, source types, tags, relations, and recent documents",
-  },
-  {
-    name: "search",
-    summary: "Search chunks with SQLite FTS5 and return ranked snippets",
-  },
-  {
-    name: "get",
-    summary: "Retrieve a full document by id/source URI or a chunk by id",
-  },
-  {
-    name: "context",
-    summary: "Return bounded citation-ready context for a query",
-  },
-  {
-    name: "submit",
-    summary: "Durably queue a text, file, directory, or URL intent",
-  },
-  {
-    name: "ingest",
-    summary: "Compatibility alias for durable queued admission",
-  },
-  {
-    name: "worker",
-    summary: "Lease and materialize durable ingestion jobs",
-  },
-  {
-    name: "jobs",
-    summary: "Safely inspect and operate on the ingestion ledger",
-  },
-  {
-    name: "doctor",
-    summary: "Check database, Artifact, lease, and provider health",
-  },
-  {
-    name: "backup",
-    summary: "Create and verify private SQLite recovery snapshots",
-  },
-  {
-    name: "recovery",
-    summary: "Verify and durably admit a frozen legacy recovery generation",
-  },
-  {
-    name: "delete",
-    summary: "Delete one selected document with explicit confirmation",
-  },
-  {
-    name: "retag",
-    summary: "Derive and apply structural tags across every document",
-  },
-  { name: "tags", summary: "List indexed tags with document counts" },
-  {
-    name: "sources",
-    summary: "Apply, inspect, schedule, pause, and resume recurring sources",
-  },
-  {
-    name: "share",
-    summary: "Serve the authenticated share ingress for Chrome and Android",
-  },
-  {
-    name: "guide",
-    summary: "Print the stable machine-readable agent contract",
-  },
-  {
-    name: "prompt",
-    summary: "Print a prompt harnesses can use to write their own docs",
-  },
-  { name: "help", summary: "Show help for a command" },
-] as const;
-
-const COMMAND_LINES = COMMANDS.map(
-  (c) => `  ${c.name.padEnd(10)} ${c.summary}`,
-).join("\n");
-
-export const TOP_HELP = `agentbrain — agent-friendly CLI for your local research cache
-
-Usage:
-  agentbrain [global options] <command> [command options]
-
-Global options:
-  --db <path>         SQLite DB path (default: ~/.local/share/agentbrain/research.db; env: AGENTBRAIN_DB)
-  --json             Emit a stable JSON envelope
-  --jsonl            Emit newline-delimited records where supported (search)
-  --format <fmt>     human | json | jsonl
-  --quiet, -q        Suppress non-essential human output
-  --help, -h         Show this help
-  --version, -V      Show version
-  --agent-help       Show usage and workflow guidance for agents
-  --agent-teaser     Show a one-line capability summary
-
-Commands:
-${COMMAND_LINES}
-
-Agent defaults:
-  1. Start with: agentbrain guide --json
-  2. Search before answering from saved resources: agentbrain search "query" --json
-  3. Fetch selected evidence: agentbrain get --document-id <id> --json or --chunk-id <id> --json
-  4. Cite document_id, chunk_id when present, title, source_uri, and relation provenance when relevant.
-
-Search/get/stats/tags/context and source list/show/status use structurally read-only
-SQLite connections. Agentbrain submit is the durable admission boundary. Accepted intents
-are queued before any extraction or indexing; Agentscrape remains the sole URL extraction
-and network boundary. Source sync only admits durable source-run jobs; it performs no
-remote discovery and writes no documents inline.
-Backup creation uses a SQLite-consistent snapshot and never copies a live WAL file.
-Recovery import verifies the complete frozen generation and local Artifact hashes before
-admission; --dry-run writes no database or Artifact state and performs no network work.
-Use --help on any command for command-specific options. Job inspection omits durable
-intent bodies and URLs unless jobs show is given the audited --reveal-content option.
-
-Run agentbrain --agent-help for the agent runbook.
-`;
-
-export const AGENT_TEASER =
-  "Search, retrieve, and durably ingest a local research index: FTS search with citations, bounded context, a durable submission ledger, and recurring sources.";
-
-export const AGENT_HELP = `agentbrain — local research index (agent runbook)
-
-Search and read the durable local research index, and submit new material into
-its ingestion ledger. Admission is durable and offline: extraction happens
-later through the worker and Agentscrape, so never expect a URL submit to be
-searchable immediately.
-
-Reading (read-only, safe anytime)
-  agentbrain context "query" --json      One bounded search-and-evidence call.
-  agentbrain search "query" --json       Ranked FTS hits; follow with
-  agentbrain get --chunk-id ID --json    (or --document-id / --source-uri).
-  agentbrain stats / tags / sources      Inventory when discovery is poor;
-                                         retry alternate terms before
-                                         inferring absence.
-Cite document_id, chunk_id when present, title, and source_uri.
-
-Writing (durable admission)
-  agentbrain submit <url|file|dir|text>  Durably queue an intent; local bytes
-                                         are snapshotted first, URL admission
-                                         performs no network work.
-  queued and duplicate are success; already_indexed names the existing
-  document_id (add --force to rematerialize).
-  agentbrain jobs list/show/stats        Watch the ledger; retry, cancel, and
-                                         exclude are explicit operator acts.
-  agentbrain doctor                      Health including stranded ingestion.
-
-Contract
-  --json emits the stable {schema_version, ok, command, data, error, meta}
-  envelope. Exit codes: 0 success, 1 runtime failure, 2 argument fault,
-  124 wait-observation timeout (the durable Run continues).
-  Read commands open the database read-only and never migrate.
-
-Full runbook: the brain agent skill; this text is the in-binary fallback.
-Full machine-readable card: agentbrain guide --json
-Per-command help: agentbrain help <command> or <command> --help
-`;
-
-const HELP: Record<string, string> = {
-  stats: `agentbrain stats — database inventory
-
-Usage:
-  agentbrain stats [--top-tags N] [--recent N] [--json]
-
-Options:
-  --top-tags <n>      Number of top tags to include (default: 25, max: 500)
-  --recent <n>        Number of recent documents to include (default: 5, max: 50)
-
-Examples:
-  agentbrain stats
-  agentbrain stats --json
-`,
-  search: `agentbrain search — ranked FTS chunk search
-
-Usage:
-  agentbrain search <query> [options]
-
-Options:
-  --query <text>      Query text; useful when the query begins with '-'
-  --mode <mode>       any | all | raw (default: any)
-  --limit <n>         Results per page (default: 10, max: 50)
-  --offset <n>        Page offset (default: 0)
-  --tag <tag>         Require a document tag, exact match
-  --source-type <t>   Require a legacy document source_type
-  --content-kind <k>  Require parser-derived post | thread | article
-  --collection <slug> Require exact collection membership
-  --source <id>       Require an exact source identifier (or source_type:identifier)
-  --resource-kind <k> Require an exact resource kind
-  --sensitivity <s>   Require effective public | normal | sensitive | private policy
-  --date <yyyy-mm-dd> Require the document update date
-  --date-from <date>  Require updates on or after a date or ISO timestamp
-  --date-to <date>    Require updates through a date or ISO timestamp
-  --local-path <path> Require an exact local document path or resource alias
-  --json             Emit an envelope with data.results[]
-  --jsonl            Emit one result per line; first line is a metadata record
-
-Query modes:
-  any                 Tokenize query and join terms with OR; best first pass
-  all                 Tokenize query and require every term/phrase
-  raw                 Pass raw SQLite FTS5 MATCH syntax through unchanged
-
-Examples:
-  agentbrain search "agent memory systems" --json
-  agentbrain search "transformer scaling" --tag source-item --limit 5
-  agentbrain search "model routing" --content-kind thread --json
-  agentbrain search --mode all "cli mcp agents" --json
-`,
-  get: `agentbrain get — retrieve evidence
-
-Usage:
-  agentbrain get (--document-id ID | --chunk-id ID | --source-uri URI) [options]
-
-Options:
-  --document-id <id>  Retrieve a document by document id
-  --chunk-id <id>     Retrieve a single chunk by chunk id
-  --source-uri <uri>  Retrieve the most recently updated document with this source URI
-  --char-limit <n>    Limit document content with head/tail truncation (default: 20000; min: 500)
-  --full              Return full document content; ignored for chunk retrieval
-  --json              Emit stable JSON envelope
-
-Output fields:
-  document get results include outbound_links and inbound_links relation arrays when document_links exists.
-  Each relation object carries id, from_document_id, to_document_id, relation_type, discovered_url, resolved_url, status, error, created_at, updated_at.
-
-Examples:
-  agentbrain get --chunk-id 4044 --json
-  agentbrain get --document-id 347 --char-limit 12000 --json
-  agentbrain get --source-uri https://example.com/article --full
-`,
-  context: `agentbrain context — bounded citation-ready evidence
-
-Usage:
-  agentbrain context <query> [--limit N] [--max-chars N] [filters] [--json]
-
-Options:
-  --query <text>      Query text instead of positional words
-  --limit <n>         Maximum resource hits (default: 6, max: 20)
-  --max-chars <n>     Total chunk-content budget (default: 12000; 500..50000)
-  --tag <tag>         Require an exact document tag
-  --source-type <t>   Require a legacy document source_type
-  --content-kind <k>  Require parser-derived post | thread | article
-  --collection <slug> Require exact collection membership
-  --source <id>       Require an exact source identifier (or source_type:identifier)
-  --resource-kind <k> Require an exact resource kind
-  --sensitivity <s>   Require effective public | normal | sensitive | private policy
-  --date <yyyy-mm-dd> Require the document update date
-  --date-from <date>  Require updates on or after a date or ISO timestamp
-  --date-to <date>    Require updates through a date or ISO timestamp
-  --local-path <path> Require an exact local document path or resource alias
-
-The JSON data.hits objects include resource provenance, typed relation summaries,
-citation, bounded chunk content, offsets, tags, score, and per-hit truncation. Linked
-resource content is never concatenated into a context hit.
-`,
-  submit: `agentbrain submit — durable ingestion admission
-
-Usage:
-  agentbrain submit <source> [options]
-
-Options:
-  --intent-version <n> Versioned intent contract (default: 1)
-  --kind <kind>        auto | url | file | directory | text (default: auto)
-  --ingress <name>     Submitting actor/interface (default: cli)
-  --collection <slug> Request collection membership; repeatable
-  --idempotency-key <key> Explicit replay identity
-  --title <text>       Requested title
-  --tag <tag>          Add a tag; repeatable
-  --tags <tags>        Add comma/hash-separated tags; repeatable
-  --notes <text>       Store requested notes
-  --recursive=<bool>   Recurse through directories (default: true)
-  --max-files <n>      Directory snapshot cap (default: 300; max: 5000)
-  --max-bytes <n>      Text or per-file snapshot cap (default: 5000000)
-  --force              Request rematerialization
-  --skip-secrets=<b>   Skip sensitive files/path components (default: true)
-  --wait               Observe the admitted job without bypassing the worker
-  --wait-timeout-ms <n> Stop observing after this duration (default: 30000)
-  --json               Emit a versioned success or error envelope
-
-A new intent exits 0 with status queued. An equivalent intent exits 0 with status
-duplicate and the same job_id. A URL whose conservative resource identity already
-carries a materialized document exits 0 with status already_indexed and its
-document_id instead of queuing; pass --force to queue rematerialization anyway.
-Reusing an explicit idempotency key for different intent fails. Local bytes are
-snapshotted into the Artifact store before acknowledgement. URL admission performs
-no network work. A wait timeout leaves the job queued and recoverable.
-`,
-  ingest: `agentbrain ingest — queued compatibility alias
-
-Usage:
-  agentbrain ingest <source> [options]
-
-This command accepts the same options and returns the same acknowledgement as
-\`agentbrain submit\`. It never extracts, parses, or writes a document directly.
-Prefer \`agentbrain submit\` for new integrations. \`--source-type\` remains an alias for
-\`--kind\` during cutover.
-`,
-  worker: `agentbrain worker — execute durable ingestion jobs
-
-Usage:
-  agentbrain worker [--once] [options]
-
-Options:
-  --once                    Recover stale leases, drain work due now, and exit
-  --worker-id <id>          Diagnostic worker identity
-  --poll-ms <n>             Idle polling interval (default: 1000)
-  --lease-ms <n>            Attempt lease duration (default: 60000)
-  --heartbeat-ms <n>        Active lease heartbeat interval (default: 20000)
-  --shutdown-grace-ms <n>   Bounded completion grace after a signal (default: 10000)
-  --run <id>                Pin an operator-controlled Run
-  --authorization-digest <sha256>  Require the persisted authorization digest
-  --allowed-kind <kind>     Require a persisted allowed job kind; repeatable
-
-Scoped execution requires --once and all three scope options. It performs no scheduling,
-rejects policy or cardinality mismatches before claim, and never falls back to ordinary
-queue claims. Offline Runs cannot authorize URL extraction; online Runs authorize exactly
-two URL jobs already bound to that Run and hold a single fenced execution lease. Ordinary
-workers skip every operator-controlled Run.
-
-Materialization happens outside SQLite write transactions. URL jobs delegate a versioned
-extraction envelope to Agentscrape; unknown envelope versions are protocol defects rather
-than provider-schema fallbacks. Completion and failure are fenced by the attempt token.
-Signal shutdown stops new claims and leaves unfinished work recoverable through lease
-expiry.
-`,
-  jobs: `agentbrain jobs — inspect and operate on ingestion jobs
-
-Usage:
-  agentbrain jobs list [--state STATE] [--run RUN_ID] [--limit N] [--json]
-  agentbrain jobs show JOB_ID [--reveal-content] [--actor NAME] [--json]
-  agentbrain jobs run RUN_ID [--limit N] [--json]
-  agentbrain jobs retry JOB_ID [--reason TEXT] [--actor NAME] [--json]
-  agentbrain jobs cancel JOB_ID [--reason TEXT] [--actor NAME] [--json]
-  agentbrain jobs exclude JOB_ID --reason TEXT [--actor NAME] [--json]
-  agentbrain jobs stats [--run RUN_ID] [--json]
-
-List, ordinary show, Run inspection, and stats are structurally read-only and omit durable
-intent, Run checkpoints, Artifact bodies, raw URLs, query values, worker names, and
-detailed diagnostics. Run inspection reports only opaque IDs and authorization digests,
-state and kind counts, Attempt counts, quiescence, and bounded safe job views.
---reveal-content explicitly reads Artifact bodies and appends a sensitive-inspection
-audit record. Retry, cancel, and exclude append transitions and preserve all attempts.
-`,
-  backup: `agentbrain backup — create and verify recovery snapshots
-
-Usage:
-  agentbrain backup create <backup-path> [--artifact-root PATH] [--json]
-  agentbrain backup create --output <backup-path> [--artifact-root PATH] [--json]
-  agentbrain backup verify <backup-path> [--artifact-root PATH] [--json]
-  agentbrain backup verify --backup <backup-path> [--artifact-root PATH] [--json]
-
-Subcommands:
-  create              Publish a private, SQLite-consistent backup bundle
-  verify              Restore into isolation and run all recovery checks
-
-Options:
-  --output <path>      Backup destination for create; it must not already exist
-  --backup <path>      Backup bundle to verify
-  --artifact-root <p>  Artifact store to check (default: configured local store on
-                       create; source path recorded in the manifest on verify)
-
-The bundle contains database.sqlite and a body-free manifest with schema, timestamps,
-source paths, configuration, and required Artifact digests/references. Creation uses
-SQLite VACUUM INTO through the Index owner's writable store, so committed WAL state is
-captured without stopping the Worker permanently. Publication is atomic and never
-replaces an existing backup.
-
-Verification never opens or migrates the source database. It copies snapshot bytes into
-a private temporary restore, runs SQLite integrity and schema checks, reconciles the
-Artifact reference manifest, verifies each required Artifact digest, and proves that FTS
-can be rebuilt from retained indexed content. The temporary restore is always removed.
-Verification exits 1 if any check fails.
-`,
-  recovery: `agentbrain recovery — frozen legacy recovery execution
-
-Usage:
-  agentbrain recovery import --manifest-generation PATH [options]
-  agentbrain recovery online --manifest-generation PATH --offline-run ID \\
-    --post-offline-snapshot PATH --generation-digest SHA256 \\
-    --approval-digest SHA256 --snapshot-digest SHA256 [--execute] [options]
-
-Import options:
-  --manifest-generation <path>  Atomic generation pointer, directory, or generation.json
-  --artifact-root <path>         Declared root for legacy Markdown; repeatable
-  --artifact-store <path>        Destination Artifact store for admitted searchable bodies
-  --authorize-offline            Bind the admitted Run to recovery_offline scoped execution
-  --dry-run                      Verify all descriptors, hashes, rows, and frontmatter only
-
-Online options:
-  --offline-run <id>              Terminal linked offline Run
-  --post-offline-snapshot <path>  Verified rollback snapshot created after offline drain
-  --generation-digest <sha256>    Explicit pinned frozen-generation digest
-  --approval-digest <sha256>      Explicit immutable online-allowlist file digest
-  --snapshot-digest <sha256>      Explicit post-offline snapshot database digest
-  --execute                       Drain eligible work now through Agentscrape; otherwise prepare only
-  --worker-id <id>                Opaque scoped Worker identity
-  --json                          Emit a sanitized stable evidence envelope
-
-The importer accepts only the hash-bound 1,088-row frozen recovery contract. It verifies
-all generation files and approved local Markdown without invoking Agentscrape or any other
-network backend. Linkctl frontmatter is parsed locally; its exact URL must match the
-candidate, while only the frontmatter-free body enters the Artifact store.
-
-Dry-run performs no database or Artifact-store writes. Admission creates one pending
-recovery Run, stable candidate outcomes, 584 ordered legacy-links memberships, body-free
-Secretary observations, 581 runnable offline jobs, 11 blocked jobs, and 37 exclusions.
---authorize-offline immutably binds that Run to the generation digest and the logical
-recovery_offline scope, which selects only its 581 recovery file jobs while rejecting URL
-and unrelated file claims. The two controlled-online jobs remain blocked until a separate
-run explicitly authorizes egress. Comparison URIs are diagnostic aliases only and never
-merge candidate outcomes.
-Output contains opaque generation/candidate/Run/Attempt IDs, bounded states and
-classifications, counts, and snapshot/Artifact hashes, never exact candidate URLs,
-private locators, message bodies, credentials, or unsafe evidence.
-
-Online preparation restore-verifies the pinned post-offline snapshot, rechecks SQLite,
-Artifact, FTS, retrieval, permission, disk, worker-quiescence, offline Run, generation,
-and exact two-candidate approval gates before creating a separate immutable online Run.
-The recovery_online scope maps only its two URL jobs, and ordinary Workers are fenced
-while its concurrency-one execution lease is active. --execute invokes Agentscrape as the
-sole extractor. Item-specific failure leaves the sibling eligible; shared infrastructure,
-authentication, configuration, or integrity failure pauses before another claim. Replay
-skips completed effects and resumes only the same incomplete jobs. Terminal non-success
-is completed_with_review. Snapshot rollback is local-only and cannot undo remote requests.
-`,
-  doctor: `agentbrain doctor — operational health checks
-
-Usage:
-  agentbrain doctor [--notify] [--json]
-
-Uses a structurally read-only database connection. Reports safe status/count data for
-SQLite integrity, schema, Artifact references, leases, stranded ingestion,
-Agentscrape availability, and the share ingress. Exits 1 when a required check fails.
-
-share_ingress reads the registration a serving ingress publishes and asks it for
-GET /v1/health on its own address — this machine only, never the open web. No
-registration is ok, because the share service is opt-in. A registration whose
-process is gone warns. A registered, running ingress that cannot answer fails:
-that is a bind that stopped serving, and shares are being dropped while the
-ledger has nothing to show for it.
-
-A stranded ingestion job is one in blocked or failed that carries a failure class: an
-attempt ran, nothing will revive it, and links accepted at admission never became
-searchable. Excluded and cancelled are operator dispositions and are not stranded;
-dispose of a job you do not intend to recover with agentbrain jobs exclude. A job
-withheld at admission before any attempt is reported separately as admission_review,
-because an undecided question is not a defect.
-
---notify posts an operator notification through terminal-notifier when
-the stranded count rises above the last notified value, and reports what it did under
-"notification". A steady backlog stays silent and a missing notifier is not an error.
-This command never mutates the ledger; triage stays an explicit operator act.
-`,
-  delete: `agentbrain delete — delete one indexed document
-
-Usage:
-  agentbrain delete (--document-id ID | --source-uri URI) --confirm delete [--json]
-
-Exactly one selector and the literal confirmation token are required. Deletion purges
-everything the ingestion created: the document, chunks, and FTS rows, then the Resource
-and its aliases, Artifact registrations, collection memberships, provenance, relations,
-and observations. Artifact bytes are unlinked once no surviving Resource references them,
-so content shared with another Resource is kept.
-
-The job and its attempts survive with their states, timings, and outcomes, because that
-history is what makes the ledger auditable. Their intent is redacted: the locator, text
-payload, and title are removed, so a deleted URL is no longer recoverable from the job.
-The idempotency key and intent hash are one-way digests and are retained. Re-submitting
-the same source afterwards derives a fresh key and admits a new job.
-`,
-  retag: `agentbrain retag — derive and apply structural tags
-
-Usage:
-  agentbrain retag [--dry-run] [--json]
-
-Options:
-  --dry-run           Report per-document tag diffs and counts without writing
-
-Deterministically derives structural tags from each document's source_type, URL
-domain, and collection membership, unioned with its existing tags (legacy-recovery
-and any user tag are always preserved). Every document's documents.tags and the
-denormalized chunks_fts.tags are kept in sync in one transaction per changed document.
-Re-running retag is idempotent: a document whose derived tags already match its
-stored tags is reported unchanged and is not rewritten. --dry-run computes and
-reports the same per-document before/after tag diffs and totals without touching
-the database.
-`,
-  tags: `agentbrain tags — list tags
-
-Usage:
-  agentbrain tags [--limit N] [--json]
-
-Options:
-  --limit <n>         Number of tags (default: 100, max: 500)
-`,
-  sources: `agentbrain sources — operate recurring source definitions
-
-Usage:
-  agentbrain sources apply [--manifest PATH] [--overlay PATH] [--actor NAME] [--reason TEXT] [--json]
-  agentbrain sources list [--limit N] [--json]
-  agentbrain sources show SOURCE_ID [--json]
-  agentbrain sources status [SOURCE_ID] [--json]
-  agentbrain sources sync SOURCE_ID [--due] [--dry-run] [--wait] [--wait-timeout-seconds N] [--wait-timeout-ok] [--json]
-  agentbrain sources sync --due [--dry-run] [--limit N] [--wait] [--wait-timeout-seconds N] [--wait-timeout-ok] [--json]
-  agentbrain sources pause SOURCE_ID [--reason TEXT] [--actor NAME] [--json]
-  agentbrain sources resume SOURCE_ID [--reason TEXT] [--actor NAME] [--json]
-
-Source IDs are stable declarative identities; mutable handles and homepages are payload,
-not identity. Definitions retain versioned schedules, bounded limits, collection and
-sensitivity policy, and credential references without credential values. Unknown future
-kinds remain listable and showable but source sync will not admit work for them.
-
-sources apply reads a versioned manifest (default: the bundled config/sources.json
-example, one disabled source per supported kind) and durably creates
-or updates matching source definitions. A higher version may declaratively enable or
-disable a Source; apply never deletes a definition or runs it implicitly. Re-applying
-identical content is a no-op. Raising a source's version without changing its kind admits
-the new content; changing content without raising the version is refused.
-
-Schedule evaluation admits at most one catch-up Run for each overdue source and advances
-its next due time from the current evaluation, not once per missed wall-clock tick. Paused
-and disabled sources admit no Runs. Pause, resume, and configuration changes append audit
-evidence without removing earlier Runs or checkpoints.
-
-A Run's attempted cursor is in-progress evidence, separate from its committed checkpoint.
-A checkpoint may advance only after a complete successful window has durably admitted or
-explicitly suppressed every discovered observation. Source sync performs no HTTP work,
-remote discovery, extraction, or document writes; those remain Worker/provider work.
---wait waits for the admitted source discovery Run to finish through the resident Worker
-and returns a scheduler-facing execution receipt; it does not wait for every discovered
-child URL extraction. Timeout exits 124, and a non-success terminal outcome exits 1.
-For supervisors that treat every nonzero exit as an execution failure, --wait-timeout-ok
-keeps timed_out:true in JSON but exits 0 because the durable Run continues independently.
-`,
-  share: `agentbrain share — authenticated share ingress for Chrome and Android
-
-Usage:
-  agentbrain share serve [--host ADDR] [--port N] [--portless] [--token-file PATH] [--allow-any-interface] [--liveness-interval-ms MS] [--registration-file PATH] [--json]
-  agentbrain share token init [--force] [--token-file PATH] [--json]
-  agentbrain share token show --reveal [--token-file PATH] [--json]
-  agentbrain share token path [--json]
-
-share serve exposes one ingestion contract, POST /v1/share, plus GET /v1/health and
-GET /v1/shares?job_ids=1,2,3.
-Both require Authorization: Bearer <token>. The server is the authoritative
-ingestion point: it resolves each payload into exactly one Admission intent and
-calls the same durable submit path as the CLI, so a replayed share returns
-duplicate with the same job identity rather than creating a second job.
-
-A payload carries client (chrome-extension or android-share) plus url or text.
-Free-text shares are scanned server-side for the first valid http(s) URL, so an
-Android payload like "great read https://example.com/post" becomes a URL job.
-Text with no URL becomes a text job. Shares default to the saved-links collection.
-
-/v1/shares answers what became of jobs a client already holds acknowledgements for
-— state, failure class, and document id, at most 50 ids, no locator or body echoed
-back, and an unknown id simply absent. It is additive to share-ingest v1 and reads
-the ledger; it never mutates it.
-
-Network reachability is not authorization. The default bind is 127.0.0.1; pass
-the tailnet address explicitly (--host 100.x.y.z) to accept device shares.
-Binding 0.0.0.0 or :: additionally requires --allow-any-interface. The token
-lives at ~/.local/share/agentbrain/share-token with 0600 permissions, or in
-AGENTBRAIN_SHARE_TOKEN for supervised service contexts. Request logs record
-method, path, status, outcome, and job id only — never shared URLs or bodies.
-
-Port precedence: --port, then PORT, then 8787. PORT exists so a supervisor that
-allocates a free port can hand one over; the flag always wins, and 8787 remains
-the direct default the device clients are configured against. A malformed PORT
-is refused rather than silently falling back.
-
---portless is local desktop development only. It re-runs this command behind the
-portless CLI so the ingress answers on a stable https://<name>.localhost URL
-that survives branch changes and never collides between worktrees. Portless is a
-machine prerequisite (npm i -g portless, Node >= 24), not a dependency: without
-it the command says so instead of starting an unnamed server. A .localhost name
-resolves only on this machine, so it supplements the tailnet address rather than
-replacing it, and --portless is refused alongside --port or a non-loopback
---host. Override the derived name with AGENTBRAIN_PORTLESS_NAME.
-
-A bound address can stop serving without the process noticing: when the tailnet
-interface is torn down and re-created, the socket stays in LISTEN and accepts
-every connection without answering it. So the ingress proves it can still serve
-by sending itself GET /v1/health every --liveness-interval-ms (default 60000, 0
-disables), and exits after two consecutive failures so the service definition
-rebinds it. While serving it publishes ~/.local/state/agentbrain/share-ingress.json
-(--registration-file overrides) naming its URL and pid, which is what agentbrain
-doctor reads to check the ingress. See ADR 0021.
-
-See docs/contracts/share-ingest-v1.md and docs/runbooks/share-ingress.md.
-`,
-  guide: `agentbrain guide — machine-readable CLI contract for agents
-
-Usage:
-  agentbrain guide [--json]
-
-The JSON output documents commands, output contracts, citation expectations, and failure handling.
-`,
-  prompt: `agentbrain prompt — prompt for harness-authored docs
-
-Usage:
-  agentbrain prompt
-
-Prints a ready-to-use prompt asking another harness/model to inspect this CLI's --help output and write its own local agent-facing docs.
-`,
-};
-
-export function helpFor(command: string | null): string {
+/**
+ * Every help surface this CLI prints is a render of the agent contract.
+ *
+ * `--help`, `agentbrain help <command>`, `--agent-help`, and `--agent-teaser`
+ * used to be four hand-written texts standing beside `guide --json`; the
+ * summaries, the flag lists, the defaults, the exit codes, and the read-only
+ * command list were each authored twice or more, and nothing compared them.
+ * This module holds no prose of its own — only layout. Anything that reads as
+ * a fact about the CLI belongs in src/contract.ts.
+ */
+
+import {
+  AGENT_CONTRACT,
+  type ContractArgument,
+  type ContractCommand,
+  type ContractConstraint,
+  findCommand,
+  isGroup,
+  VERSION,
+  walkCommands,
+} from "./contract";
+
+export { VERSION };
+
+const WIDTH = 78;
+
+function wrap(text: string, indent: string, width = WIDTH): string[] {
+  const out: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    if (paragraph.trim() === "") {
+      out.push("");
+      continue;
+    }
+    // A line the author indented is preformatted — a usage form, a worked
+    // example — and reflowing it would destroy the thing it is showing.
+    if (/^\s/.test(paragraph)) {
+      out.push(indent + paragraph.replace(/\s+$/, ""));
+      continue;
+    }
+    let line = "";
+    for (const word of paragraph.split(/\s+/)) {
+      if (line === "") {
+        line = word;
+      } else if (`${line} ${word}`.length + indent.length <= width) {
+        line = `${line} ${word}`;
+      } else {
+        out.push(indent + line);
+        line = word;
+      }
+    }
+    if (line !== "") out.push(indent + line);
+  }
+  return out;
+}
+
+function valuePlaceholder(argument: ContractArgument): string {
+  if (argument.type === "boolean") return "";
+  if (argument.format === "path") return " <path>";
+  if (argument.type === "integer" || argument.type === "number") return " <n>";
+  return " <value>";
+}
+
+/** `--limit <n>` / `--dry-run`, the spelling a caller types. */
+function flagSpelling(argument: ContractArgument): string {
+  const aliases = argument.aliases?.length
+    ? `, ${argument.aliases.join(", ")}`
+    : "";
+  return `${argument.name}${aliases}${valuePlaceholder(argument)}`;
+}
+
+function annotate(argument: ContractArgument): string {
+  const notes: string[] = [];
+  if (argument.choices !== undefined) {
+    notes.push(`one of: ${argument.choices.join(", ")}`);
+  }
+  if (argument.default !== undefined) {
+    notes.push(`default: ${String(argument.default)}`);
+  }
+  if (argument.repeatable === true) notes.push("repeatable");
+  if (argument.required === true) notes.push("required");
+  if (argument.direction === "out") notes.push("written by this command");
+  return notes.length === 0 ? "" : ` (${notes.join("; ")})`;
+}
+
+/** A two-column block that degrades to a hanging paragraph when a term is long. */
+function definitionList(
+  entries: Array<{ term: string; body: string }>,
+  indent = "  ",
+): string[] {
+  if (entries.length === 0) return [];
+  const gutter = 2;
+  const longest = Math.max(...entries.map((entry) => entry.term.length));
+  const column = Math.min(longest, 24);
+  const out: string[] = [];
+  for (const entry of entries) {
+    const bodyIndent = indent + " ".repeat(column + gutter);
+    const lines = wrap(entry.body, bodyIndent);
+    if (entry.term.length > column) {
+      out.push(indent + entry.term);
+      out.push(...lines);
+    } else {
+      const head = indent + entry.term.padEnd(column + gutter);
+      out.push(head + (lines[0] ?? "").trimStart());
+      out.push(...lines.slice(1));
+    }
+  }
+  return out;
+}
+
+function positionalToken(argument: ContractArgument): string {
+  return argument.required === true
+    ? `<${argument.name}>`
+    : `[${argument.name}]`;
+}
+
+/** `(--document-id <n> | --chunk-id <n> | --source-uri <value>)` */
+function requiredChoiceToken(
+  constraint: ContractConstraint,
+  args: ContractArgument[],
+): string | null {
+  if (constraint.kind !== "one_of" || constraint.required !== true) return null;
+  const members = constraint.arguments
+    .map((name) => args.find((argument) => argument.name === name))
+    .filter((argument): argument is ContractArgument => argument !== undefined);
+  if (members.length !== constraint.arguments.length) return null;
+  return `(${members
+    .map((argument) =>
+      argument.positional === true
+        ? `<${argument.name}>`
+        : `${argument.name}${valuePlaceholder(argument)}`,
+    )
+    .join(" | ")})`;
+}
+
+function usageLines(path: string[], command: ContractCommand): string[] {
+  if (isGroup(command)) {
+    return (command.subcommands ?? []).flatMap((sub) =>
+      usageLines([...path, sub.name], sub),
+    );
+  }
+  const args = command.arguments ?? [];
+  const constraints = command.constraints ?? [];
+  const grouped = new Set(
+    constraints
+      .filter((constraint) => requiredChoiceToken(constraint, args) !== null)
+      .flatMap((constraint) => constraint.arguments),
+  );
+  const tokens: string[] = ["agentbrain", ...path];
+  for (const argument of args) {
+    if (argument.positional !== true || grouped.has(argument.name)) continue;
+    tokens.push(positionalToken(argument));
+  }
+  for (const constraint of constraints) {
+    const token = requiredChoiceToken(constraint, args);
+    if (token !== null) tokens.push(token);
+  }
+  const hasOptions = args.some((argument) => argument.positional !== true);
+  if (hasOptions) tokens.push("[options]");
+  return [`  ${tokens.join(" ")}`];
+}
+
+function optionBlock(command: ContractCommand): string[] {
+  const args = command.arguments ?? [];
+  const positionals = args.filter((argument) => argument.positional === true);
+  const flags = args.filter((argument) => argument.positional !== true);
+  const out: string[] = [];
+  if (positionals.length > 0) {
+    out.push("", "Arguments:");
+    out.push(
+      ...definitionList(
+        positionals.map((argument) => ({
+          term: positionalToken(argument),
+          body: argument.description + annotate(argument),
+        })),
+      ),
+    );
+  }
+  if (flags.length > 0) {
+    out.push("", "Options:");
+    out.push(
+      ...definitionList(
+        flags.map((argument) => ({
+          term: flagSpelling(argument),
+          body: argument.description + annotate(argument),
+        })),
+      ),
+    );
+  }
+  return out;
+}
+
+function constraintBlock(command: ContractCommand): string[] {
+  const constraints = (command.constraints ?? []).filter(
+    (constraint) => constraint.description !== undefined,
+  );
+  if (constraints.length === 0) return [];
+  const out = ["", "Argument rules:"];
+  for (const constraint of constraints) {
+    const joined = constraint.arguments.join(", ");
+    const rule =
+      constraint.kind === "one_of"
+        ? constraint.required === true
+          ? `exactly one of ${joined}`
+          : `at most one of ${joined}`
+        : constraint.kind === "conflicts"
+          ? `${joined} may not be combined`
+          : `${constraint.arguments[0]} requires ${constraint.arguments
+              .slice(1)
+              .join(", ")}`;
+    const lines = wrap(`${rule}: ${constraint.description}`, "    ");
+    out.push(`  - ${(lines[0] ?? "").trimStart()}`, ...lines.slice(1));
+  }
+  return out;
+}
+
+function stdinBlock(command: ContractCommand): string[] {
+  if (command.stdin === undefined) return [];
+  const required = command.stdin.required === true ? "required" : "optional";
+  return [
+    "",
+    "Standard input:",
+    ...wrap(
+      `${command.stdin.accepts} (${required}) — ${command.stdin.description}`,
+      "  ",
+    ),
+  ];
+}
+
+function subcommandBlock(command: ContractCommand): string[] {
+  if (!isGroup(command)) return [];
+  return [
+    "",
+    "Subcommands:",
+    ...definitionList(
+      (command.subcommands ?? []).map((sub) => ({
+        term: sub.name,
+        body: sub.summary,
+      })),
+    ),
+  ];
+}
+
+function commandHelp(path: string[], command: ContractCommand): string {
+  const lines: string[] = [
+    `agentbrain ${path.join(" ")} — ${command.summary}`,
+    "",
+    "Usage:",
+    ...usageLines(path, command),
+    ...subcommandBlock(command),
+    ...optionBlock(command),
+    ...constraintBlock(command),
+    ...stdinBlock(command),
+  ];
+  if (command.guidance !== undefined) {
+    lines.push("", ...wrap(command.guidance, ""));
+  }
+  if (isGroup(command)) {
+    lines.push(
+      "",
+      `Per-subcommand help: agentbrain help ${path.join(" ")} <subcommand>`,
+    );
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+function globalOptionBlock(): string[] {
+  return definitionList(
+    AGENT_CONTRACT.global_arguments.map((argument) => ({
+      term: flagSpelling(argument),
+      body: argument.description + annotate(argument),
+    })),
+  );
+}
+
+function agentDefaultsBlock(): string[] {
+  const defaults = AGENT_CONTRACT.concepts.agent_defaults ?? [];
+  if (defaults.length === 0) return [];
+  return [
+    "",
+    "Agent defaults:",
+    ...defaults.flatMap((entry, index) => {
+      const lines = wrap(entry, "     ");
+      return [
+        `  ${index + 1}. ${(lines[0] ?? "").trimStart()}`,
+        ...lines.slice(1),
+      ];
+    }),
+  ];
+}
+
+function exitCodeBlock(): string[] {
+  return [
+    "",
+    "Exit codes:",
+    ...definitionList(
+      Object.entries(AGENT_CONTRACT.concepts.output_contract.exit_codes).map(
+        ([code, meaning]) => ({ term: code, body: meaning }),
+      ),
+    ),
+  ];
+}
+
+function buildTopHelp(): string {
+  const lines: string[] = [
+    ...wrap(`agentbrain — ${AGENT_CONTRACT.meta.purpose}`, ""),
+    "",
+    "Usage:",
+    "  agentbrain [global options] <command> [command options]",
+    "",
+    "Global options:",
+    ...globalOptionBlock(),
+    "",
+    "Commands:",
+    ...definitionList(
+      AGENT_CONTRACT.commands.map((command) => ({
+        term: command.name,
+        body:
+          command.summary +
+          (isGroup(command)
+            ? ` (${(command.subcommands ?? [])
+                .map((sub) => sub.name)
+                .join(", ")})`
+            : ""),
+      })),
+    ),
+    ...agentDefaultsBlock(),
+    "",
+    ...wrap(AGENT_CONTRACT.guidance, ""),
+    "",
+    "Use --help on any command, or `agentbrain help <command>`, for its options.",
+    "Run `agentbrain --agent-help` for the agent runbook.",
+    "",
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function buildAgentHelp(): string {
+  const nodes = walkCommands();
+  const leaves = nodes.filter((node) => !isGroup(node.command));
+  const agentLeaves = leaves.filter(
+    (node) => node.command.audience === "agent",
+  );
+  const operatorLeaves = leaves.filter(
+    (node) => node.command.audience === "operator",
+  );
+  const envelope = AGENT_CONTRACT.concepts.output_contract.envelope;
+  const lines: string[] = [
+    ...wrap(`agentbrain — ${AGENT_CONTRACT.meta.purpose}`, ""),
+    "",
+    ...wrap(AGENT_CONTRACT.guidance, ""),
+    ...agentDefaultsBlock(),
+    "",
+    "Commands for agents:",
+    ...definitionList(
+      agentLeaves.map((node) => ({
+        term: node.path.join(" "),
+        body: `${node.command.summary}${
+          node.command.mutates === true ? "" : " [read-only]"
+        }`,
+      })),
+    ),
+    "",
+    "Operator commands (real, supported, human-driven):",
+    ...wrap(operatorLeaves.map((node) => node.path.join(" ")).join(", "), "  "),
+    "",
+    "JSON envelope:",
+    ...definitionList(
+      Object.entries(envelope).map(([field, shape]) => ({
+        term: field,
+        body: String(shape),
+      })),
+    ),
+    ...exitCodeBlock(),
+    "",
+    ...wrap(
+      `Every refusal carries a stable error.code; ${AGENT_CONTRACT.concepts.error_codes.length} of them are enumerated with their meanings and recoveries in the contract.`,
+      "",
+    ),
+    "",
+    "Full machine-readable contract: agentbrain guide --json",
+    "Per-command help: agentbrain help <command> or <command> --help",
+    "",
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+export const TOP_HELP = buildTopHelp();
+export const AGENT_HELP = buildAgentHelp();
+export const AGENT_TEASER = AGENT_CONTRACT.meta.purpose;
+
+/**
+ * Help for the deepest command the given path matches.
+ *
+ * The path is whatever survived argument parsing, so it can carry a query or a
+ * job id after the command name; descending only while segments keep matching
+ * makes `search foo --help` and `jobs show 12 --help` both land somewhere
+ * useful instead of falling all the way back to the top.
+ */
+export function helpFor(path: string | null): string {
+  if (path === null) return TOP_HELP;
+  const segments = path.trim().split(/\s+/).filter(Boolean);
+  const matched: string[] = [];
+  for (const segment of segments) {
+    if (findCommand([...matched, segment].join(" ")) === null) break;
+    matched.push(segment);
+  }
+  if (matched.length === 0) return TOP_HELP;
+  const command = findCommand(matched.join(" "));
   if (command === null) return TOP_HELP;
-  return HELP[command] ?? TOP_HELP;
+  return commandHelp(matched, command);
 }
