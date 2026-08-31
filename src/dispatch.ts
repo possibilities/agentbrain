@@ -29,7 +29,13 @@ import { createBackup, verifyBackup } from "./backup";
 import { TOP_LEVEL_COMMAND_NAMES } from "./contract";
 import { ResearchCache } from "./db";
 import { CliError } from "./errors";
-import { errorEnvelope, formatList, writeByFormat, writeJson } from "./format";
+import {
+  errorEnvelope,
+  formatList,
+  writeByFormat,
+  writeJson,
+  writeOut,
+} from "./format";
 import { buildGuide, HARNESS_DOCS_PROMPT } from "./guide";
 import { AGENT_HELP, AGENT_TEASER, helpFor, TOP_HELP, VERSION } from "./help";
 import type { IngestSourceType } from "./ingest";
@@ -207,22 +213,22 @@ export async function runParsed(
   const command = parsed.command;
 
   if (parsed.showVersion) {
-    process.stdout.write(`agentbrain ${VERSION}\n`);
+    writeOut(`agentbrain ${VERSION}\n`);
     return;
   }
 
   if (parsed.showAgentHelp) {
-    process.stdout.write(AGENT_HELP);
+    writeOut(AGENT_HELP);
     return;
   }
 
   if (parsed.showAgentTeaser) {
-    process.stdout.write(`${AGENT_TEASER}\n`);
+    writeOut(`${AGENT_TEASER}\n`);
     return;
   }
 
   if (parsed.showHelp && command === null) {
-    process.stdout.write(TOP_HELP);
+    writeOut(TOP_HELP);
     return;
   }
 
@@ -232,12 +238,12 @@ export async function runParsed(
   }
 
   if (command === "help") {
-    process.stdout.write(helpFor(subcommandPath(parsed.commandArgv)));
+    writeOut(helpFor(subcommandPath(parsed.commandArgv)));
     return;
   }
 
   if (parsed.showHelp) {
-    process.stdout.write(
+    writeOut(
       helpFor([command, subcommandPath(parsed.commandArgv)].join(" ").trim()),
     );
     return;
@@ -306,7 +312,19 @@ export async function runParsed(
   }
 
   if (command === "prompt") {
-    process.stdout.write(`${HARNESS_DOCS_PROMPT}\n`);
+    writeOut(`${HARNESS_DOCS_PROMPT}\n`);
+    return;
+  }
+
+  if (command === "mcp") {
+    // Imported here rather than at the top: the MCP server imports this module
+    // back for its dispatcher, and no other command should pay for loading the
+    // protocol SDK to run.
+    const { serveAgentbrainMcp } = await import("./mcp");
+    await serveAgentbrainMcp({
+      dbPath: parsed.globals.dbPath,
+      usesDefaultDb: parsed.usesDefaultDb,
+    });
     return;
   }
 

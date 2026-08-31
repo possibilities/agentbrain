@@ -30,10 +30,22 @@ export interface ContractArgument {
   choices?: string[];
   default?: unknown;
   aliases?: string[];
+  /** The flag takes one comma-joined string of values. Composes with
+   * `repeatable`; when set, `format` describes the ELEMENT. */
+  csv?: boolean;
+  /** Inclusive bounds for an integer or number argument, stated once here
+   * rather than only in prose the renderer cannot act on. */
+  minimum?: number;
+  maximum?: number;
+  /** What kind of knob this is. A consumer building a call surface exposes
+   * only `call`: every global here is output shape, store selection, or meta
+   * — things the caller has already fixed rather than parameters a model
+   * should be asked to choose. */
+  role?: "call" | "output-format" | "store-selection" | "meta";
 }
 
 export interface ContractConstraint {
-  kind: "one_of" | "conflicts" | "requires";
+  kind: "one_of" | "at_least_one" | "conflicts" | "requires";
   arguments: string[];
   required?: boolean;
   description?: string;
@@ -55,6 +67,10 @@ export interface ContractCommand {
   subcommands?: ContractCommand[];
   stdin?: ContractStdin;
   constraints?: ContractConstraint[];
+  /** The command waits on something outside itself and may not return
+   * promptly. A caller with a request timeout needs to know before it calls,
+   * not after it hangs. */
+  blocking?: boolean;
 }
 
 export interface AgentContract {
@@ -162,6 +178,7 @@ function admissionArguments(): ContractArgument[] {
       name: "--intent-version",
       type: "integer",
       description: "Versioned intent contract.",
+      minimum: 1,
       default: 1,
     },
     {
@@ -209,6 +226,7 @@ function admissionArguments(): ContractArgument[] {
       type: "string",
       description: "Add comma- or hash-separated tags.",
       repeatable: true,
+      csv: true,
     },
     { name: "--notes", type: "string", description: "Store requested notes." },
     {
@@ -222,12 +240,15 @@ function admissionArguments(): ContractArgument[] {
       name: "--max-files",
       type: "integer",
       description: "Directory snapshot cap (max 5000).",
+      minimum: 1,
+      maximum: 5000,
       default: 300,
     },
     {
       name: "--max-bytes",
       type: "integer",
       description: "Text or per-file snapshot cap.",
+      minimum: 1,
       default: 5000000,
     },
     {
@@ -254,7 +275,9 @@ function admissionArguments(): ContractArgument[] {
     {
       name: "--wait-timeout-ms",
       type: "integer",
-      description: "Stop observing after this duration.",
+      description:
+        "Stop observing after this duration. A timeout is not a failed submission: the acknowledgement still returns ok with wait_status timeout, and the queued job continues.",
+      minimum: 0,
       default: 30000,
     },
   ];
@@ -935,17 +958,20 @@ in-binary authority on commands, arguments, envelope shape, and exit codes.`,
         "SQLite database path. Takes precedence over AGENTBRAIN_DB and the default ~/.local/share/agentbrain/research.db.",
       format: "path",
       direction: "in",
+      role: "store-selection",
     },
     {
       name: "--json",
       type: "boolean",
       description: "Emit the stable JSON envelope. Preferred for agents.",
+      role: "output-format",
     },
     {
       name: "--jsonl",
       type: "boolean",
       description:
         "Emit newline-delimited records where supported; currently most useful for search.",
+      role: "output-format",
     },
     {
       name: "--format",
@@ -953,35 +979,41 @@ in-binary authority on commands, arguments, envelope shape, and exit codes.`,
       description: "Output format, equivalent to --json / --jsonl.",
       choices: ["human", "json", "jsonl"],
       default: "human",
+      role: "output-format",
     },
     {
       name: "--quiet",
       type: "boolean",
       description: "Suppress non-essential human output.",
       aliases: ["-q"],
+      role: "output-format",
     },
     {
       name: "--help",
       type: "boolean",
       description: "Show help for the CLI or the named command.",
       aliases: ["-h"],
+      role: "meta",
     },
     {
       name: "--version",
       type: "boolean",
       description: "Show the version.",
       aliases: ["-V"],
+      role: "meta",
     },
     {
       name: "--agent-help",
       type: "boolean",
       description:
         "Show the agent runbook. This contract is the full machine card.",
+      role: "meta",
     },
     {
       name: "--agent-teaser",
       type: "boolean",
       description: "Show a one-line capability summary.",
+      role: "meta",
     },
   ],
   commands: [
@@ -998,12 +1030,16 @@ in-binary authority on commands, arguments, envelope shape, and exit codes.`,
           name: "--top-tags",
           type: "integer",
           description: "Number of top tags to include (max 500).",
+          minimum: 1,
+          maximum: 500,
           default: 25,
         },
         {
           name: "--recent",
           type: "integer",
           description: "Number of recent documents to include (max 50).",
+          minimum: 1,
+          maximum: 50,
           default: 5,
         },
       ],
@@ -1054,12 +1090,15 @@ positional words are joined into the query.`,
           name: "--limit",
           type: "integer",
           description: "Results per page (max 50).",
+          minimum: 1,
+          maximum: 50,
           default: 10,
         },
         {
           name: "--offset",
           type: "integer",
           description: "Page offset.",
+          minimum: 0,
           default: 0,
         },
         ...discoveryFilters(),
@@ -1107,6 +1146,7 @@ whole.`,
           type: "integer",
           description:
             "Limit document content with head/tail truncation (min 500).",
+          minimum: 500,
           default: 20000,
         },
         {
@@ -1152,12 +1192,16 @@ resource content is never concatenated into a hit.`,
           name: "--limit",
           type: "integer",
           description: "Maximum resource hits (max 20).",
+          minimum: 1,
+          maximum: 20,
           default: 6,
         },
         {
           name: "--max-chars",
           type: "integer",
           description: "Total chunk-content budget (500..50000).",
+          minimum: 500,
+          maximum: 50000,
           default: 12000,
         },
         ...discoveryFilters(),
@@ -1168,6 +1212,7 @@ resource content is never concatenated into a hit.`,
       summary: "Durably queue a text, file, directory, or URL intent",
       audience: "agent",
       mutates: true,
+      blocking: true,
       guidance: ADMISSION_GUIDANCE,
       arguments: admissionArguments(),
     },
@@ -1176,6 +1221,7 @@ resource content is never concatenated into a hit.`,
       summary: "Compatibility alias for durable queued admission",
       audience: "agent",
       mutates: true,
+      blocking: true,
       guidance: `Accepts the same options and returns the same acknowledgement as submit, and
 never extracts, parses, or writes a document directly. Prefer submit for new
 integrations.
@@ -1188,6 +1234,7 @@ ${ADMISSION_GUIDANCE}`,
       summary: "Lease and materialize durable ingestion jobs",
       audience: "operator",
       mutates: true,
+      blocking: true,
       guidance: `The resident worker is a managed service; an operator runs it directly with
 --once to recover stale leases, drain work due now, and exit.
 
@@ -1232,30 +1279,35 @@ skip every operator-controlled Run.`,
           name: "--poll-ms",
           type: "integer",
           description: "Idle polling interval.",
+          minimum: 1,
           default: 1000,
         },
         {
           name: "--lease-ms",
           type: "integer",
           description: "Attempt lease duration.",
+          minimum: 1,
           default: 60000,
         },
         {
           name: "--heartbeat-ms",
           type: "integer",
           description: "Active lease heartbeat interval.",
+          minimum: 1,
           default: 20000,
         },
         {
           name: "--shutdown-grace-ms",
           type: "integer",
           description: "Bounded completion grace after a signal.",
+          minimum: 0,
           default: 10000,
         },
         {
           name: "--run",
           type: "integer",
           description: "Pin an operator-controlled Run.",
+          minimum: 1,
         },
         {
           name: "--authorization-digest",
@@ -1303,11 +1355,14 @@ skip every operator-controlled Run.`,
               name: "--run",
               type: "integer",
               description: "Require membership in a Run.",
+              minimum: 1,
             },
             {
               name: "--limit",
               type: "integer",
               description: "Maximum jobs to list.",
+              minimum: 1,
+              maximum: 1000,
               default: 100,
             },
           ],
@@ -1328,6 +1383,7 @@ command can make. Pass it only when the body is genuinely required.`,
               description: "The job to show.",
               positional: true,
               required: true,
+              minimum: 1,
             },
             {
               name: "--reveal-content",
@@ -1345,6 +1401,7 @@ command can make. Pass it only when the body is genuinely required.`,
               name: "--max-bytes",
               type: "integer",
               description: "Cap on revealed bytes.",
+              minimum: 1,
               default: 5000000,
             },
           ],
@@ -1363,11 +1420,14 @@ command can make. Pass it only when the body is genuinely required.`,
               description: "The Run to inspect.",
               positional: true,
               required: true,
+              minimum: 1,
             },
             {
               name: "--limit",
               type: "integer",
               description: "Maximum jobs to include.",
+              minimum: 1,
+              maximum: 1000,
               default: 100,
             },
           ],
@@ -1385,6 +1445,7 @@ command can make. Pass it only when the body is genuinely required.`,
               description: "The job to retry.",
               positional: true,
               required: true,
+              minimum: 1,
             },
             {
               name: "--reason",
@@ -1411,6 +1472,7 @@ command can make. Pass it only when the body is genuinely required.`,
               description: "The job to cancel.",
               positional: true,
               required: true,
+              minimum: 1,
             },
             {
               name: "--reason",
@@ -1439,6 +1501,7 @@ command can make. Pass it only when the body is genuinely required.`,
               description: "The job to exclude.",
               positional: true,
               required: true,
+              minimum: 1,
             },
             {
               name: "--reason",
@@ -1464,6 +1527,7 @@ command can make. Pass it only when the body is genuinely required.`,
               name: "--run",
               type: "integer",
               description: "Restrict the aggregate to one Run.",
+              minimum: 1,
             },
           ],
         },
@@ -1734,6 +1798,7 @@ cannot undo remote requests.`,
               type: "integer",
               description: "Terminal linked offline Run.",
               required: true,
+              minimum: 1,
             },
             {
               name: "--post-offline-snapshot",
@@ -1891,6 +1956,8 @@ touching the database.`,
           name: "--limit",
           type: "integer",
           description: "Number of tags (max 500).",
+          minimum: 1,
+          maximum: 500,
           default: 100,
         },
       ],
@@ -1956,6 +2023,8 @@ refused.`,
               name: "--limit",
               type: "integer",
               description: "Maximum sources to list (max 1000).",
+              minimum: 1,
+              maximum: 1000,
               default: 500,
             },
           ],
@@ -1999,6 +2068,7 @@ refused.`,
             "Durably admit discovery Runs for one source or every due one",
           audience: "operator",
           mutates: true,
+          blocking: true,
           guidance: `Two usage forms:
   agentbrain sources sync SOURCE_ID [--due]   one named source
   agentbrain sources sync --due               every overdue source
@@ -2056,6 +2126,7 @@ because the durable Run continues independently.`,
               name: "--limit",
               type: "integer",
               description: "Maximum due sources to admit in one evaluation.",
+              minimum: 1,
               default: 1000,
             },
             {
@@ -2069,6 +2140,8 @@ because the durable Run continues independently.`,
               name: "--wait-timeout-seconds",
               type: "integer",
               description: "Wait budget (1..3600).",
+              minimum: 1,
+              maximum: 3600,
               default: 300,
             },
             {
@@ -2082,6 +2155,8 @@ because the durable Run continues independently.`,
               name: "--wait-poll-ms",
               type: "integer",
               description: "Wait polling interval (25..5000).",
+              minimum: 25,
+              maximum: 5000,
               default: 250,
             },
           ],
@@ -2154,6 +2229,7 @@ because the durable Run continues independently.`,
           summary: "Run the authenticated share ingress",
           audience: "operator",
           mutates: true,
+          blocking: true,
           guidance: `Exposes POST /v1/share plus GET /v1/health and GET /v1/shares?job_ids=1,2,3.
 All require Authorization: Bearer <token>. The server is the authoritative
 ingestion point: it resolves each payload into exactly one Admission intent
@@ -2224,6 +2300,8 @@ docs/runbooks/share-ingress.md.`,
               type: "integer",
               description:
                 "Bind port. Precedence: --port, then PORT, then 8787.",
+              minimum: 1,
+              maximum: 65535,
             },
             {
               name: "--token-file",
@@ -2365,8 +2443,53 @@ docs/runbooks/share-ingress.md.`,
         },
       ],
     },
+    {
+      name: "mcp",
+      summary: "Serve this CLI's agent commands to an MCP host over stdio",
+      audience: "internal",
+      mutates: true,
+      blocking: true,
+      guidance: `A protocol entrypoint, not a verb: it holds the process open and speaks
+JSON-RPC on stdin and stdout until the host closes the transport, so a human
+runs it only by configuring a host to.
+
+The tools it serves are generated from this contract at startup — exactly the
+agent-audience leaves, dispatched in this process — so a command added here
+becomes a tool with no second list to edit.`,
+      arguments: [],
+    },
   ],
 };
+
+/**
+ * One argument relation, as a sentence.
+ *
+ * Authored here rather than in the help renderer because two surfaces say it:
+ * `--help` prints it under "Argument rules", and the MCP mapping puts it in
+ * the tool description, since a rule a caller cannot see is a rule a caller
+ * breaks. `spell` renames the arguments for the surface doing the asking — MCP
+ * advertises properties, not flags.
+ */
+export function constraintSentence(
+  constraint: ContractConstraint,
+  spell: (name: string) => string = (name) => name,
+): string {
+  const names = constraint.arguments.map(spell);
+  const joined = names.join(", ");
+  const rule =
+    constraint.kind === "one_of"
+      ? constraint.required === true
+        ? `exactly one of ${joined}`
+        : `at most one of ${joined}`
+      : constraint.kind === "at_least_one"
+        ? `at least one of ${joined}`
+        : constraint.kind === "conflicts"
+          ? `${joined} may not be combined`
+          : `${names[0]} requires ${names.slice(1).join(", ")}`;
+  return constraint.description === undefined
+    ? `${rule}.`
+    : `${rule}: ${constraint.description}`;
+}
 
 export interface ContractNode {
   path: string[];

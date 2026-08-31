@@ -14,6 +14,7 @@ import {
   type ContractArgument,
   type ContractCommand,
   type ContractConstraint,
+  constraintSentence,
   findCommand,
   isGroup,
   VERSION,
@@ -76,7 +77,11 @@ function annotate(argument: ContractArgument): string {
   if (argument.default !== undefined) {
     notes.push(`default: ${String(argument.default)}`);
   }
+  if (argument.csv === true) notes.push("comma-joined, one value");
   if (argument.repeatable === true) notes.push("repeatable");
+  if (argument.minimum !== undefined)
+    notes.push(`at least ${argument.minimum}`);
+  if (argument.maximum !== undefined) notes.push(`at most ${argument.maximum}`);
   if (argument.required === true) notes.push("required");
   if (argument.direction === "out") notes.push("written by this command");
   return notes.length === 0 ? "" : ` (${notes.join("; ")})`;
@@ -196,18 +201,7 @@ function constraintBlock(command: ContractCommand): string[] {
   if (constraints.length === 0) return [];
   const out = ["", "Argument rules:"];
   for (const constraint of constraints) {
-    const joined = constraint.arguments.join(", ");
-    const rule =
-      constraint.kind === "one_of"
-        ? constraint.required === true
-          ? `exactly one of ${joined}`
-          : `at most one of ${joined}`
-        : constraint.kind === "conflicts"
-          ? `${joined} may not be combined`
-          : `${constraint.arguments[0]} requires ${constraint.arguments
-              .slice(1)
-              .join(", ")}`;
-    const lines = wrap(`${rule}: ${constraint.description}`, "    ");
+    const lines = wrap(constraintSentence(constraint), "    ");
     out.push(`  - ${(lines[0] ?? "").trimStart()}`, ...lines.slice(1));
   }
   return out;
