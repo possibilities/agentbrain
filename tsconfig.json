@@ -13,7 +13,8 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["bun-types"]
+    "types": ["bun-types"],
+    "skipLibCheck": true
   },
   "include": ["src", "test"],
   "exclude": ["node_modules"]

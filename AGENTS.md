@@ -44,11 +44,34 @@ below is a constraint you cannot recover by reading a single file.
 - Skills call `search "<q>" --json` and `get --document-id N --full --json`, and
   hardcode `~/.local/share/agentbrain/research.db`.
 
+## The agent contract
+
+- `src/contract.ts` is the single authorship of what this CLI is. `guide
+  --json` emits it verbatim, and `--help`, `agentbrain help <command>`,
+  `--agent-help`, `--agent-teaser`, and `prompt` are renders of it. `src/help.ts`
+  holds layout and no prose: a sentence that states a fact about the CLI
+  belongs in the contract, or it becomes a second authorship that nothing
+  compares.
+- Adding or changing a command means editing the contract in the same commit.
+  Every command appears there, including ones no agent should call — `audience`
+  (`agent` / `operator` / `internal`) is how a command is hidden, never
+  omission, because a missing command is indistinguishable from an oversight.
+  Every leaf declares `mutates`, and `concepts.read_only_commands` must be
+  exactly the non-mutating leaves by full path.
+- Every `new CliError("code", …)` outside `src/share-server.ts` must appear in
+  `concepts.error_codes`; `test/agent-contract.test.ts` fails on either
+  direction of drift, and also checks the whole document against
+  `~/code/agentstart/scripts/validate-agent-contract.ts` when that checkout is
+  present. The schema at `~/code/agentstart/config/agent-contract/schema.json`
+  is normative.
+- `src/cli.ts` is the package bin and holds nothing but the entrypoint;
+  dispatch lives in `src/dispatch.ts` so the command table is importable.
+
 ## The brain skill
 
-- `skills/brain/SKILL.md` is the canonical deep runbook for agents. `--agent-help`
-  in `src/help.ts` is the in-binary fallback and names the skill; the two must
-  keep agreeing.
+- `skills/brain/SKILL.md` is the canonical deep runbook for agents. The
+  in-binary fallback is `--agent-help`, which is *rendered* from the contract
+  in `src/contract.ts` and names the skill; the two must keep agreeing.
 - AgentStart's skills scan copies it into the fixed private fleet resources by running
   `npx skills add --copy` against this checkout and discovering nested
   `skills/<name>/SKILL.md`. The installed

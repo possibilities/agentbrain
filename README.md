@@ -25,9 +25,10 @@ agentbrain jobs stats --json
 agentbrain doctor --json
 ```
 
-`agentbrain --help` lists every command, `--agent-help` prints the agent
-runbook, and `guide --json` is the stable machine-readable contract
-(`agentbrain prompt` generates harness-local docs from it).
+`guide --json` emits the fleet agent contract — the one machine-readable
+self-description this CLI publishes. `agentbrain --help`, `help <command>`,
+`--agent-help`, `--agent-teaser`, and `prompt` are all renders of that same
+document, so they cannot drift from it.
 
 ## Services
 

@@ -1,9 +1,43 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   type Envelope,
   type ErrorEnvelope,
   type GlobalOptions,
   SCHEMA_VERSION,
 } from "./types";
+
+/**
+ * Where this process's command output goes.
+ *
+ * Ordinarily stdout. Under `agentbrain mcp` stdout is the JSON-RPC transport
+ * and a stray line would corrupt the protocol, so the server runs each tool
+ * call inside `captureOutput`, which collects what the command would have
+ * printed and hands it back as the tool result. Every write in this CLI goes
+ * through `writeOut` so that redirection is total rather than mostly.
+ *
+ * AsyncLocalStorage rather than swapping `process.stdout.write`: a host may
+ * have several tool calls in flight, and a global swap would hand one call's
+ * output to another.
+ */
+const capture = new AsyncLocalStorage<string[]>();
+
+export function writeOut(text: string): void {
+  const sink = capture.getStore();
+  if (sink === undefined) {
+    process.stdout.write(text);
+    return;
+  }
+  sink.push(text);
+}
+
+/** Run `body`, returning everything it wrote instead of printing it. */
+export async function captureOutput(
+  body: () => Promise<void>,
+): Promise<string> {
+  const sink: string[] = [];
+  await capture.run(sink, body);
+  return sink.join("");
+}
 
 export function envelope<T>(
   command: string,
@@ -43,7 +77,7 @@ export function errorEnvelope(
 }
 
 export function writeJson(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  writeOut(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 export function writeByFormat<T>(
@@ -64,11 +98,10 @@ export function writeByFormat<T>(
     const records = options.jsonl?.(data) ?? [
       envelope(command, data, globals, options.readOnly ?? true),
     ];
-    for (const record of records)
-      process.stdout.write(`${JSON.stringify(record)}\n`);
+    for (const record of records) writeOut(`${JSON.stringify(record)}\n`);
     return;
   }
-  process.stdout.write(human(data));
+  writeOut(human(data));
 }
 
 export function formatList(

@@ -408,16 +408,17 @@ to the human.
 The CLI teaches itself; prefer asking it over trusting this file:
 
 ```bash
-agentbrain guide --json          # the machine card: commands, contracts, exit codes
+agentbrain guide --json          # the contract: commands, arguments, exit codes
 agentbrain --agent-help          # the in-binary runbook (this skill is the deep version)
 agentbrain --help                # every command and global flag
 agentbrain help <command>        # per-command options and semantics
 agentbrain --agent-teaser        # one-line capability summary
 ```
 
-`guide --json` is the authority on the output contract, the read-only vs
-mutation command split, the submission statuses, the citation fields, and the
-exit codes. After an agentbrain upgrade, that one call is the re-sync — and
+`guide --json` is the single authored self-description; every other surface in
+that list is rendered from it, so none of them can disagree with it. It is the
+authority on the command tree, each command's typed arguments and constraints,
+which commands mutate, every `error.code`, the envelope, and the exit codes. After an agentbrain upgrade, that one call is the re-sync — and
 this skill's claims should be re-verified against the live CLI before they are
 repeated.
 

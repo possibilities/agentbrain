@@ -181,7 +181,17 @@ test("share appears on every public discovery surface", () => {
   const topHelp = runCli(["--help"]).stdout;
   expect(topHelp).toContain("share");
 
-  const commandHelp = runCli(["share", "--help"]).stdout;
+  // The group's help is the index; the serving contract lives on the leaf
+  // that owns it, which is where the contract scopes it.
+  const groupHelp = runCli(["share", "--help"]).stdout;
+  expect(groupHelp).toContain("serve");
+  expect(groupHelp).toContain("token");
+
+  // Rendered help reflows to the terminal width, so match on normalized text.
+  const commandHelp = runCli(["share", "serve", "--help"]).stdout.replace(
+    /\s+/g,
+    " ",
+  );
   expect(commandHelp).toContain("/v1/share");
   expect(commandHelp).toContain("Authorization: Bearer");
   // The bind default is a security property; it must be discoverable.
@@ -194,12 +204,17 @@ test("share appears on every public discovery surface", () => {
 
   const guide = JSON.parse(runCli(["guide", "--json"]).stdout) as {
     data: {
-      output_contract: { mutation_commands: string[] };
-      commands: Record<string, string>;
+      concepts: { read_only_commands: string[] };
+      commands: Array<{ name: string; subcommands?: Array<{ name: string }> }>;
     };
   };
-  expect(guide.data.commands.share).toBeDefined();
-  expect(guide.data.output_contract.mutation_commands).toContain("share serve");
+  const share = guide.data.commands.find((command) => command.name === "share");
+  expect(share?.subcommands?.map((sub) => sub.name)).toEqual([
+    "serve",
+    "token",
+  ]);
+  // share serve mutates, so it must not be claimed as read-only.
+  expect(guide.data.concepts.read_only_commands).not.toContain("share serve");
 });
 
 interface ServeEnvelope {
