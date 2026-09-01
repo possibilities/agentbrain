@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   AGENT_CONTRACT,
   type ContractCommand,
+  findCommand,
   isGroup,
   walkCommands,
 } from "../src/contract";
@@ -80,8 +81,34 @@ test("guide --json emits the contract inside the ordinary envelope", () => {
 });
 
 test("every dispatched command is declared, and every declared one dispatches", () => {
-  const declared = AGENT_CONTRACT.commands.map((command) => command.name);
+  // Aliases included: a spelling the dispatcher accepts must be a spelling the
+  // contract publishes, which is what keeps `ingest` documented rather than
+  // merely surviving.
+  const declared = AGENT_CONTRACT.commands.flatMap((command) => [
+    command.name,
+    ...(command.aliases ?? []),
+  ]);
   expect([...COMMAND_NAMES].sort()).toEqual([...declared].sort());
+});
+
+test("an alias resolves to its command and stays off the agent surface", () => {
+  const submit = AGENT_CONTRACT.commands.find(
+    (command) => command.name === "submit",
+  );
+  expect(submit?.aliases).toEqual(["ingest"]);
+  expect(findCommand("ingest")).toBe(submit as never);
+  expect(
+    AGENT_CONTRACT.commands.some((command) => command.name === "ingest"),
+  ).toBe(false);
+});
+
+test("help and prompt are operator verbs", () => {
+  for (const name of ["help", "prompt"]) {
+    const command = AGENT_CONTRACT.commands.find(
+      (candidate) => candidate.name === name,
+    );
+    expect(command?.audience).toBe("operator");
+  }
 });
 
 test("a group is not invocable and a leaf is fully described", () => {

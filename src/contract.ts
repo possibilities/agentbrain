@@ -71,6 +71,13 @@ export interface ContractCommand {
    * promptly. A caller with a request timeout needs to know before it calls,
    * not after it hangs. */
   blocking?: boolean;
+  /** Other names this exact command answers to. An alias is a spelling, not a
+   * second verb: it is dispatched, helped, and documented as this command, and
+   * a consumer building a call surface offers the canonical name only. */
+  aliases?: string[];
+  /** Present when the command still works but should not be reached for; the
+   * value says what to use instead. */
+  deprecated?: string;
 }
 
 export interface AgentContract {
@@ -317,8 +324,8 @@ concluding the index has nothing. Cite document_id, chunk_id when present,
 title, source_uri, and relation provenance when it matters.
 
 Writing goes through one door. \`submit\` is the durable admission boundary for
-every text, file, directory, or URL intent; \`ingest\` is its compatibility
-alias and writes no document directly either. Admission is durable and
+every text, file, directory, or URL intent, and writes no document directly;
+\`ingest\` is an older spelling of it. Admission is durable and
 offline, so never expect a submitted URL to be searchable immediately —
 \`worker\` leases the job later and delegates all URL extraction and network
 policy to Agentscrape. Agentbrain owns durable admission, the ingestion
@@ -1213,18 +1220,10 @@ resource content is never concatenated into a hit.`,
       audience: "agent",
       mutates: true,
       blocking: true,
-      guidance: ADMISSION_GUIDANCE,
-      arguments: admissionArguments(),
-    },
-    {
-      name: "ingest",
-      summary: "Compatibility alias for durable queued admission",
-      audience: "agent",
-      mutates: true,
-      blocking: true,
-      guidance: `Accepts the same options and returns the same acknowledgement as submit, and
-never extracts, parses, or writes a document directly. Prefer submit for new
-integrations.
+      aliases: ["ingest"],
+      guidance: `\`ingest\` is an older spelling of this same command: identical options,
+identical acknowledgement, dispatched here. It is a name, not a second verb,
+so a caller is never asked to choose between them. Prefer \`submit\`.
 
 ${ADMISSION_GUIDANCE}`,
       arguments: admissionArguments(),
@@ -2424,15 +2423,19 @@ docs/runbooks/share-ingress.md.`,
     {
       name: "prompt",
       summary: "Print a prompt harnesses can use to write their own docs",
-      audience: "agent",
+      audience: "operator",
       mutates: false,
+      guidance:
+        "Authoring scaffolding, not a research verb: it emits a prompt a human feeds to a harness that is writing documentation about this CLI. An agent already working with agentbrain has the contract itself and gains nothing from it mid-task.",
       arguments: [],
     },
     {
       name: "help",
       summary: "Show help for a command",
-      audience: "agent",
+      audience: "operator",
       mutates: false,
+      guidance:
+        "The human help renderer. A programmatic caller reads `guide --json` instead, and a generated call surface already carries every description this prints.",
       arguments: [
         {
           name: "command",
@@ -2523,15 +2526,25 @@ export function leafPaths(): string[] {
     .map((node) => node.path.join(" "));
 }
 
-/** Resolve a space-joined path, or a bare group/leaf name at the top level. */
+/** Every spelling a command answers to: its name first, then its aliases. */
+export function commandSpellings(command: ContractCommand): string[] {
+  return [command.name, ...(command.aliases ?? [])];
+}
+
+/**
+ * Resolve a space-joined path, or a bare group/leaf name at the top level.
+ *
+ * An alias resolves to the command that owns it, so `help ingest` and
+ * `ingest --help` reach `submit` rather than reporting an unknown command.
+ */
 export function findCommand(path: string): ContractCommand | null {
   const segments = path.trim().split(/\s+/).filter(Boolean);
   if (segments.length === 0) return null;
   let level: ContractCommand[] | undefined = AGENT_CONTRACT.commands;
   let found: ContractCommand | null = null;
   for (const segment of segments) {
-    const next: ContractCommand | undefined = level?.find(
-      (command) => command.name === segment,
+    const next: ContractCommand | undefined = level?.find((command) =>
+      commandSpellings(command).includes(segment),
     );
     if (next === undefined) return null;
     found = next;
@@ -2540,5 +2553,19 @@ export function findCommand(path: string): ContractCommand | null {
   return found;
 }
 
+/** Canonical name of the top-level command a spelling reaches, or null. */
+export function canonicalTopLevelCommand(name: string): string | null {
+  const command = AGENT_CONTRACT.commands.find((candidate) =>
+    commandSpellings(candidate).includes(name),
+  );
+  return command?.name ?? null;
+}
+
+/**
+ * Every top-level spelling the CLI accepts, aliases included.
+ *
+ * The dispatcher matches what a person types, and a person may still type an
+ * alias; the contract decides which of those spellings is canonical.
+ */
 export const TOP_LEVEL_COMMAND_NAMES: readonly string[] =
-  AGENT_CONTRACT.commands.map((command) => command.name);
+  AGENT_CONTRACT.commands.flatMap(commandSpellings);

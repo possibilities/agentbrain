@@ -14,6 +14,7 @@ import {
   type ContractArgument,
   type ContractCommand,
   type ContractConstraint,
+  commandSpellings,
   constraintSentence,
   findCommand,
   isGroup,
@@ -234,12 +235,25 @@ function subcommandBlock(command: ContractCommand): string[] {
   ];
 }
 
+/** `Also spelled: agentbrain ingest` — an alias is a name, not a second verb. */
+function aliasBlock(path: string[], command: ContractCommand): string[] {
+  const aliases = command.aliases ?? [];
+  if (aliases.length === 0) return [];
+  const prefix = path.slice(0, -1);
+  return [
+    "",
+    "Also spelled:",
+    ...aliases.map((alias) => `  agentbrain ${[...prefix, alias].join(" ")}`),
+  ];
+}
+
 function commandHelp(path: string[], command: ContractCommand): string {
   const lines: string[] = [
     `agentbrain ${path.join(" ")} — ${command.summary}`,
     "",
     "Usage:",
     ...usageLines(path, command),
+    ...aliasBlock(path, command),
     ...subcommandBlock(command),
     ...optionBlock(command),
     ...constraintBlock(command),
@@ -308,7 +322,7 @@ function buildTopHelp(): string {
     "Commands:",
     ...definitionList(
       AGENT_CONTRACT.commands.map((command) => ({
-        term: command.name,
+        term: commandSpellings(command).join(", "),
         body:
           command.summary +
           (isGroup(command)
@@ -396,8 +410,11 @@ export function helpFor(path: string | null): string {
   const segments = path.trim().split(/\s+/).filter(Boolean);
   const matched: string[] = [];
   for (const segment of segments) {
-    if (findCommand([...matched, segment].join(" ")) === null) break;
-    matched.push(segment);
+    // Canonicalized as it descends, so `help ingest` prints submit's help
+    // under submit's own name rather than teaching the older spelling back.
+    const resolved = findCommand([...matched, segment].join(" "));
+    if (resolved === null) break;
+    matched.push(resolved.name);
   }
   if (matched.length === 0) return TOP_HELP;
   const command = findCommand(matched.join(" "));

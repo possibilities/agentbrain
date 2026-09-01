@@ -67,7 +67,19 @@ describe("which commands become tools", () => {
       ({ path }) => path.replace(/ /g, "_"),
     );
     expect(TOOLS.map((tool) => tool.name).sort()).toEqual([...wanted].sort());
-    expect(wanted.length).toBe(18);
+    expect(wanted.length).toBe(15);
+  });
+
+  test("no meta verb and no alias reaches the surface", () => {
+    const exposed = new Set(TOOLS.map((tool) => tool.name));
+    // help and prompt print text about the CLI; every tool already carries its
+    // own description and the server's instructions carry the runbook.
+    expect(exposed.has("help")).toBe(false);
+    expect(exposed.has("prompt")).toBe(false);
+    // ingest is submit's older spelling, not a second verb to choose between.
+    expect(exposed.has("ingest")).toBe(false);
+    expect(exposed.has("submit")).toBe(true);
+    expect(exposed.has("guide")).toBe(true);
   });
 
   test("no operator or internal leaf is exposed, mcp included", () => {
