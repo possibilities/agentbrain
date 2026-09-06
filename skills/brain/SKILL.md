@@ -273,6 +273,16 @@ The most common cause of mass stranding is `agentscrape` missing from the
 worker's `PATH` — `doctor`'s `agentscrape` check names it. Text, file, and
 directory ingestion is unaffected; only URL extraction degrades.
 
+For X jobs blocked as `auth_config`, an installed Agentscrape executable is
+not proof of authentication. Agentscrape defaults to an ephemeral browser
+session. Use the browser skill to verify a durable signed-in session, then
+have AgentStart install the Worker with
+`AGENTSTART_INSTALL_AGENTBRAIN_BROWSER_SESSION=SESSION`. The installer preserves
+that pin across reinstalls. Keep the session exclusive to the resident Worker,
+which processes one job at a time. After successful extraction with that
+session, retry the affected jobs and verify they reach `completed`; returning
+them to the queue alone is not recovery.
+
 **A share never even reached the ledger.** When the human is sure they shared a
 link and no job exists, the ingress is the suspect, not the worker. `doctor`'s
 `share_ingress` check answers it: a registered, running ingress that cannot
