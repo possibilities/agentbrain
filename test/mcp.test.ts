@@ -404,6 +404,7 @@ describe("a live stdio server", () => {
     })) as { isError?: boolean; content: { type: string; text: string }[] };
     expect(result.isError ?? false).toBe(false);
     const envelope = JSON.parse(result.content[0]?.text ?? "");
+    expect(result).toHaveProperty("structuredContent", envelope);
     expect(envelope).toMatchObject({
       schema_version: 1,
       ok: true,
@@ -420,6 +421,7 @@ describe("a live stdio server", () => {
     })) as { isError?: boolean; content: { text: string }[] };
     expect(result.isError ?? false).toBe(false);
     const envelope = JSON.parse(result.content[0]?.text ?? "");
+    expect(result).toHaveProperty("structuredContent", envelope);
     expect(envelope.ok).toBe(true);
     expect(envelope.data.results).toEqual([]);
   });
@@ -498,6 +500,7 @@ describe("a live stdio server", () => {
     })) as { isError?: boolean; content: { text: string }[] };
     expect(result.isError ?? false).toBe(false);
     const envelope = JSON.parse(result.content[0]?.text ?? "");
+    expect(result).toHaveProperty("structuredContent", envelope);
     expect(envelope.ok).toBe(true);
     expect(envelope.data.wait_status).toBe("timeout");
     // Queued and durable: the observation ended, the work did not.
@@ -521,8 +524,12 @@ describe("a live stdio server", () => {
     })) as { isError?: boolean; content: { text: string }[] };
     expect(result.isError).toBe(true);
     const text = result.content[0]?.text ?? "";
+    expect(result).toHaveProperty(
+      "structuredContent",
+      JSON.parse(result.content[1]!.text),
+    );
     expect(text.startsWith("bad_selector:")).toBe(true);
-    expect(JSON.parse(text.slice(text.indexOf("{")))).toMatchObject({
+    expect(JSON.parse(result.content[1]!.text)).toMatchObject({
       ok: false,
       error: { code: "bad_selector" },
     });
@@ -535,9 +542,13 @@ describe("a live stdio server", () => {
     })) as { isError?: boolean; content: { text: string }[] };
     expect(result.isError).toBe(true);
     const text = result.content[0]?.text ?? "";
+    expect(result).toHaveProperty(
+      "structuredContent",
+      JSON.parse(result.content[1]!.text),
+    );
     expect(text.startsWith("bad_job_state:")).toBe(true);
     expect(text).toContain("recovery: Use one of:");
-    expect(JSON.parse(text.slice(text.indexOf("{"))).error.recovery).toContain(
+    expect(JSON.parse(result.content[1]!.text).error.recovery).toContain(
       "Use one of:",
     );
   });

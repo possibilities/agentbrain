@@ -95,7 +95,10 @@ async function callTool(
   };
   try {
     const text = await captureOutput(() => runParsed(parsed));
-    return { content: [{ type: "text", text: text.trimEnd() }] };
+    return {
+      structuredContent: JSON.parse(text),
+      content: [{ type: "text", text: text.trimEnd() }],
+    };
   } catch (error) {
     return toolError(command, error);
   }
@@ -124,12 +127,18 @@ function toolError(command: string, error: unknown): CallToolResult {
         );
   const lines = [`${domain.code}: ${domain.message}`];
   if (domain.recovery !== undefined) lines.push(`recovery: ${domain.recovery}`);
-  lines.push(
-    JSON.stringify(
-      errorEnvelope(command, domain.code, domain.message, domain.recovery),
-      null,
-      2,
-    ),
+  const envelope = errorEnvelope(
+    command,
+    domain.code,
+    domain.message,
+    domain.recovery,
   );
-  return { isError: true, content: [{ type: "text", text: lines.join("\n") }] };
+  return {
+    isError: true,
+    structuredContent: { ...envelope },
+    content: [
+      { type: "text", text: lines.join("\n") },
+      { type: "text", text: JSON.stringify(envelope, null, 2) },
+    ],
+  };
 }
