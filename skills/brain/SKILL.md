@@ -280,12 +280,12 @@ answer its own `/v1/health` is a bind that stopped serving — the shape a
 Tailscale restart leaves behind — and every share is being held on the device
 instead. The ingress now exits on its own after two failed self-probes so the
 service restarts it; when it has not yet, the fix is
-`launchctl kickstart -k gui/$UID/agentbrain.share`, which is the human's call
+`launchctl kickstart -k gui/$UID/io.arthack.agentbrain.share`, which is the human's call
 on an installer-managed service.
 
 **Nothing is being drained at all.** `jobs stats` showing a rising `queued`
 with `active_leases: 0` means the resident worker isn't running. That is
-installer-managed service state (`agentbrain.worker`), not something to fix by
+installer-managed service state (`io.arthack.agentbrain.work`), not something to fix by
 launching a second worker beside the installed one — say so and let the human
 decide.
 
@@ -370,7 +370,7 @@ agentbrain sources list --json
 Agents are not the main ingress, and recognizing the other fingerprints keeps
 you from misreading the ledger:
 
-- **Share ingress** (`agentbrain.share`) — an authenticated local HTTP listener
+- **Share ingress** (`io.arthack.agentbrain.share`) — an authenticated local HTTP listener
   that a Chrome extension and an Android share target post to. Every share
   resolves to exactly one Admission through the same `submit` path, so a
   re-share returns `duplicate` with the same `job_id`. Both clients hold
@@ -380,7 +380,7 @@ you from misreading the ledger:
 - **Recurring sources** — X accounts and blog feeds registered declaratively
   and synced on a cadence. `sources sync` admits durable Runs and performs no
   HTTP work itself.
-- **The worker** (`agentbrain.worker`) — leases jobs, delegates extraction,
+- **The worker** (`io.arthack.agentbrain.work`) — leases jobs, delegates extraction,
   commits fenced outcomes.
 
 All three are installer-managed services. Agents read them; problems route
@@ -441,4 +441,4 @@ land?" is usually answerable without a terminal. A share taken while the ingress
 the Android app and sent when it comes back — check the toolbar badge, or either
 app's settings screen, before concluding a link was lost. If links stop showing
 up, `agentbrain doctor` names the failing check, and the installed
-`agentbrain.doctor` LaunchAgent notifies when the stranded count rises.
+`io.arthack.agentbrain.doctor` LaunchAgent notifies when the stranded count rises.

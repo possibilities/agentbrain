@@ -11,8 +11,9 @@ queue and index; the worker leases admitted ingestion jobs from that queue.
 The installer does not create or enable recurring remote sources. It uses
 ~/.local/share/agentbrain/research.db.
 
-The three services that run this code — agentbrain.worker, agentbrain.doctor,
-and the opt-in agentbrain.share ingress — are installed by AgentStart, which
+The three services that run this code — io.arthack.agentbrain.work,
+io.arthack.agentbrain.doctor, and the opt-in io.arthack.agentbrain.share
+ingress — are installed by AgentStart, which
 owns every fleet launch agent:
 
   ~/code/agentstart/scripts/install-launchagents --install

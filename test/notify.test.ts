@@ -66,7 +66,7 @@ test("terminal-notifier receives the group and click-through command", () => {
   const used = notifyOperator({
     title: "Agentbrain",
     message: "stranded",
-    group: "agentbrain.doctor",
+    group: "io.arthack.agentbrain.doctor",
     terminal: "agentbrain jobs list --state blocked",
   });
 

@@ -32,10 +32,11 @@ document, so they cannot drift from it.
 
 ## Services
 
-`scripts/install.sh` installs the command plus three LaunchAgents:
-`agentbrain.worker` drains the queue, `agentbrain.share` serves the
+`scripts/install.sh` installs the command; AgentStart owns three LaunchAgents:
+`io.arthack.agentbrain.work` drains the queue,
+`io.arthack.agentbrain.share` serves the
 authenticated share ingress for the Chrome extension and Android app under
-[clients/](clients/README.md), and `agentbrain.doctor` runs interval health
+[clients/](clients/README.md), and `io.arthack.agentbrain.doctor` runs interval health
 checks. Do not run a manual worker beside the installed one.
 
 ## Without agentscrape
@@ -48,7 +49,8 @@ blog and X sources degrade the same way, because discovery is agentscrape's.
 Nothing else degrades. Text, file, and directory submissions index normally,
 and search, retrieval, tagging, and the share ingress are unaffected. The
 stranding is reported rather than silent: `agentbrain doctor` fails its
-`stranded_ingestion` check and, when installed, `agentbrain.doctor` notifies
+`stranded_ingestion` check and, when installed,
+`io.arthack.agentbrain.doctor` notifies
 ([ADR 0018](docs/adr/0018-stranded-ingestion-is-reported.md)).
 
 ## Develop

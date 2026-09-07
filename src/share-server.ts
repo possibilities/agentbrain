@@ -361,7 +361,7 @@ export function startShareServer(
       `cannot bind ${shareUrlFor(hostname, port)}: ${(error as Error).message}`,
       {
         recovery:
-          "Check for an ingress already holding the port (launchctl list | grep agentbrain.share), and that the address exists on an interface (ifconfig | grep <address>).",
+          "Check for an ingress already holding the port (launchctl list | grep io.arthack.agentbrain.share), and that the address exists on an interface (ifconfig | grep <address>).",
       },
     );
   }

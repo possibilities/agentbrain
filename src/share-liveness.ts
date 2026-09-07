@@ -274,7 +274,7 @@ export async function shareIngressCheck(
     return {
       name: "share_ingress",
       status: "warning",
-      detail: `Share ingress registered at ${registration.url} is not running (pid ${registration.pid}); start agentbrain.share`,
+      detail: `Share ingress registered at ${registration.url} is not running (pid ${registration.pid}); start io.arthack.agentbrain.share`,
     };
   }
   let token: string;
@@ -298,6 +298,6 @@ export async function shareIngressCheck(
     status: probe.ok ? "ok" : "failed",
     detail: probe.ok
       ? `Share ingress healthy at ${registration.url}`
-      : `Share ingress is listening but not serving: ${probe.detail}; restart agentbrain.share`,
+      : `Share ingress is listening but not serving: ${probe.detail}; restart io.arthack.agentbrain.share`,
   };
 }

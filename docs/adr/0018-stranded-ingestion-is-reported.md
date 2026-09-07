@@ -38,7 +38,7 @@ a disposition reserves the decision for an operator — is reported separately a
 counting the two together would report breakage that does not exist.
 
 `doctor --notify` posts an operator notification, and an installer-owned
-`agentbrain.doctor` LaunchAgent runs it on an interval. Notification fires only
+`io.arthack.agentbrain.doctor` LaunchAgent runs it on an interval. Notification fires only
 when the stranded count rises above the last notified value; a steady backlog is
 silent, and recovery to zero resets the baseline. Delivery goes through
 `terminal-notifier`, and a machine without it is not an error.

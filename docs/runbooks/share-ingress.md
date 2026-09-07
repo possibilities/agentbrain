@@ -238,7 +238,7 @@ disclosed; nothing is dropped silently.
 | Client says "cannot reach" | Ingress not running, wrong host, or tailnet down | `tailscale status`; confirm `share serve` is bound to the tailnet address, not `127.0.0.1` |
 | Chrome badge shows an amber number | Shares are held, undelivered | Bring the ingress up; press **Send held** in the popover to stop waiting for the backoff |
 | Popover shows "Sent" but never "Indexed" | The worker is not draining, or the ingress cannot answer status | `agentbrain jobs stats --json`; the footer says "ingress unreachable" when the status read is failing |
-| Shares are held while `share serve` is running | The bound address stopped serving, usually after a Tailscale restart | `agentbrain doctor --json` (`share_ingress`); `launchctl kickstart -k gui/$UID/agentbrain.share` |
+| Shares are held while `share serve` is running | The bound address stopped serving, usually after a Tailscale restart | `agentbrain doctor --json` (`share_ingress`); `launchctl kickstart -k gui/$UID/io.arthack.agentbrain.share` |
 | A held Chrome share never arrives | Token rejected, or the ingress stayed down | Options → **Test connection**; a held share is abandoned after 7 days |
 | Popover stays on "Loading…" or its buttons do nothing, but right-click sharing works | Chrome has the new popover files and an older MV3 service worker | At `chrome://extensions`, click **Reload** on Agentbrain Share |
 | Android reaches nothing but curl works | Cleartext blocked | Add the host to `network_security_config.xml`, or use the MagicDNS name |

@@ -34,8 +34,9 @@ below is a constraint you cannot recover by reading a single file.
   `agentbrain submit <url> --kind url --ingress <s> --collection saved-links
   --notes <json> --json`. Exit 0 plus that envelope on stdout is a wire format,
   not console output.
-- The three services that run this code — `agentbrain.worker`,
-  `agentbrain.doctor`, and the opt-in `agentbrain.share` — are defined and
+- The three services that run this code — `io.arthack.agentbrain.work`,
+  `io.arthack.agentbrain.doctor`, and the opt-in
+  `io.arthack.agentbrain.share` — are defined and
   installed by AgentStart (`~/code/agentstart/config/launchd/`), not here. This
   installer ships the command only. the machine's service verification asserts those labels by
   name, and supplies the bind address and conduit paths to
