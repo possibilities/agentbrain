@@ -213,7 +213,7 @@ describe("the input schema", () => {
 
 describe("constraints", () => {
   test("a required one_of becomes oneOf, and is said in the description", () => {
-    expect(schemaOf("get")["oneOf"]).toEqual([
+    expect(schemaOf("get")["oneOf"]).toMatchObject([
       { required: ["document-id"] },
       { required: ["chunk-id"] },
       { required: ["source-uri"] },
@@ -225,9 +225,9 @@ describe("constraints", () => {
   });
 
   test("delete's selector rule reaches the caller both ways", () => {
-    expect(schemaOf("delete")["oneOf"]).toEqual([
-      { required: ["document-id"] },
-      { required: ["source-uri"] },
+    expect(schemaOf("delete")["oneOf"]).toMatchObject([
+      { required: ["confirm", "document-id"] },
+      { required: ["confirm", "source-uri"] },
     ]);
     expect(TOOLS.find((tool) => tool.name === "delete")?.description).toContain(
       "exactly one of document-id, source-uri",
@@ -561,4 +561,28 @@ describe("a live stdio server", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text ?? "").toContain("mode");
   });
+});
+
+test("union discovery retains all fields, input defaults, and mandatory arguments", () => {
+  for (const tool of TOOLS) {
+    const schema = schemaOf(tool.name) as {
+      properties: Record<string, unknown>;
+      required?: string[];
+      oneOf?: Array<{
+        properties: Record<string, unknown>;
+        required: string[];
+      }>;
+      anyOf?: Array<{
+        properties: Record<string, unknown>;
+        required: string[];
+      }>;
+    };
+    for (const branch of [...(schema.oneOf ?? []), ...(schema.anyOf ?? [])]) {
+      expect(Object.keys(branch.properties)).toEqual(
+        Object.keys(schema.properties),
+      );
+      for (const required of schema.required ?? [])
+        expect(branch.required).toContain(required);
+    }
+  }
 });

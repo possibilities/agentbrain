@@ -240,7 +240,7 @@ interface MappedConstraints {
   required: Set<string>;
 }
 
-/** `oneOf`/`anyOf` of single-property `required` shapes, per MCP.md. */
+/** Selector requirements; completeConstraintBranches adds the object shape. */
 function eitherOf(members: string[]): { required: string[] }[] {
   return members.map((member) => ({ required: [member] }));
 }
@@ -400,6 +400,40 @@ function toolDescription(
 
 // --- The surface ---
 
+/** Keep union branches independently discoverable without losing field types. */
+function completeConstraintBranches(
+  input: z.ZodObject<Record<string, z.ZodType>>,
+  keywords: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = z.toJSONSchema(input, { io: "input" });
+  const properties = base.properties ?? {};
+  const result = { ...keywords };
+  for (const kind of ["oneOf", "anyOf"]) {
+    const alternatives = keywords[kind];
+    if (!Array.isArray(alternatives)) continue;
+    result[kind] = alternatives.map((alternative: { required: string[] }) => ({
+      type: "object",
+      ...(base.additionalProperties === undefined
+        ? {}
+        : { additionalProperties: base.additionalProperties }),
+      required: [
+        ...new Set([...(base.required ?? []), ...alternative.required]),
+      ],
+      properties: Object.fromEntries(
+        Object.entries(properties).map(([name, schema]) => [
+          name,
+          typeof schema === "object" &&
+          schema.type === "boolean" &&
+          alternative.required.includes(name)
+            ? { ...schema, const: true }
+            : schema,
+        ]),
+      ),
+    }));
+  }
+  return result;
+}
+
 export function agentTools(
   contract: AgentContract = AGENT_CONTRACT,
 ): AgentTool[] {
@@ -417,12 +451,13 @@ export function agentTools(
         collapsed.get(name),
       );
     }
+    const input = z.object(shape);
     return {
       name: path.join("_"),
       path,
       title: leaf.summary,
       description: toolDescription(contract, path, leaf, sentences),
-      input: z.object(shape).meta(keywords),
+      input: input.meta(completeConstraintBranches(input, keywords)),
       annotations: annotations(path, leaf),
       arguments: exposed,
       leaf,
