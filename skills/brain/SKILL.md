@@ -8,11 +8,11 @@ description: >-
 
 # Brain — saved research
 
-Use Agentbrain's MCP tools through Executor to retrieve collected sources and
-admit new material to the research library. Discover tools in the `agentbrain`
-namespace and inspect their current input schemas; `guide` supplies the domain
-contract when more detail is needed. Tool paths include deployment-specific
-connections, so use the discovered path.
+Use the `agentbrain` MCP server directly. Select the tool from the harness's
+catalog or tool search, inspect its input schema, and call it with JSON
+arguments. The host may prefix tool names with the server name. `guide`
+provides the installed command contract and recovery guidance.
+Retrieve collected sources and admit new material to the research library.
 
 The local index is useful context, especially for prior reading and recurring
 subjects. It is not a freshness check or a prerequisite before every network
@@ -76,10 +76,10 @@ read [ingestion and recovery](references/ingestion.md).
 
 ## Results and boundaries
 
-With Executor, a successful tool call's `data` is the upstream MCP result;
-read its `structuredContent` for the Agentbrain envelope. On `mcp_tool_error`,
-the separate JSON text block in `error.details.content` preserves the original
-error code and recovery. Check the domain result before claiming success.
+Inspect MCP `isError` and Agentbrain's `{schema_version, ok, error, data}`
+envelope in `structuredContent`. If the host returns only content blocks,
+parse the standalone JSON block and keep diagnostic prose separate. Read
+`error.code` and `recovery` before retrying or claiming success.
 
 Use the supported tools for the index. Do not open or mutate the research
 database directly: a stray write can corrupt its FTS index. A missing index

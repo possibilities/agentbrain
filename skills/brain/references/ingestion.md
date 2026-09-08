@@ -1,8 +1,8 @@
 # Ingestion and recovery
 
 Use this reference when answering “did that source land?” or investigating a
-stalled admission. Discover the current Agentbrain MCP tools and schemas in
-Executor; operator-only repair commands are deliberately outside that surface.
+stalled admission. Select the current tools and schemas from the direct
+`agentbrain` MCP server; operator repair commands have their own CLI surface.
 
 ## Follow the durable record
 
