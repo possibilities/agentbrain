@@ -42,8 +42,9 @@ below is a constraint you cannot recover by reading a single file.
   name, and supplies the bind address and conduit paths to
   AgentStart as `AGENTSTART_INSTALL_*`; renaming a label breaks provisioning in
   both places.
-- Skills call `search "<q>" --json` and `get --document-id N --full --json`, and
-  hardcode `~/.local/share/agentbrain/research.db`.
+- The brain skill uses the MCP search/retrieval and admission surface through
+  Executor. Preserve citation metadata, durable admission outcomes, and typed
+  errors; it must not depend on CLI output parsing or direct database access.
 
 ## The agent contract
 

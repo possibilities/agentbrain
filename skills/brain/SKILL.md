@@ -6,435 +6,83 @@ description: >-
   research context; use chats for past agent conversations.
 ---
 
-# Brain — the local research index
+# Brain — saved research
 
-Agentbrain owns a durable local research index: everything saved from a
-browser, a phone, a recurring source, or an agent, extracted into documents,
-chunked, and searchable offline through SQLite FTS5. This skill is the runbook
-for wielding it.
+Use Agentbrain's MCP tools through Executor to retrieve collected sources and
+admit new material to the research library. Discover tools in the `agentbrain`
+namespace and inspect their current input schemas; `guide` supplies the domain
+contract when more detail is needed. Tool paths include deployment-specific
+connections, so use the discovered path.
 
-The index is a first-class research source. Before paying for a web search,
-before fetching a URL, before telling the user "I don't know," search here
-first — a lot of what looks like new research was already read, saved, and
-indexed weeks ago.
+The local index is useful context, especially for prior reading and recurring
+subjects. It is not a freshness check or a prerequisite before every network
+read. Follow the user's requested sources, search the live web when current
+information matters, and open relevant links while investigating. Use `chats`
+for past conversations and `wiki` for authored documents.
 
-Verified against agentbrain 0.2.0 on a live 900-document index. The CLI is
-self-describing — when this document and the installed binary disagree, the
-binary wins; see [Discovery and drift](#discovery-and-drift).
+## Retrieve evidence
 
-## Non-negotiables
+Choose the reading shape that fits the question:
 
-- **Brain before web.** The local index is free, offline, and instant. Search
-  it before reaching for the `search` skill (paid Perplexity calls) or the
-  `scrape` skill (network fetch). Escalate outward only after brain is
-  genuinely silent — see [When brain is silent](#when-brain-is-silent).
-- **Admission is not indexing.** `submit` durably queues an immutable
-  ingestion job and returns. It fetches nothing, extracts nothing, indexes
-  nothing. A URL you just submitted is **not** searchable — extraction happens
-  later, in the resident worker, through Agentscrape. Never submit-then-search
-  in the same breath and conclude the index is broken.
-- **Reads cannot mutate.** `search`, `get`, `context`, `stats`, `tags`,
-  `sources list/show/status`, `jobs list/show/stats`, and `doctor` open SQLite
-  read-only and never create or migrate a database. `meta.read_only: true`
-  on the envelope is the proof. Run them freely.
-- **Cite what you use.** Every claim sourced from the index carries
-  `document_id`, `chunk_id` when present, `title`, and `source_uri`. A
-  paraphrase with no ids is indistinguishable from a guess.
-- **Absence needs evidence.** One zero-hit query proves nothing. Retry with
-  alternate terms, then check inventory, and only then say the index doesn't
-  have it.
-- **Don't touch the database by hand.** No raw SQL, no opening
-  `~/.local/share/agentbrain/research.db` yourself. The FTS table is a regular
-  (non-contentless) fts5 table; a stray write corrupts the index silently.
+- `context` returns bounded chunks with citation metadata in one call. For
+  example: `{"query":"agent memory","limit":6,"max-chars":12000}`.
+- `search` ranks candidate chunks; retrieve the promising ones with `get`.
+  Use `{"document-id":782,"char-limit":12000}` for a bounded document,
+  `{"chunk-id":11246}` for one chunk, or `{"source-uri":"https://example.com/article"}`
+  for a known source. Use actual IDs returned by retrieval.
 
-## Preflight
+Search results already arrive in relevance order. `mode: "any"` combines
+terms with OR; use `all` to narrow or `raw` for deliberate FTS5 syntax. Filters
+such as tag, collection, source, and update date help when the relevant value
+is known. Follow `next_offset` for another page. Update dates describe the
+indexed document; they do not prove the underlying claim is still current.
 
-Usually none. The read path is safe at any moment and needs no warm-up. Two
-probes matter when something looks wrong:
+One empty query supports “no matches for this query,” not “we never saved it.”
+Try a distinctive title, author, or alternate wording when prior material is
+expected. Check `stats`, `tags`, or source status when an empty result suggests
+an inventory or ingestion problem. This investigation need not delay useful
+outside research.
 
-```bash
-agentbrain doctor --json    # exit 0 healthy, 1 when a required check fails
-agentbrain stats --json     # document_count, chunk_count, tags, recent docs
-```
+Keep `document_id`, `chunk_id`, title, source URI, and the actual excerpt in
+working evidence. Cite the source title and link in the answer; keep opaque
+identifiers out of spoken prose. Respect the source's sensitivity when moving
+material into another document or external service.
 
-`doctor` reports eight checks — `database_integrity`, `schema_version`,
-`artifact_references`, `leases`, `stranded_ingestion`, `admission_review`,
-`agentscrape`, `share_ingress` — plus a top-level `healthy` boolean, and never
-mutates the ledger.
+## Save and confirm
 
-The database lives at `~/.local/share/agentbrain/research.db`. Precedence is
-`--db PATH`, then `AGENTBRAIN_DB`, then that default. A read against a path
-that doesn't exist fails with `db_not_found` and exit 1 rather than creating an
-empty index — so an unexpected "nothing found" is worth one glance at
-`meta.db_path`.
-
-## The reading loop
-
-Two shapes. Pick by what you need, not by habit.
-
-**`context` — one bounded search-and-evidence call.** Use when you want
-citation-ready material in a single step and don't intend to drill further.
-
-```bash
-agentbrain context "agent memory" --limit 6 --max-chars 12000 --json
-```
-
-Each hit carries bounded chunk `content` plus a prebuilt `citation` string:
-
-```
-[document_id:782 chunk_id:11246] What is Agent Memory? — https://www.letta.com/blog/agent-memory
-```
-
-`data` also reports `returned_chars` and `truncated`, so you know when the
-budget clipped evidence. Linked resources are never concatenated into a hit —
-what you get is what that chunk says.
-
-**`search` → `get` — the ladder.** Use when you expect to triage many hits and
-pull only the winners, or when you need a whole document.
-
-```bash
-# 1. Rank cheaply
-agentbrain search "agent memory" --limit 10 --json
-
-# 2. Pull only what earned it
-agentbrain get --chunk-id 11246 --json                  # one chunk
-agentbrain get --document-id 782 --char-limit 12000 --json
-agentbrain get --document-id 782 --full --json          # whole document
-agentbrain get --source-uri https://example.com/article --json
-```
-
-A search hit carries `document_id`, `chunk_id`, `chunk_index`, `title`,
-`source_uri`, `source_type`, `resource_kind`, `sensitivity`, `content_kind`,
-`tags`, `collections`, `sources`, `relations`, `updated_at`, `start_char`,
-`end_char`, `score`, and a `snippet` whose matched terms are wrapped in
-`⟦…⟧`. `score` is SQLite bm25 — negative, and more negative is a better match.
-Results arrive already ranked; don't re-sort them.
-
-`get --document-id` additionally returns `outbound_links` and `inbound_links`
-relation arrays when the link graph has rows for that document — useful for
-"what else did this article point at."
-
-## Query language and filters
-
-`--mode` controls how the query is tokenized:
-
-| Mode | Behavior | Use |
-|---|---|---|
-| `any` (default) | terms joined with OR | always the first pass |
-| `all` | every term/phrase required | narrowing a noisy `any` result |
-| `raw` | SQLite FTS5 `MATCH` syntax passed through | phrases, `NEAR`, explicit boolean |
-
-```bash
-agentbrain search --mode all "cli mcp agents" --json
-agentbrain search --mode raw '"agent memory" OR "context window"' --json
-```
-
-`data.normalized_query` echoes exactly what was executed — read it when hits
-surprise you. Filters compose with any query and any mode:
-
-| Filter | Selects |
-|---|---|
-| `--tag <tag>` | exact document tag |
-| `--collection <slug>` | exact collection membership (e.g. `saved-links`) |
-| `--content-kind post\|thread\|article` | parser-derived classification |
-| `--source <id>` | exact recurring-source identifier |
-| `--sensitivity public\|normal\|sensitive\|private` | effective handling policy |
-| `--date`, `--date-from`, `--date-to` | document update date or ISO timestamp |
-
-(`--source-type`, `--resource-kind`, and `--local-path` also exist for legacy
-and path-exact selection; `agentbrain help search` lists them all.)
-
-Page with `--limit` (max 50) and `--offset`; `data.next_offset` is the cursor
-and is `null` on the last page. `--jsonl` streams one record per line, with a
-leading `record_type: "meta"` record — useful for wide scans you intend to
-filter in a pipe.
-
-## When brain is silent
-
-A zero-hit query is a lead, not a verdict. Work down this ladder before
-concluding anything:
-
-1. **Alternate terms.** `--mode any` already ORs; the failure is usually
-   vocabulary, not coverage. Try the author's words, the product name, the
-   error string, the acronym expanded.
-2. **Drop filters.** A `--tag` or `--collection` that doesn't exist silently
-   empties a good query. Confirm against `agentbrain tags --json`.
-3. **Inventory.** `agentbrain stats --json` shows `document_count`,
-   `by_source_type`, `top_tags`, and the most recent documents — enough to
-   tell "the index is thin here" from "my query was wrong."
-   `agentbrain sources list --json` shows which recurring producers feed it.
-4. **Only then infer absence** — and say which terms you tried.
-
-When the index genuinely lacks it, escalate outward: the `search` skill for
-grounded web research with citations, the `scrape` skill to fetch and extract
-a URL you already have. Then bring the good result back with `submit` so the
-next session finds it locally.
-
-## Writing: durable admission
-
-`submit` is the single admission boundary for every kind of material.
-
-```bash
-agentbrain submit https://example.com/article --json
-agentbrain submit ./notes/research.md --json
-agentbrain submit ./corpus/ --max-files 1000 --json
-agentbrain submit "a durable note worth keeping" --kind text --title "Note" --json
-
-# Curate at submission time — it is much cheaper than retagging later
-agentbrain submit https://example.com/article \
-  --collection saved-links --tag agent-memory --notes "cited in the memory doc" --json
-```
-
-What happens, precisely: local bytes are snapshotted into the Artifact store
-*before* acknowledgement, so the file can change or vanish afterwards without
-losing the submission. URL admission performs **no network work** — it
-validates HTTP(S) syntax, normalizes the locator, and queues. Materialization
-happens later when the resident worker leases the job and delegates extraction
-to Agentscrape, which is the sole network boundary.
-
-The acknowledgement is `{version, status, job_id, idempotency_key,
-intent_hash, state}`. Read `status`:
-
-| `status` | Meaning | Your move |
-|---|---|---|
-| `queued` | new durable job created | note `job_id`; it becomes searchable after the worker runs |
-| `duplicate` | equivalent intent already queued, same `job_id` | **success** — do not resubmit |
-| `already_indexed` | this URL's resource identity already has a materialized document | use the returned `document_id` directly; `--force` queues rematerialization |
-
-All three exit 0. `duplicate` in particular is a healthy answer, not an error —
-re-sharing a link is idempotent by design. Reusing an explicit
-`--idempotency-key` for a *different* intent fails with exit 2.
-
-`--wait` observes the admitted job without bypassing the worker; on timeout it
-exits **0** with `data.wait_status: "timeout"` and the job stays queued and
-recoverable. (Exit 124 is a different surface — `sources sync --wait`.)
-Waiting only helps when a worker is actually running; it is not a way to force
-extraction.
-
-Sensible defaults worth knowing: directories recurse with `--max-files 300`,
-`--skip-secrets` is on, and per-file/text capture caps at 5 MB.
-
-## The ledger
-
-Every admission is a durable job with attempts and transitions. This is how
-you answer "did that link ever land?"
-
-```bash
-agentbrain jobs stats --json                    # by_state counts, runnable_due, leases
-agentbrain jobs list --state failed --limit 20 --json
-agentbrain jobs list --state blocked --json
-agentbrain jobs show 1234 --json                # + attempts[] and transitions[]
-```
-
-`jobs stats` reports `by_state` across `queued`, `running`, `retry_wait`,
-`blocked`, `failed`, `completed`, `excluded`, `cancelled`, plus `runnable_due`,
-`active_leases`, `stale_leases`, and `oldest_runnable_at`.
-
-**Ordinary `jobs show` deliberately omits the durable intent** — no URL, no
-text body, no Artifact contents. `--reveal-content` reads Artifact bodies and
-appends a sensitive-inspection audit record. Pass it only when the body is
-genuinely required, and say why.
-
-Retry, cancel, and exclude are explicit operator acts. They append transitions
-and preserve every attempt; nothing is rewritten.
-
-```bash
-agentbrain jobs retry 1234 --reason "extractor fixed" --actor agent --json
-agentbrain jobs cancel 1234 --reason "no longer wanted" --actor agent --json
-agentbrain jobs exclude 1234 --reason "paywalled, won't recover" --actor agent --json
-```
-
-Prefer proposing these to the user over performing them unprompted — a
-stranded job is evidence, and disposing of it is a decision.
-
-## Health and recovery
-
-**A submission never landed.** The path is ledger first, health second:
-
-```bash
-agentbrain jobs list --state failed --json      # and --state blocked
-agentbrain jobs show <id> --json                # failure_class + attempt history
-agentbrain doctor --json
-```
-
-A **stranded** job is one in `blocked` or `failed` that carries a
-`failure_class`: an attempt ran, no retry will revive it, and the link the
-user saved never became searchable. `doctor` reports these as
-`stranded_ingestion` and goes unhealthy — that is the intended reading.
-`excluded` and `cancelled` are operator dispositions and are never stranded; a
-job withheld before any attempt is reported separately as `admission_review`,
-at warning, because an undecided question is not a defect.
-
-The most common cause of mass stranding is `agentscrape` missing from the
-worker's `PATH` — `doctor`'s `agentscrape` check names it. Text, file, and
-directory ingestion is unaffected; only URL extraction degrades.
-
-**A share never even reached the ledger.** When the human is sure they shared a
-link and no job exists, the ingress is the suspect, not the worker. `doctor`'s
-`share_ingress` check answers it: a registered, running ingress that cannot
-answer its own `/v1/health` is a bind that stopped serving — the shape a
-Tailscale restart leaves behind — and every share is being held on the device
-instead. The ingress now exits on its own after two failed self-probes so the
-service restarts it; when it has not yet, the fix is
-`launchctl kickstart -k gui/$UID/io.arthack.agentbrain.share`, which is the human's call
-on an installer-managed service.
-
-**Nothing is being drained at all.** `jobs stats` showing a rising `queued`
-with `active_leases: 0` means the resident worker isn't running. That is
-installer-managed service state (`io.arthack.agentbrain.work`), not something to fix by
-launching a second worker beside the installed one — say so and let the human
-decide.
-
-## Output contract
-
-Every `--json` call emits one envelope:
+`submit` is the admission boundary for URLs, local files, directories, and
+literal text. Use absolute local paths because the shared MCP server does not
+inherit this session's cwd. For a worthwhile source, an example request is:
 
 ```json
-{"schema_version": 1, "ok": true, "command": "search",
- "data": {...}, "meta": {"db_path": "…", "read_only": true, "generated_at": "…"}}
+{"source":"https://example.com/article","collection":["saved-links"],"tag":["agent-memory"],"notes":"Relevant to the prompting review"}
 ```
 
-On failure, `error` replaces `data` and `meta` is absent:
+Admission and indexing are separate. A URL admission queues work without
+fetching it; local bytes are snapshotted before acknowledgement. The resident
+worker later extracts and indexes material through Agentscrape.
 
-```json
-{"schema_version": 1, "ok": false, "command": "get",
- "error": {"code": "not_found", "message": "document not found"}}
-```
+- `queued` means a durable job exists; retain its `job_id`.
+- `duplicate` means the equivalent intent already exists; do not resubmit it.
+- `already_indexed` supplies a materialized document to retrieve immediately.
 
-`error.recovery` carries a concrete next step when one exists (`db_not_found`
-answers "Pass --db PATH or set AGENTBRAIN_DB."). Follow it.
+Inspect `jobs_show` or use a bounded admission wait when the task needs indexing
+confirmed. `wait_status: "timeout"` leaves the admitted job recoverable; it is
+not a failed submission. Do not claim content is searchable merely because
+admission succeeded.
 
-| Exit | Meaning |
-|---|---|
-| 0 | success |
-| 1 | runtime, extraction, indexing, not-found, or database failure |
-| 2 | argument or pre-admission validation error |
-| 124 | `sources sync --wait` observation timeout — **the durable Run continues** |
+For ingestion failures, recurring-source runs, and sensitive job inspection,
+read [ingestion and recovery](references/ingestion.md).
 
-124 means only that *you* stopped watching. The Run keeps executing in the
-worker; re-check with `sources status` or `jobs stats` rather than re-firing
-the sync.
+## Results and boundaries
 
-## Recipes
+With Executor, a successful tool call's `data` is the upstream MCP result;
+read its `structuredContent` for the Agentbrain envelope. On `mcp_tool_error`,
+the separate JSON text block in `error.details.content` preserves the original
+error code and recovery. Check the domain result before claiming success.
 
-**"Have we researched this?"** — the default opening move.
-
-```bash
-agentbrain context "retrieval augmented generation evaluation" --limit 6 --json
-```
-
-**"Didn't we read something about X?"** — a title or half-remembered phrase.
-
-```bash
-agentbrain search "prompt caching" --limit 10 --json
-agentbrain get --document-id <winner> --full --json
-```
-
-**Everything saved on a topic** — scoped by date, curation, or form:
-
-```bash
-agentbrain search "agent memory" --date-from 2026-01-01 --limit 20 --json
-agentbrain search "agent memory" --collection saved-links --limit 20 --json
-agentbrain search "agent memory" --content-kind article --limit 10 --json
-```
-
-**Keep something worth keeping**, then confirm it landed:
-
-```bash
-agentbrain submit https://example.com/post --collection saved-links --tag topic --json
-# → {"status":"queued","job_id":4321}
-agentbrain jobs show 4321 --json     # later; completed means it is searchable
-```
-
-**Did my earlier submission land?**
-
-```bash
-agentbrain jobs stats --json
-agentbrain search "distinctive phrase from that page" --limit 5 --json
-```
-
-**Survey the index before a research plan.**
-
-```bash
-agentbrain stats --json
-agentbrain tags --limit 50 --json
-agentbrain sources list --json
-```
-
-## What else feeds this index
-
-Agents are not the main ingress, and recognizing the other fingerprints keeps
-you from misreading the ledger:
-
-- **Share ingress** (`io.arthack.agentbrain.share`) — an authenticated local HTTP listener
-  that a Chrome extension and an Android share target post to. Every share
-  resolves to exactly one Admission through the same `submit` path, so a
-  re-share returns `duplicate` with the same `job_id`. Both clients hold
-  shares they could not deliver and retry them, so a link the human is certain
-  they saved may legitimately have no job yet: it is waiting on their device,
-  not in the ledger.
-- **Recurring sources** — X accounts and blog feeds registered declaratively
-  and synced on a cadence. `sources sync` admits durable Runs and performs no
-  HTTP work itself.
-- **The worker** (`io.arthack.agentbrain.work`) — leases jobs, delegates extraction,
-  commits fenced outcomes.
-
-All three are installer-managed services. Agents read them; problems route
-to the human.
-
-## Anti-patterns
-
-| Don't | Do |
-|---|---|
-| `submit <url>` then immediately `search` for it | note the `job_id`; extraction is asynchronous |
-| Treat `duplicate` as a failure and resubmit | it is success with the same `job_id` |
-| Reach for a web search first | brain first; escalate to the `search` skill only when brain is silent |
-| Declare absence after one zero-hit query | alternate terms → drop filters → `stats`/`tags` → then infer |
-| Start with `--mode all` | `any` first, narrow with `all` or filters after |
-| Bulk-submit a whole directory of unvetted material | submit deliberately, with `--tag`/`--collection` |
-| Pass `--reveal-content` casually | ordinary `jobs show`; reveal writes an audit record |
-| `jobs retry/cancel/exclude` unprompted | propose it — disposition is an operator decision |
-| Run your own `agentbrain worker` alongside the installed one | report that the resident worker is down |
-| Open `research.db` or write SQL directly | the CLI; reads are read-only by construction |
-| Paraphrase index content with no ids | cite `document_id`, `chunk_id`, `title`, `source_uri` |
-| `delete` or `retag` to "tidy up" | `delete` purges a Resource, `retag` rewrites tags index-wide; ask first |
-
-## Discovery and drift
-
-The CLI teaches itself; prefer asking it over trusting this file:
-
-```bash
-agentbrain guide --json          # the contract: commands, arguments, exit codes
-agentbrain --agent-help          # the in-binary runbook (this skill is the deep version)
-agentbrain --help                # every command and global flag
-agentbrain help <command>        # per-command options and semantics
-agentbrain --agent-teaser        # one-line capability summary
-```
-
-`guide --json` is the single authored self-description; every other surface in
-that list is rendered from it, so none of them can disagree with it. It is the
-authority on the command tree, each command's typed arguments and constraints,
-which commands mutate, every `error.code`, the envelope, and the exit codes. After an agentbrain upgrade, that one call is the re-sync — and
-this skill's claims should be re-verified against the live CLI before they are
-repeated.
-
-## Sibling skills
-
-| Skill | Reach for it when |
-|---|---|
-| `search` | brain is silent and you need the open web, with citations — a paid call, so brain first |
-| `scrape` | you need a URL's content *now*; `submit` is for durable indexing instead of, or in addition to, reading it |
-| `wiki` | the target is an authored document or artifact, not ingested research |
-| `chats` | the answer lives in a past coding-agent session rather than in saved reading |
-
-## For the human
-
-Saving is a one-tap act, not a CLI act: the Chrome extension (its toolbar
-popover, right-click, or `Ctrl+Shift+S`) and the Android share sheet both post
-into this same index. The popover lists the last 20 shares and what became of
-each — held, sent, indexed with a document id, or stranded — so "did that link
-land?" is usually answerable without a terminal. A share taken while the ingress is down is held by the extension or
-the Android app and sent when it comes back — check the toolbar badge, or either
-app's settings screen, before concluding a link was lost. If links stop showing
-up, `agentbrain doctor` names the failing check, and the installed
-`io.arthack.agentbrain.doctor` LaunchAgent notifies when the stranded count rises.
+Use the supported tools for the index. Do not open or mutate the research
+database directly: a stray write can corrupt its FTS index. A missing index
+is distinct from an empty search. Installation and worker repairs belong in
+their owning repositories and supported installers, not a second worker
+started alongside the managed one.
