@@ -116,6 +116,51 @@ test("job list and show redact intent bodies and unsafe URLs", () => {
   expect(urlShown.stdout).not.toContain("query-secret");
 });
 
+test("job show reports sanitized failure diagnostics without revealing URLs", () => {
+  const value = fixture();
+  const admitted = admitSubmission(
+    value.store,
+    {
+      version: 1,
+      source:
+        "https://example.test/private/report?token=submission-secret&name=needle-93",
+      kind: "url",
+      ingress: "cli",
+    },
+    { artifactStore: value.artifacts },
+  );
+  const claim = value.store.claimJob({ worker: "private-worker" });
+  if (!claim.claimed) throw new Error("expected fixture claim");
+  value.store.failAttempt({
+    fencingToken: claim.fencing_token,
+    failureClass: "permanent",
+    summary:
+      "agentscrape extraction failed (invalid_request): unsupported page at https://example.test/private/report?token=attempt-secret",
+  });
+  value.store.close();
+
+  const shown = runCli(value, [
+    "jobs",
+    "show",
+    String(admitted.job_id),
+    "--json",
+  ]);
+  expect(shown.exitCode).toBe(0);
+  expect(shown.stdout).toContain("unsupported page at [URL]");
+  expect(shown.stdout).not.toContain("example.test");
+  expect(shown.stdout).not.toContain("submission-secret");
+  expect(shown.stdout).not.toContain("attempt-secret");
+  expect(shown.stdout).not.toContain("private-worker");
+  const payload = jsonOutput<{
+    failure_summary: string | null;
+    attempts: Array<{ failure_summary: string | null }>;
+  }>(shown).data;
+  expect(payload.failure_summary).toContain("unsupported page at [URL]");
+  expect(payload.attempts[0]?.failure_summary).toContain(
+    "unsupported page at [URL]",
+  );
+});
+
 test("Run inspection is bounded to safe opaque policy and lifecycle metadata", () => {
   const value = fixture();
   const admitted = admitSubmission(
@@ -449,6 +494,8 @@ test("doctor separates broken ingestion from admission review", () => {
 
   expect(stranded?.status).toBe("failed");
   expect(stranded?.detail).toContain("1 stranded");
+  expect(stranded?.detail).toContain("jobs list --state failed");
+  expect(stranded?.detail).not.toContain("jobs list --state blocked");
   // A withheld job is an undecided question, not a broken ingestion, so it
   // warns instead of failing the report.
   expect(review?.status).toBe("warning");

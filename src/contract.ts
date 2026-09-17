@@ -334,7 +334,9 @@ browser and session behavior, and extraction.
 
 The ledger is content-safe by default. \`jobs list\`, \`jobs run\`, and
 \`jobs stats\` never echo durable intent, raw URLs, Artifact bodies, or query
-values, and an ordinary \`jobs show\` does not either. \`jobs show
+values. An ordinary \`jobs show\` adds bounded, sanitized failure summaries
+with URLs redacted so a stranded job can be diagnosed without database access,
+but does not reveal the submitted content. \`jobs show
 --reveal-content\` reads Artifact bodies and appends a sensitive-inspection
 audit record — pass it only when the body is genuinely required. Retry,
 cancel, and exclude are explicit operator acts that append transitions and
@@ -1372,6 +1374,8 @@ skip every operator-controlled Run.`,
           audience: "agent",
           mutates: true,
           guidance: `An ordinary show is structurally read-only and content-safe.
+It includes bounded failure summaries after credential, private-path, and URL
+redaction so failed work can be diagnosed through the supported interface.
 --reveal-content explicitly reads Artifact bodies and appends a
 sensitive-inspection audit record, which is the only durable write this
 command can make. Pass it only when the body is genuinely required.`,

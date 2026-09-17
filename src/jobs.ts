@@ -8,6 +8,7 @@ import {
 import { ResearchCache } from "./db";
 import { CliError } from "./errors";
 import { findExecutable } from "./executable";
+import { sanitizeExternalError } from "./sanitize";
 import { RESEARCH_SCHEMA_VERSION, type ResearchStore } from "./store";
 import type {
   Attempt,
@@ -66,9 +67,11 @@ export interface SafeJob {
 }
 
 export interface SafeJobRecord extends SafeJob {
+  failure_summary: string | null;
   attempts: Array<
     Omit<Attempt, "worker" | "failure_summary" | "failure_class"> & {
       failure_class: string | null;
+      failure_summary: string | null;
     }
   >;
   transitions: Array<Omit<JobTransition, "actor" | "detail" | "reason">>;
@@ -148,6 +151,15 @@ function safeFailureClass(value: string | null): string | null {
   return FAILURE_CLASSES.includes(value as FailureClass) ? value : "invalid";
 }
 
+/** Keep failure diagnostics useful without echoing submitted or final URLs. */
+function safeFailureSummary(value: string | null): string | null {
+  if (value === null) return null;
+  return sanitizeExternalError(value).replace(
+    /\bhttps?:\/\/[^\s"'<>]+/gi,
+    "[URL]",
+  );
+}
+
 export function safeJobView(job: Job): SafeJob {
   return {
     id: job.id,
@@ -169,13 +181,13 @@ export function safeJobView(job: Job): SafeJob {
 function safeRecord(record: JobRecord): SafeJobRecord {
   return {
     ...safeJobView(record),
+    failure_summary: safeFailureSummary(record.failure_summary),
     attempts: record.attempts.map(
-      ({
-        worker: _worker,
-        failure_summary: _summary,
-        failure_class,
-        ...attempt
-      }) => ({ ...attempt, failure_class: safeFailureClass(failure_class) }),
+      ({ worker: _worker, failure_summary, failure_class, ...attempt }) => ({
+        ...attempt,
+        failure_class: safeFailureClass(failure_class),
+        failure_summary: safeFailureSummary(failure_summary),
+      }),
     ),
     transitions: record.transitions.map(
       ({ actor: _actor, detail: _detail, reason: _reason, ...transition }) =>
@@ -772,13 +784,19 @@ export function doctor(
   // for an operator. That is an undecided question, not a broken ingestion, and
   // conflating the two would report breakage that does not exist.
   const disposition = jobDispositions(cache);
+  const triageCommands = [
+    disposition.blocked_after_failure > 0
+      ? "agentbrain jobs list --state blocked"
+      : null,
+    disposition.failed > 0 ? "agentbrain jobs list --state failed" : null,
+  ].filter((command): command is string => command !== null);
   checks.push({
     name: "stranded_ingestion",
     status: disposition.stranded === 0 ? "ok" : "failed",
     detail:
       disposition.stranded === 0
         ? "No stranded ingestion jobs"
-        : `${disposition.stranded} stranded ingestion jobs (${disposition.blocked_after_failure} blocked, ${disposition.failed} failed); triage with agentbrain jobs list --state blocked`,
+        : `${disposition.stranded} stranded ingestion jobs (${disposition.blocked_after_failure} blocked, ${disposition.failed} failed); triage with ${triageCommands.join(" and ")}, then inspect with agentbrain jobs show <id> --json`,
   });
   checks.push({
     name: "admission_review",
