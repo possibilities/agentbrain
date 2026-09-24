@@ -3,7 +3,7 @@ name: brain
 description: >-
   Find previously saved articles, papers, threads, and notes with agentbrain;
   save sources and check ingestion outcomes. Use for prior reading and local
-  research context; use chats for past agent conversations.
+  research context.
 ---
 
 # Brain — saved research
@@ -17,8 +17,8 @@ Retrieve collected sources and admit new material to the research library.
 The local index is useful context, especially for prior reading and recurring
 subjects. It is not a freshness check or a prerequisite before every network
 read. Follow the user's requested sources, search the live web when current
-information matters, and open relevant links while investigating. Use `chats`
-for past conversations and `wiki` for authored documents.
+information matters, and open relevant links while investigating. Use `wiki`
+for authored documents.
 
 ## Retrieve evidence
 
