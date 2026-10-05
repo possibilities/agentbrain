@@ -32,4 +32,4 @@ The accepted boundary is:
 
 ## Related
 
-See [`CONTEXT.md`](../../../CONTEXT.md) for the shared glossary, [`README.md`](../../../README.md) for commands, [ADR 0002](../0002-agentscrape-owns-url-extraction.md) for the corrected URL-extraction boundary, and [ADR 0003](../0003-agentbrain-owns-durable-ingestion.md) for the superseding durable-ingestion decision.
+See [`GLOSSARY.md`](../../../GLOSSARY.md) for the shared glossary, [`README.md`](../../../README.md) for commands, [ADR 0002](../0002-agentscrape-owns-url-extraction.md) for the corrected URL-extraction boundary, and [ADR 0003](../0003-agentbrain-owns-durable-ingestion.md) for the superseding durable-ingestion decision.

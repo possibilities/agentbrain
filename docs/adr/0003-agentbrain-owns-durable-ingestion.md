@@ -38,4 +38,4 @@ A durable queue tied only to scraping would also make URL work first-class while
 
 ## Related
 
-This ADR supersedes [ADR 0001](superseded/0001-agentbrain-owns-research-index.md). It retains Agentscrape's sole-extractor decision from [ADR 0002](0002-agentscrape-owns-url-extraction.md) while superseding that ADR's synchronous provider-retry and X-child lifecycle details. See [`CONTEXT.md`](../../CONTEXT.md) for the canonical vocabulary.
+This ADR supersedes [ADR 0001](superseded/0001-agentbrain-owns-research-index.md). It retains Agentscrape's sole-extractor decision from [ADR 0002](0002-agentscrape-owns-url-extraction.md) while superseding that ADR's synchronous provider-retry and X-child lifecycle details. See [`GLOSSARY.md`](../../GLOSSARY.md) for the canonical vocabulary.

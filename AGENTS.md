@@ -1,6 +1,6 @@
 # Agentbrain contributor notes
 
-Read `README.md` for what this is and `CONTEXT.md` for the glossary. Everything
+Read `README.md` for what this is and `GLOSSARY.md` for the glossary. Everything
 below is a constraint you cannot recover by reading a single file.
 
 ## Boundaries
@@ -94,7 +94,7 @@ below is a constraint you cannot recover by reading a single file.
   published file from it, and `test/sources-schema.test.ts` fails on drift.
   Adding a manifest key means declaring and describing it in the schema
   module; the loader and the published schema both follow.
-- Use `CONTEXT.md`'s terms exactly — Ingress, Admission, Attempt, Run, Resource,
+- Use `GLOSSARY.md`'s terms exactly — Ingress, Admission, Attempt, Run, Resource,
   Document, Artifact are distinct and each entry says what *not* to call things.
   Prose that swaps them is a defect, not a style choice.
 - Tests are hermetic: temp directories, a stubbed `agentscrape`, a vendored

@@ -36,4 +36,4 @@ External extraction cannot share an atomic transaction with local SQLite state. 
 
 ## Related
 
-This refines the durable-ingestion ownership decision in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md) and retains the extraction boundary in [ADR 0002](0002-agentscrape-owns-url-extraction.md). See [`CONTEXT.md`](../../CONTEXT.md) for job, attempt, and run terminology.
+This refines the durable-ingestion ownership decision in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md) and retains the extraction boundary in [ADR 0002](0002-agentscrape-owns-url-extraction.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for job, attempt, and run terminology.

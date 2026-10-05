@@ -33,4 +33,4 @@ The integration therefore needs a narrow synchronous wire contract: Agentbrain o
 
 ## Related
 
-This applies [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), uses the lifecycle in [ADR 0004](0004-durable-ingestion-job-lifecycle.md), and retains the sole-extractor boundary of [ADR 0002](0002-agentscrape-owns-url-extraction.md). See [`CONTEXT.md`](../../CONTEXT.md) for extraction-envelope terminology.
+This applies [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), uses the lifecycle in [ADR 0004](0004-durable-ingestion-job-lifecycle.md), and retains the sole-extractor boundary of [ADR 0002](0002-agentscrape-owns-url-extraction.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for extraction-envelope terminology.

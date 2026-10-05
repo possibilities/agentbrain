@@ -28,4 +28,4 @@ This needs a mutation surface, since existing documents already have final `docu
 
 ## Related
 
-This builds on the recovered corpus described in [ADR 0010](0010-legacy-recovery-import-contract.md) and reuses `deleteDocument`'s targeted-FTS-write idiom from the durable ingestion domain model in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md). See [`CONTEXT.md`](../../CONTEXT.md) for the Structural tag glossary entry, disambiguated from Sensitivity and the user-supplied `--tag`.
+This builds on the recovered corpus described in [ADR 0010](0010-legacy-recovery-import-contract.md) and reuses `deleteDocument`'s targeted-FTS-write idiom from the durable ingestion domain model in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for the Structural tag glossary entry, disambiguated from Sensitivity and the user-supplied `--tag`.

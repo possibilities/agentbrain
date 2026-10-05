@@ -35,4 +35,4 @@ The worker must survive login-session restarts and machine sleep while remaining
 
 ## Related
 
-This operationalizes the queue ownership in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), lease lifecycle in [ADR 0004](0004-durable-ingestion-job-lifecycle.md), artifact reconciliation in [ADR 0008](0008-content-addressed-artifact-storage.md), and source checkpoints in [ADR 0009](0009-durable-source-fanout-and-checkpoints.md). See [`CONTEXT.md`](../../CONTEXT.md) for worker terminology.
+This operationalizes the queue ownership in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), lease lifecycle in [ADR 0004](0004-durable-ingestion-job-lifecycle.md), artifact reconciliation in [ADR 0008](0008-content-addressed-artifact-storage.md), and source checkpoints in [ADR 0009](0009-durable-source-fanout-and-checkpoints.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for worker terminology.

@@ -35,4 +35,4 @@ Sensitivity also propagates: a private source can produce artifacts, searchable 
 
 ## Related
 
-This applies artifact handling from [ADR 0008](0008-content-addressed-artifact-storage.md), operational logging from [ADR 0011](0011-single-worker-source-scheduling.md), and the resource model from [ADR 0003](0003-agentbrain-owns-durable-ingestion.md). See [`CONTEXT.md`](../../CONTEXT.md) for sensitivity terminology.
+This applies artifact handling from [ADR 0008](0008-content-addressed-artifact-storage.md), operational logging from [ADR 0011](0011-single-worker-source-scheduling.md), and the resource model from [ADR 0003](0003-agentbrain-owns-durable-ingestion.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for sensitivity terminology.

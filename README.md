@@ -70,4 +70,4 @@ evidence on failure.
 
 [docs/adr/](docs/adr/) records the decisions, starting with [Agentbrain owns
 durable ingestion](docs/adr/0003-agentbrain-owns-durable-ingestion.md);
-`CONTEXT.md` is the domain glossary.
+`GLOSSARY.md` is the domain glossary.

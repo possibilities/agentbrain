@@ -46,4 +46,4 @@ The original populated SQLite database is unavailable, so historical row IDs, ch
 
 ## Related
 
-This uses the domain model in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), identity rules in [ADR 0006](0006-conservative-resource-identity.md), artifact guarantees in [ADR 0008](0008-content-addressed-artifact-storage.md), and job lifecycle in [ADR 0004](0004-durable-ingestion-job-lifecycle.md). See [`CONTEXT.md`](../../CONTEXT.md) for recovery-evidence terminology.
+This uses the domain model in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), identity rules in [ADR 0006](0006-conservative-resource-identity.md), artifact guarantees in [ADR 0008](0008-content-addressed-artifact-storage.md), and job lifecycle in [ADR 0004](0004-durable-ingestion-job-lifecycle.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for recovery-evidence terminology.

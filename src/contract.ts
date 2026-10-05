@@ -360,7 +360,7 @@ in-binary authority on commands, arguments, envelope shape, and exit codes.`,
           "Every public ingestion intent is durable before materialization. Admission performs no network work, and URL workers delegate extraction to Agentscrape without direct HTTP fallback.",
         decision_record:
           "docs/adr/0003-agentbrain-owns-durable-ingestion.md, docs/adr/0005-public-ingestion-admission-contract.md, docs/adr/0014-agentbrain-database-namespace.md, docs/adr/0015-parser-derived-content-classification.md",
-        glossary: "CONTEXT.md",
+        glossary: "GLOSSARY.md",
       },
       default_db: "~/.local/share/agentbrain/research.db",
       source_types: {

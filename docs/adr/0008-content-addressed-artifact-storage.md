@@ -34,4 +34,4 @@ SQLite and filesystem writes cannot share one atomic transaction. The design the
 
 ## Related
 
-This supports the resource/artifact separation in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), fenced completion in [ADR 0004](0004-durable-ingestion-job-lifecycle.md), conservative identity in [ADR 0006](0006-conservative-resource-identity.md), and staged Agentscrape output in [ADR 0007](0007-synchronous-agentscrape-extraction-contract.md). See [`CONTEXT.md`](../../CONTEXT.md) for artifact terminology.
+This supports the resource/artifact separation in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), fenced completion in [ADR 0004](0004-durable-ingestion-job-lifecycle.md), conservative identity in [ADR 0006](0006-conservative-resource-identity.md), and staged Agentscrape output in [ADR 0007](0007-synchronous-agentscrape-extraction-contract.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for artifact terminology.

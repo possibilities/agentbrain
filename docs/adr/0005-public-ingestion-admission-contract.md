@@ -32,4 +32,4 @@ The public contract must also support asynchronous callers without preventing an
 
 ## Related
 
-This applies the ownership decision in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md) and the lifecycle in [ADR 0004](0004-durable-ingestion-job-lifecycle.md). See [`CONTEXT.md`](../../CONTEXT.md) for admission, ingress, job, and ingestion terminology.
+This applies the ownership decision in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md) and the lifecycle in [ADR 0004](0004-durable-ingestion-job-lifecycle.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for admission, ingress, job, and ingestion terminology.

@@ -35,4 +35,4 @@ Discovery surfaces are also incomplete. X timeline pagination may return warning
 
 ## Related
 
-This applies transactional derived work from [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), job completion semantics from [ADR 0004](0004-durable-ingestion-job-lifecycle.md), conservative identity from [ADR 0006](0006-conservative-resource-identity.md), and the Agentscrape envelope from [ADR 0007](0007-synchronous-agentscrape-extraction-contract.md). See [`CONTEXT.md`](../../CONTEXT.md) for observation and checkpoint terminology.
+This applies transactional derived work from [ADR 0003](0003-agentbrain-owns-durable-ingestion.md), job completion semantics from [ADR 0004](0004-durable-ingestion-job-lifecycle.md), conservative identity from [ADR 0006](0006-conservative-resource-identity.md), and the Agentscrape envelope from [ADR 0007](0007-synchronous-agentscrape-extraction-contract.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for observation and checkpoint terminology.

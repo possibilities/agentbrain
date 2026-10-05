@@ -34,4 +34,4 @@ The recovered catalog also contains ordered `link-NNNNN` identities that describ
 
 ## Related
 
-This refines the resource model in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md) and the idempotent admission contract in [ADR 0005](0005-public-ingestion-admission-contract.md). See [`CONTEXT.md`](../../CONTEXT.md) for resource, resource key, alias, artifact, and provenance terminology.
+This refines the resource model in [ADR 0003](0003-agentbrain-owns-durable-ingestion.md) and the idempotent admission contract in [ADR 0005](0005-public-ingestion-admission-contract.md). See [`GLOSSARY.md`](../../GLOSSARY.md) for resource, resource key, alias, artifact, and provenance terminology.
