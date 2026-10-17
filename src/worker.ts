@@ -967,13 +967,6 @@ export async function runWorker(
     }
   }
 
-  const recovered = store.recoverExpiredLeases({
-    now: now(),
-    policy: options.policy,
-    random: options.random,
-    scope: options.scope,
-    executionToken: scopePolicy?.executionToken,
-  }).length;
   const result: WorkerResult = {
     worker_id: workerId,
     scope:
@@ -987,7 +980,7 @@ export async function runWorker(
             expected_job_count: scopePolicy.expectedJobCount,
           },
     scheduled: 0,
-    recovered,
+    recovered: 0,
     claimed: 0,
     completed: 0,
     failed: 0,
@@ -1009,6 +1002,15 @@ export async function runWorker(
           "operator-controlled Run execution lease is stale or fenced",
         );
       }
+      // Leases can expire while this resident worker is running, including
+      // its own fenced attempt. Recovery cannot depend on another restart.
+      result.recovered += store.recoverExpiredLeases({
+        now: now(),
+        policy: options.policy,
+        random: options.random,
+        scope: options.scope,
+        executionToken: scopePolicy?.executionToken,
+      }).length;
       const claim = store.claimJob({
         worker: workerId,
         now: now(),

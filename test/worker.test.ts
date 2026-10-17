@@ -1747,6 +1747,75 @@ test("bounded shutdown leaves an unfinished attempt recoverable", async () => {
   store.close();
 });
 
+for (const expiredOwner of ["another worker", "this worker"] as const) {
+  test(`resident worker recovers a lease that expires after startup: ${expiredOwner}`, async () => {
+    const { store, artifacts } = fixture();
+    const queued = store.enqueueJob({
+      idempotencyKey: "late-expiry",
+      kind: "text",
+      intent: intent(),
+      now: T0,
+    });
+    if (expiredOwner === "another worker") {
+      expect(
+        store.claimJob({ worker: "gone", now: T0, leaseMs: 1000 }).claimed,
+      ).toBe(true);
+    }
+    const stop = new AbortController();
+    let time = T0;
+    let sleeps = 0;
+    let materializations = 0;
+    try {
+      const result = await runWorker(store, {
+        now: () => time,
+        leaseMs: 1000,
+        policy: { infraBaseMs: 0, infraCapMs: 0, jitterRatio: 0 },
+        signal: stop.signal,
+        installSignalHandlers: false,
+        artifactStore: artifacts,
+        sleep: async () => {
+          time = at(2000);
+          if (++sleeps === 2) stop.abort();
+        },
+        materialize: () => {
+          materializations += 1;
+          if (expiredOwner === "this worker" && materializations === 1) {
+            time = at(2000);
+            return [
+              {
+                sourceType: "text",
+                sourceUri: "stale",
+                title: "Stale",
+                content: "Must never be indexed",
+              },
+            ];
+          }
+          stop.abort();
+          return [
+            {
+              sourceType: "text",
+              sourceUri: "recovered",
+              title: "Recovered",
+              content: "Recovered after lease expiry",
+            },
+          ];
+        },
+      });
+      expect(result).toMatchObject({ recovered: 1, completed: 1 });
+      expect(
+        store.db
+          .query("SELECT state, attempt_count FROM jobs WHERE id=?")
+          .get(queued.job.id),
+      ).toEqual({ state: "completed", attempt_count: 2 });
+      expect(store.db.query("SELECT source_uri FROM documents").all()).toEqual([
+        { source_uri: "recovered" },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+}
+
 test("lease recovery fences a stale completion", async () => {
   const { store, artifacts } = fixture();
   const queued = store.enqueueJob({
